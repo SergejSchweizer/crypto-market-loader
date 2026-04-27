@@ -1,39 +1,24 @@
-"""Spot-market data ingestion adapters."""
+"""Spot/perpetual candle ingestion interface across exchanges."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Literal
 
-from ingestion.http_client import get_json
+from ingestion.exchanges import binance, deribit
 
-BINANCE_SUPPORTED_INTERVALS: tuple[str, ...] = (
-    "1s",
-    "1m",
-    "3m",
-    "5m",
-    "15m",
-    "30m",
-    "1h",
-    "2h",
-    "4h",
-    "6h",
-    "8h",
-    "12h",
-    "1d",
-    "3d",
-    "1w",
-    "1M",
-)
+Exchange = Literal["binance", "deribit"]
+Market = Literal["spot", "perp"]
 
 
 @dataclass(frozen=True)
 class SpotCandle:
-    """OHLCV candle for a spot instrument.
+    """OHLCV candle for an instrument.
 
     Attributes:
         exchange: Exchange identifier.
-        symbol: Spot symbol such as ``BTCUSDT``.
+        symbol: Instrument symbol.
         interval: Candle interval string accepted by the exchange.
         open_time: Candle open timestamp (UTC).
         close_time: Candle close timestamp (UTC).
@@ -42,8 +27,8 @@ class SpotCandle:
         low_price: Low price.
         close_price: Close price.
         volume: Base asset volume.
-        quote_volume: Quote asset volume.
-        trade_count: Number of trades in candle.
+        quote_volume: Quote asset volume if available.
+        trade_count: Number of trades if available.
     """
 
     exchange: str
@@ -68,11 +53,11 @@ def _ms_to_utc(ts_ms: int) -> datetime:
 
 
 
-def parse_binance_kline(symbol: str, interval: str, row: list[object]) -> SpotCandle:
-    """Parse a single Binance kline row into a typed object."""
+def parse_kline(exchange: Exchange, symbol: str, interval: str, row: list[object]) -> SpotCandle:
+    """Parse a common kline row into a typed candle object."""
 
     return SpotCandle(
-        exchange="binance",
+        exchange=exchange,
         symbol=symbol,
         interval=interval,
         open_time=_ms_to_utc(int(row[0])),
@@ -87,70 +72,76 @@ def parse_binance_kline(symbol: str, interval: str, row: list[object]) -> SpotCa
     )
 
 
-def list_binance_supported_intervals() -> tuple[str, ...]:
-    """Return Binance-supported kline intervals."""
 
-    return BINANCE_SUPPORTED_INTERVALS
+def list_supported_intervals(exchange: Exchange) -> tuple[str, ...]:
+    """List supported intervals for the requested exchange."""
+
+    if exchange == "binance":
+        return binance.list_supported_intervals()
+    if exchange == "deribit":
+        return deribit.list_supported_intervals()
+    raise ValueError(f"Unsupported exchange '{exchange}'")
 
 
-def normalize_timeframe(value: str) -> str:
-    """Normalize user-provided timeframe aliases into Binance interval format.
 
-    Supports forms like ``M1``, ``m5``, ``H1``, ``D1``, ``W1``, and ``MN1``.
+def normalize_timeframe(exchange: Exchange, value: str) -> str:
+    """Normalize timeframe aliases per exchange format."""
+
+    if exchange == "binance":
+        return binance.normalize_timeframe(value)
+    if exchange == "deribit":
+        return deribit.normalize_timeframe(value)
+    raise ValueError(f"Unsupported exchange '{exchange}'")
+
+
+
+def fetch_candles(
+    exchange: Exchange,
+    symbol: str,
+    interval: str = "1h",
+    limit: int = 100,
+    market: Market = "spot",
+) -> list[SpotCandle]:
+    """Fetch candles from supported exchanges.
+
+    Args:
+        exchange: Exchange name.
+        symbol: Symbol or instrument alias.
+        interval: User interval (aliases accepted).
+        limit: Number of candles to fetch.
+        market: Market type for exchanges that distinguish spot/perp symbols.
     """
 
-    raw = value.strip()
-    if not raw:
-        raise ValueError("timeframe cannot be empty")
+    normalized_interval = normalize_timeframe(exchange=exchange, value=interval)
 
-    lowered = raw.lower()
-    if lowered.startswith("mn") and raw[2:].isdigit():
-        candidate = f"{raw[2:]}M"
-    elif raw[0].isalpha() and raw[1:].isdigit():
-        candidate = f"{raw[1:]}{raw[0].lower()}"
-    elif raw[:-1].isdigit() and raw[-1].isalpha():
-        unit = raw[-1]
-        if unit == "M":
-            candidate = f"{raw[:-1]}M"
-        else:
-            candidate = f"{raw[:-1]}{unit.lower()}"
+    if exchange == "binance":
+        if market != "spot":
+            raise ValueError("Binance adapter currently supports spot candles only")
+        rows = binance.fetch_klines(symbol=symbol, interval=normalized_interval, limit=limit)
+        normalized_symbol = symbol.upper()
+    elif exchange == "deribit":
+        rows = deribit.fetch_klines(
+            symbol=symbol,
+            market=market,
+            interval=normalized_interval,
+            limit=limit,
+        )
+        normalized_symbol = deribit.normalize_symbol(symbol=symbol, market=market)
     else:
-        candidate = lowered
+        raise ValueError(f"Unsupported exchange '{exchange}'")
 
-    if candidate in BINANCE_SUPPORTED_INTERVALS:
-        return candidate
-
-    raise ValueError(
-        f"Unsupported timeframe '{value}'. Supported values: {', '.join(BINANCE_SUPPORTED_INTERVALS)}"
-    )
+    return [parse_kline(exchange=exchange, symbol=normalized_symbol, interval=normalized_interval, row=row) for row in rows]
 
 
 
 def fetch_binance_spot_candles(symbol: str, interval: str = "1h", limit: int = 100) -> list[SpotCandle]:
-    """Fetch spot OHLCV candles from Binance public REST API.
+    """Compatibility wrapper for existing Binance-only callers."""
 
-    Args:
-        symbol: Spot symbol, for example ``BTCUSDT`` or ``ETHUSDT``.
-        interval: Binance interval string, for example ``1m``, ``5m``, ``1h``, ``1d``.
-        limit: Number of candles (max 1000 on Binance).
+    return fetch_candles(exchange="binance", symbol=symbol, interval=interval, limit=limit, market="spot")
 
-    Returns:
-        List of parsed spot candles.
 
-    Raises:
-        ValueError: If ``limit`` is invalid.
-    """
 
-    if limit <= 0 or limit > 1000:
-        raise ValueError("limit must be in [1, 1000]")
-    normalized_interval = normalize_timeframe(interval)
+def list_binance_supported_intervals() -> tuple[str, ...]:
+    """Compatibility wrapper for existing Binance-only callers."""
 
-    payload = get_json(
-        "https://api.binance.com/api/v3/klines",
-        params={"symbol": symbol.upper(), "interval": normalized_interval, "limit": limit},
-    )
-
-    if not isinstance(payload, list):
-        raise ValueError("Unexpected Binance response format")
-
-    return [parse_binance_kline(symbol.upper(), normalized_interval, row) for row in payload]
+    return list_supported_intervals(exchange="binance")

@@ -6,7 +6,8 @@ from datetime import timezone
 
 import pytest
 
-from ingestion.spot import fetch_binance_spot_candles, normalize_timeframe, parse_binance_kline
+from ingestion.exchanges import deribit
+from ingestion.spot import fetch_binance_spot_candles, fetch_candles, normalize_timeframe, parse_kline
 
 
 
@@ -26,7 +27,7 @@ def test_parse_binance_kline_maps_fields() -> None:
         "0",
     ]
 
-    candle = parse_binance_kline("BTCUSDT", "1h", row)
+    candle = parse_kline("binance", "BTCUSDT", "1h", row)
 
     assert candle.symbol == "BTCUSDT"
     assert candle.interval == "1h"
@@ -42,6 +43,40 @@ def test_fetch_binance_spot_candles_rejects_invalid_limit() -> None:
         fetch_binance_spot_candles("BTCUSDT", limit=0)
 
 
+def test_fetch_binance_spot_candles_paginates_and_orders(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ingestion.exchanges import binance
+
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(binance, "BINANCE_MAX_KLINES_PER_REQUEST", 2)
+
+    newer_page = [
+        [3000, "1", "1", "1", "1", "1", 3599, "1", 1, "0", "0", "0"],
+        [4000, "1", "1", "1", "1", "1", 4599, "1", 1, "0", "0", "0"],
+    ]
+    older_page = [
+        [1000, "1", "1", "1", "1", "1", 1599, "1", 1, "0", "0", "0"],
+        [2000, "1", "1", "1", "1", "1", 2599, "1", 1, "0", "0", "0"],
+    ]
+
+    def fake_get_json(url: str, params: dict[str, object] | None = None, timeout_s: float = 15.0) -> object:
+        del url, timeout_s
+        assert params is not None
+        calls.append(params)
+        if len(calls) == 1:
+            assert params["limit"] == 2
+            assert "endTime" not in params
+            return newer_page
+        assert params["limit"] == 2
+        assert params["endTime"] == 2999
+        return older_page
+
+    monkeypatch.setattr(binance, "get_json", fake_get_json)
+    candles = fetch_binance_spot_candles("BTCUSDT", interval="1m", limit=4)
+
+    assert len(candles) == 4
+    assert [item.open_time.timestamp() for item in candles] == [1.0, 2.0, 3.0, 4.0]
+
+
 @pytest.mark.parametrize(
     ("value", "expected"),
     [
@@ -55,9 +90,56 @@ def test_fetch_binance_spot_candles_rejects_invalid_limit() -> None:
     ],
 )
 def test_normalize_timeframe_aliases(value: str, expected: str) -> None:
-    assert normalize_timeframe(value) == expected
+    assert normalize_timeframe("binance", value) == expected
 
 
 def test_normalize_timeframe_rejects_unknown_value() -> None:
     with pytest.raises(ValueError):
-        normalize_timeframe("M2")
+        normalize_timeframe("binance", "M2")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        ("M1", "1m"),
+        ("M5", "5m"),
+        ("H1", "1h"),
+        ("H6", "6h"),
+        ("D1", "1d"),
+    ],
+)
+def test_normalize_deribit_timeframe_aliases(value: str, expected: str) -> None:
+    assert normalize_timeframe("deribit", value) == expected
+
+
+def test_deribit_symbol_normalization_perp_aliases() -> None:
+    assert deribit.normalize_symbol("BTC", "perp") == "BTC-PERPETUAL"
+    assert deribit.normalize_symbol("ETHUSDT", "perp") == "ETH-PERPETUAL"
+
+
+def test_fetch_deribit_candles_respects_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ingestion.exchanges import deribit as deribit_exchange
+
+    def fake_utc_now_ms() -> int:
+        return 10_000
+
+    def fake_get_json(url: str, params: dict[str, object] | None = None, timeout_s: float = 15.0) -> object:
+        del url, timeout_s, params
+        return {
+            "result": {
+                "status": "ok",
+                "ticks": [1000, 2000, 3000, 4000],
+                "open": [1, 2, 3, 4],
+                "high": [1, 2, 3, 4],
+                "low": [1, 2, 3, 4],
+                "close": [1, 2, 3, 4],
+                "volume": [1, 2, 3, 4],
+            }
+        }
+
+    monkeypatch.setattr(deribit_exchange, "_utc_now_ms", fake_utc_now_ms)
+    monkeypatch.setattr(deribit_exchange, "get_json", fake_get_json)
+
+    candles = fetch_candles(exchange="deribit", market="perp", symbol="BTC", interval="1m", limit=3)
+    assert len(candles) == 3
+    assert [int(item.open_time.timestamp()) for item in candles] == [2, 3, 4]
