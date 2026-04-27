@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import fcntl
 import json
 import logging
@@ -14,7 +13,11 @@ from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 from typing import Literal, cast
 
-from ingestion.lake import open_times_in_lake, save_spot_candles_parquet_lake
+from ingestion.lake import (
+    load_spot_candles_from_lake,
+    open_times_in_lake,
+    save_spot_candles_parquet_lake,
+)
 from ingestion.plotting import PriceField, save_candle_plots
 from ingestion.spot import (
     Exchange,
@@ -29,7 +32,11 @@ from ingestion.spot import (
     normalize_storage_symbol,
     normalize_timeframe,
 )
-from ingestion.timescaledb_loader import ingest_parquet_to_timescaledb, load_timescale_config_from_env
+from ingestion.timescaledb_loader import (
+    ingest_parquet_to_timescaledb,
+    load_combined_dataframe_from_db,
+    load_timescale_config_from_env,
+)
 
 FetchMode = Literal["latest", "gap-fill"]
 LOGGER_NAME = "crypto_l2_fetcher"
@@ -237,6 +244,17 @@ def _fetch_symbol_candles(
     return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
 
 
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    """Parse ISO datetime string (supports trailing 'Z')."""
+
+    if value is None:
+        return None
+    normalized = value.strip()
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    return datetime.fromisoformat(normalized)
+
+
 
 def build_parser() -> argparse.ArgumentParser:
     """Create top-level CLI parser."""
@@ -245,11 +263,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     spot_parser = subparsers.add_parser("fetcher", help="Fetch candles from supported exchanges")
-    spot_parser.add_argument("--exchange", choices=["binance", "deribit"], default="binance")
+    spot_parser.add_argument("--exchange", choices=["binance", "deribit", "bybit"], default="binance")
     spot_parser.add_argument(
         "--exchanges",
         nargs="+",
-        choices=["binance", "deribit"],
+        choices=["binance", "deribit", "bybit"],
         help="Optional list of exchanges to fetch in one run",
     )
     spot_parser.add_argument("--market", choices=["spot", "perp"], default="spot")
@@ -313,11 +331,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     tf_parser = subparsers.add_parser("list-spot-timeframes", help="List exchange-supported candle timeframes")
-    tf_parser.add_argument("--exchange", choices=["binance", "deribit"], default="binance")
+    tf_parser.add_argument("--exchange", choices=["binance", "deribit", "bybit"], default="binance")
     tf_parser.add_argument(
         "--exchanges",
         nargs="+",
-        choices=["binance", "deribit"],
+        choices=["binance", "deribit", "bybit"],
         help="Optional list of exchanges to list in one run",
     )
 
@@ -346,6 +364,64 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-json-output",
         action="store_true",
         help="Suppress JSON output from ingest-parquet-to-db command",
+    )
+
+    export_parser = subparsers.add_parser(
+        "export-combined-df",
+        help="Query combined spot/perp dataset from DB and export as dataframe file",
+    )
+    export_parser.add_argument(
+        "--output",
+        default="combined_spot_perp.parquet",
+        help="Output file path for dataframe export",
+    )
+    export_parser.add_argument(
+        "--format",
+        choices=["parquet", "csv"],
+        default="parquet",
+        help="Export file format",
+    )
+    export_parser.add_argument(
+        "--exchanges",
+        nargs="+",
+        choices=["binance", "deribit"],
+        help="Optional exchange filter",
+    )
+    export_parser.add_argument(
+        "--instrument-types",
+        nargs="+",
+        choices=["spot", "perp"],
+        default=["spot", "perp"],
+        help="Instrument type filter",
+    )
+    export_parser.add_argument(
+        "--symbols",
+        nargs="+",
+        help="Optional symbol filter",
+    )
+    export_parser.add_argument(
+        "--timeframes",
+        nargs="+",
+        help="Optional timeframe filter (e.g. 1m 5m 1h)",
+    )
+    export_parser.add_argument(
+        "--start-time",
+        help="Optional inclusive start open_time in ISO format",
+    )
+    export_parser.add_argument(
+        "--end-time",
+        help="Optional inclusive end open_time in ISO format",
+    )
+    export_parser.add_argument(
+        "--limit",
+        type=int,
+        default=None,
+        help="Optional max rows",
+    )
+    export_parser.add_argument(
+        "--no-json-output",
+        action="store_true",
+        help="Suppress JSON summary output from export-combined-df command",
     )
 
     return parser
@@ -404,36 +480,27 @@ def main() -> None:
 
                 task_results: dict[tuple[Exchange, str, str], list[SpotCandle]] = {}
                 task_errors: dict[tuple[Exchange, str, str], str] = {}
-                if tasks:
-                    max_workers = min(8, len(tasks))
-                    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-                        future_to_task = {
-                            executor.submit(
-                                _fetch_symbol_candles,
-                                exchange=exchange,
-                                market=market,
-                                symbol=symbol,
-                                timeframe=timeframe,
-                                limit=args.limit,
-                                all_history=args.all_history,
-                                mode=mode,
-                                lake_root=args.lake_root,
-                            ): (exchange, symbol, timeframe)
-                            for exchange, symbol, timeframe in tasks
-                        }
-                        for future in concurrent.futures.as_completed(future_to_task):
-                            exchange, symbol, timeframe = future_to_task[future]
-                            key = (exchange, symbol, timeframe)
-                            try:
-                                task_results[key] = future.result()
-                            except Exception as exc:  # noqa: BLE001
-                                task_errors[key] = str(exc)
-                                logger.exception(
-                                    "Fetch failed exchange=%s symbol=%s timeframe=%s",
-                                    exchange,
-                                    symbol,
-                                    timeframe,
-                                )
+                for exchange, symbol, timeframe in tasks:
+                    key = (exchange, symbol, timeframe)
+                    try:
+                        task_results[key] = _fetch_symbol_candles(
+                            exchange=exchange,
+                            market=market,
+                            symbol=symbol,
+                            timeframe=timeframe,
+                            limit=args.limit,
+                            all_history=args.all_history,
+                            mode=mode,
+                            lake_root=args.lake_root,
+                        )
+                    except Exception as exc:  # noqa: BLE001
+                        task_errors[key] = str(exc)
+                        logger.exception(
+                            "Fetch failed exchange=%s symbol=%s timeframe=%s",
+                            exchange,
+                            symbol,
+                            timeframe,
+                        )
 
                 for exchange, symbol, timeframe in tasks:
                     exchange_output = cast(dict[str, object], output[exchange])
@@ -452,18 +519,6 @@ def main() -> None:
                     plot_key = f"{symbol_key}__{timeframe}" if multi_timeframe else symbol_key
                     exchange_candles[plot_key] = candles
 
-                if args.plot:
-                    try:
-                        saved_paths = save_candle_plots(
-                            candles_by_exchange=candles_for_plots,
-                            output_dir=args.plot_dir,
-                            price_field=cast(PriceField, args.plot_price),
-                        )
-                        output["_plots"] = saved_paths
-                    except Exception as exc:  # noqa: BLE001
-                        output["_plot_error"] = str(exc)
-                        logger.exception("Plot generation failed")
-
                 if args.save_parquet_lake:
                     try:
                         parquet_files = save_spot_candles_parquet_lake(
@@ -475,6 +530,53 @@ def main() -> None:
                     except Exception as exc:  # noqa: BLE001
                         output["_parquet_error"] = str(exc)
                         logger.exception("Parquet lake write failed")
+
+                if args.plot:
+                    plot_source: dict[str, dict[str, list[SpotCandle]]] = {}
+                    for exchange, symbol, timeframe in tasks:
+                        symbol_key = symbol.upper()
+                        plot_key = f"{symbol_key}__{timeframe}" if multi_timeframe else symbol_key
+                        result_key = (exchange, symbol, timeframe)
+                        fetched = task_results.get(result_key, [])
+                        merged_by_open_time = {item.open_time: item for item in fetched}
+                        try:
+                            storage_symbol = normalize_storage_symbol(
+                                exchange=exchange,
+                                symbol=symbol,
+                                market=market,
+                            )
+                            lake_candles = load_spot_candles_from_lake(
+                                lake_root=args.lake_root,
+                                market=market,
+                                exchange=exchange,
+                                symbol=storage_symbol,
+                                timeframe=timeframe,
+                            )
+                            for item in lake_candles:
+                                merged_by_open_time[item.open_time] = item
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "Failed to load full-history plot source exchange=%s symbol=%s timeframe=%s",
+                                exchange,
+                                symbol,
+                                timeframe,
+                            )
+
+                        exchange_plots = plot_source.setdefault(exchange, {})
+                        exchange_plots[plot_key] = [
+                            merged_by_open_time[key] for key in sorted(merged_by_open_time)
+                        ]
+
+                    try:
+                        saved_paths = save_candle_plots(
+                            candles_by_exchange=plot_source,
+                            output_dir=args.plot_dir,
+                            price_field=cast(PriceField, args.plot_price),
+                        )
+                        output["_plots"] = saved_paths
+                    except Exception as exc:  # noqa: BLE001
+                        output["_plot_error"] = str(exc)
+                        logger.exception("Plot generation failed")
 
                 if not args.no_json_output:
                     print(json.dumps(output, indent=2))
@@ -504,6 +606,42 @@ def main() -> None:
             summary.get("files_scanned", 0),
             summary.get("files_ingested", 0),
             summary.get("rows_upserted", 0),
+        )
+
+    elif args.command == "export-combined-df":
+        config = load_timescale_config_from_env()
+        start_time = _parse_iso_datetime(cast(str | None, args.start_time))
+        end_time = _parse_iso_datetime(cast(str | None, args.end_time))
+        dataframe = load_combined_dataframe_from_db(
+            config=config,
+            exchanges=cast(list[str] | None, args.exchanges),
+            symbols=cast(list[str] | None, args.symbols),
+            timeframes=cast(list[str] | None, args.timeframes),
+            instrument_types=cast(list[str] | None, args.instrument_types),
+            start_time=start_time,
+            end_time=end_time,
+            limit=cast(int | None, args.limit),
+        )
+
+        output_path = Path(args.output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        if args.format == "parquet":
+            dataframe.to_parquet(output_path, index=False)
+        else:
+            dataframe.to_csv(output_path, index=False)
+
+        summary = {
+            "output": str(output_path.resolve()),
+            "format": args.format,
+            "rows": int(getattr(dataframe, "shape", (0, 0))[0]),
+            "columns": list(getattr(dataframe, "columns", [])),
+        }
+        if not args.no_json_output:
+            print(json.dumps(summary, indent=2))
+        logger.info(
+            "Command complete: export-combined-df output=%s rows=%s",
+            summary["output"],
+            summary["rows"],
         )
 
 

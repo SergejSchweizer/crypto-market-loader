@@ -317,3 +317,65 @@ def test_fetch_all_history_supports_spot_and_perp_on_both_exchanges(
     assert captured[0]["symbol"] == expected_fetch_symbol
     assert captured[0]["market"] == market
     assert candles[0].symbol == expected_candle_symbol
+
+
+def test_bybit_symbol_normalization_perp_aliases() -> None:
+    from ingestion.exchanges import bybit as bybit_exchange
+
+    assert bybit_exchange.normalize_symbol("BTC", "perp") == "BTCUSDT"
+    assert bybit_exchange.normalize_symbol("ETHUSDT", "perp") == "ETHUSDT"
+
+
+def test_fetch_bybit_spot_routes_to_bybit_market_kline(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ingestion.exchanges import bybit as bybit_exchange
+
+    captured: list[dict[str, object]] = []
+
+    def fake_get_json(url: str, params: dict[str, object] | None = None, timeout_s: float = 15.0) -> object:
+        del timeout_s
+        assert params is not None
+        captured.append({"url": url, **params})
+        return {
+            "retCode": 0,
+            "result": {
+                "list": [
+                    ["2000", "1.5", "2.2", "1.0", "2.0", "12", "20"],
+                    ["1000", "1", "2", "0.5", "1.5", "10", "15"],
+                ]
+            },
+        }
+
+    monkeypatch.setattr(bybit_exchange, "get_json", fake_get_json)
+    candles = fetch_candles(exchange="bybit", market="spot", symbol="BTCUSDT", interval="1m", limit=2)
+
+    assert len(candles) == 2
+    assert captured[0]["url"] == "https://api.bybit.com/v5/market/kline"
+    assert captured[0]["category"] == "spot"
+    assert candles[0].symbol == "BTCUSDT"
+
+
+def test_fetch_bybit_perp_routes_with_linear_category(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ingestion.exchanges import bybit as bybit_exchange
+
+    captured: list[dict[str, object]] = []
+
+    def fake_get_json(url: str, params: dict[str, object] | None = None, timeout_s: float = 15.0) -> object:
+        del timeout_s
+        assert params is not None
+        captured.append({"url": url, **params})
+        return {
+            "retCode": 0,
+            "result": {
+                "list": [
+                    ["1000", "1", "2", "0.5", "1.5", "10", "15"],
+                ]
+            },
+        }
+
+    monkeypatch.setattr(bybit_exchange, "get_json", fake_get_json)
+    candles = fetch_candles(exchange="bybit", market="perp", symbol="BTC", interval="1m", limit=1)
+
+    assert len(candles) == 1
+    assert captured[0]["category"] == "linear"
+    assert captured[0]["symbol"] == "BTCUSDT"
+    assert candles[0].symbol == "BTCUSDT"

@@ -8,6 +8,7 @@ from pathlib import Path
 from ingestion.lake import (
     candle_partition_key,
     candle_record,
+    load_spot_candles_from_lake,
     merge_and_deduplicate_rows,
     open_times_in_lake,
     partition_path,
@@ -160,3 +161,50 @@ def test_open_times_in_lake_returns_sorted_unique(tmp_path: Path) -> None:
     )
 
     assert values == [candle_1.open_time, candle_2.open_time]
+
+
+def test_load_spot_candles_from_lake_reads_full_partition_history(tmp_path: Path) -> None:
+    candle_apr = SpotCandle(
+        exchange="binance",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 10, 0, tzinfo=timezone.utc),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=timezone.utc),
+        open_price=100.0,
+        high_price=101.0,
+        low_price=99.0,
+        close_price=100.5,
+        volume=10.0,
+        quote_volume=1000.0,
+        trade_count=10,
+    )
+    candle_may = SpotCandle(
+        exchange="binance",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 5, 1, 0, 0, tzinfo=timezone.utc),
+        close_time=datetime(2026, 5, 1, 0, 0, 59, 999000, tzinfo=timezone.utc),
+        open_price=110.0,
+        high_price=112.0,
+        low_price=109.0,
+        close_price=111.0,
+        volume=9.0,
+        quote_volume=999.0,
+        trade_count=8,
+    )
+
+    save_spot_candles_parquet_lake(
+        {"binance": {"BTCUSDT": [candle_may, candle_apr]}},
+        market="spot",
+        lake_root=str(tmp_path),
+    )
+
+    values = load_spot_candles_from_lake(
+        lake_root=str(tmp_path),
+        market="spot",
+        exchange="binance",
+        symbol="BTCUSDT",
+        timeframe="1m",
+    )
+
+    assert [item.open_time for item in values] == [candle_apr.open_time, candle_may.open_time]

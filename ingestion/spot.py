@@ -6,9 +6,9 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Literal
 
-from ingestion.exchanges import binance, deribit
+from ingestion.exchanges import binance, bybit, deribit
 
-Exchange = Literal["binance", "deribit"]
+Exchange = Literal["binance", "deribit", "bybit"]
 Market = Literal["spot", "perp"]
 
 
@@ -65,6 +65,8 @@ def list_supported_intervals(exchange: Exchange) -> tuple[str, ...]:
         return binance.list_supported_intervals()
     if exchange == "deribit":
         return deribit.list_supported_intervals()
+    if exchange == "bybit":
+        return bybit.list_supported_intervals()
     raise ValueError(f"Unsupported exchange '{exchange}'")
 
 
@@ -76,6 +78,8 @@ def normalize_timeframe(exchange: Exchange, value: str) -> str:
         return binance.normalize_timeframe(value)
     if exchange == "deribit":
         return deribit.normalize_timeframe(value)
+    if exchange == "bybit":
+        return bybit.normalize_timeframe(value)
     raise ValueError(f"Unsupported exchange '{exchange}'")
 
 
@@ -87,6 +91,8 @@ def max_candles_per_request(exchange: Exchange) -> int:
         return binance.max_limit()
     if exchange == "deribit":
         return deribit.max_limit()
+    if exchange == "bybit":
+        return bybit.max_limit()
     raise ValueError(f"Unsupported exchange '{exchange}'")
 
 
@@ -98,6 +104,8 @@ def interval_to_milliseconds(exchange: Exchange, interval: str) -> int:
         return binance.interval_to_milliseconds(interval)
     if exchange == "deribit":
         return deribit.interval_to_milliseconds(interval)
+    if exchange == "bybit":
+        return bybit.interval_to_milliseconds(interval)
     raise ValueError(f"Unsupported exchange '{exchange}'")
 
 
@@ -109,6 +117,8 @@ def normalize_storage_symbol(exchange: Exchange, symbol: str, market: Market) ->
         return binance.normalize_symbol(symbol=symbol, market=market)
     if exchange == "deribit":
         return deribit.normalize_symbol(symbol=symbol, market=market)
+    if exchange == "bybit":
+        return bybit.normalize_symbol(symbol=symbol, market=market)
     raise ValueError(f"Unsupported exchange '{exchange}'")
 
 
@@ -138,6 +148,13 @@ def fetch_candles(
             market=market,
             interval=normalized_interval,
             limit=limit,
+        )
+    elif exchange == "bybit":
+        rows = bybit.fetch_klines(
+            symbol=normalized_symbol,
+            interval=normalized_interval,
+            limit=limit,
+            market=market,
         )
     else:
         raise ValueError(f"Unsupported exchange '{exchange}'")
@@ -171,6 +188,12 @@ def fetch_candles_all_history(
             symbol=symbol,
             market=market,
             interval=normalized_interval,
+        )
+    elif exchange == "bybit":
+        rows = bybit.fetch_klines_all(
+            symbol=normalized_symbol,
+            interval=normalized_interval,
+            market=market,
         )
     else:
         raise ValueError(f"Unsupported exchange '{exchange}'")
@@ -209,6 +232,14 @@ def fetch_candles_range(
             interval=normalized_interval,
             start_open_ms=start_open_ms,
             end_open_ms=end_open_ms,
+        )
+    elif exchange == "bybit":
+        rows = bybit.fetch_klines_range(
+            symbol=normalized_symbol,
+            interval=normalized_interval,
+            start_open_ms=start_open_ms,
+            end_open_ms=end_open_ms,
+            market=market,
         )
     else:
         raise ValueError(f"Unsupported exchange '{exchange}'")

@@ -145,6 +145,56 @@ def open_times_in_lake(
     return sorted(set(values))
 
 
+def load_spot_candles_from_lake(
+    lake_root: str,
+    market: str,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+) -> list[SpotCandle]:
+    """Load all stored candles for one exchange/symbol/timeframe from parquet lake."""
+
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise RuntimeError("pyarrow is required for parquet lake output. Install project dependencies.") from exc
+
+    partition_root = (
+        Path(lake_root)
+        / "dataset_type=ohlcv"
+        / f"exchange={exchange}"
+        / f"instrument_type={market}"
+        / f"symbol={symbol}"
+        / f"timeframe={timeframe}"
+    )
+    if not partition_root.exists():
+        return []
+
+    candles_by_open_time: dict[datetime, SpotCandle] = {}
+    for data_file in sorted(partition_root.glob("date=*/data.parquet")):
+        table = pq.ParquetFile(data_file).read()
+        for row in table.to_pylist():
+            open_time = row.get("open_time")
+            close_time = row.get("close_time")
+            if not isinstance(open_time, datetime) or not isinstance(close_time, datetime):
+                continue
+            candles_by_open_time[open_time] = SpotCandle(
+                exchange=str(row.get("exchange", exchange)),
+                symbol=str(row.get("symbol", symbol)),
+                interval=str(row.get("timeframe", timeframe)),
+                open_time=open_time,
+                close_time=close_time,
+                open_price=float(row.get("open", 0.0)),
+                high_price=float(row.get("high", 0.0)),
+                low_price=float(row.get("low", 0.0)),
+                close_price=float(row.get("close", 0.0)),
+                volume=float(row.get("volume", 0.0)),
+                quote_volume=float(row.get("quote_volume", 0.0)),
+                trade_count=int(row.get("trade_count", 0)),
+            )
+    return [candles_by_open_time[key] for key in sorted(candles_by_open_time)]
+
+
 def save_spot_candles_parquet_lake(
     candles_by_exchange: dict[str, dict[str, list[SpotCandle]]],
     market: str,

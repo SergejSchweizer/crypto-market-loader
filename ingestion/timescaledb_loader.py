@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -210,6 +211,14 @@ def _save_ingestion_state(
         )
 
 
+def _json_default(value: Any) -> str:
+    """Serialize non-standard JSON values used in parquet payloads."""
+
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
+
+
 def _upsert_rows(connection: Any, rows: list[dict[str, Any]], batch_size: int) -> int:
     """Upsert rows into market_ohlcv in batches."""
 
@@ -241,7 +250,7 @@ def _upsert_rows(connection: Any, rows: list[dict[str, Any]], batch_size: int) -
                     float(item["volume"]),
                     float(item["quote_volume"]),
                     int(item["trade_count"]),
-                    json.dumps(item["extra"]),
+                    json.dumps(item["extra"], default=_json_default),
                 )
                 for item in batch
             ]
@@ -353,3 +362,88 @@ def ingest_parquet_to_timescaledb(
             summary["files_ingested"] += 1
 
     return summary
+
+
+def load_combined_dataframe_from_db(
+    config: TimescaleConfig,
+    exchanges: list[str] | None = None,
+    symbols: list[str] | None = None,
+    timeframes: list[str] | None = None,
+    instrument_types: list[str] | None = None,
+    start_time: datetime | None = None,
+    end_time: datetime | None = None,
+    limit: int | None = None,
+) -> Any:
+    """Load combined spot/perp OHLCV rows from DB as a pandas DataFrame."""
+
+    if limit is not None and limit <= 0:
+        raise ValueError("limit must be positive when provided")
+
+    try:
+        import pandas as pd
+    except ImportError as exc:
+        raise RuntimeError("pandas is required for dataframe export. Install project dependencies.") from exc
+
+    try:
+        import psycopg
+    except ImportError as exc:
+        raise RuntimeError("psycopg is required for dataframe export. Install project dependencies.") from exc
+
+    conditions: list[str] = []
+    params: list[Any] = []
+
+    def _add_in_filter(field: str, values: list[str] | None) -> None:
+        if not values:
+            return
+        placeholders = ", ".join(["%s"] * len(values))
+        conditions.append(f"{field} IN ({placeholders})")
+        params.extend(values)
+
+    _add_in_filter("exchange", exchanges)
+    _add_in_filter("symbol", symbols)
+    _add_in_filter("timeframe", timeframes)
+    _add_in_filter("instrument_type", instrument_types)
+
+    if start_time is not None:
+        conditions.append("open_time >= %s")
+        params.append(start_time)
+    if end_time is not None:
+        conditions.append("open_time <= %s")
+        params.append(end_time)
+
+    query = """
+        SELECT
+            exchange,
+            instrument_type,
+            symbol,
+            timeframe,
+            open_time,
+            close_time,
+            open,
+            high,
+            low,
+            close,
+            volume,
+            quote_volume,
+            trade_count,
+            dataset_type,
+            run_id,
+            source_endpoint
+        FROM market_ohlcv
+    """
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
+    query += " ORDER BY open_time, exchange, instrument_type, symbol, timeframe"
+    if limit is not None:
+        query += " LIMIT %s"
+        params.append(limit)
+
+    with psycopg.connect(
+        host=config.host,
+        port=config.port,
+        user=config.user,
+        password=config.password,
+        dbname=config.dbname,
+        sslmode=config.sslmode,
+    ) as connection:
+        return pd.read_sql_query(query, connection, params=params)

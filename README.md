@@ -164,6 +164,18 @@ python3 main.py ingest-parquet-to-db --lake-root lake/bronze --dataset-types ohl
 
 The loader reads TimescaleDB settings from root `.env` by default (`TIMESCALEDB_*`, `PGSSLMODE`). Exported environment variables override `.env` values.
 
+Export combined spot/perp dataset from DB as a dataframe file:
+
+```bash
+python3 main.py export-combined-df --format parquet --output exports/combined_spot_perp.parquet --instrument-types spot perp --exchanges binance deribit --timeframes 1m
+```
+
+CSV export variant:
+
+```bash
+python3 main.py export-combined-df --format csv --output exports/combined_spot_perp.csv --start-time 2026-01-01T00:00:00Z --end-time 2026-12-31T23:59:59Z
+```
+
 Fetch more than 1000 candles (automatic pagination):
 
 ```bash

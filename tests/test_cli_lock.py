@@ -220,3 +220,64 @@ def test_main_fetcher_command_still_uses_single_instance_lock(monkeypatch: pytes
 
     with pytest.raises(SystemExit, match="fetcher already running"):
         cli.main()
+
+
+def test_main_export_combined_df_does_not_acquire_single_instance_lock(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FailIfEnteredLock:
+        def __init__(self, lock_path: str) -> None:
+            del lock_path
+
+        def __enter__(self) -> None:
+            raise AssertionError("lock should not be used for export-combined-df command")
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+    class FakeDataFrame:
+        def __init__(self) -> None:
+            self.shape = (2, 3)
+            self.columns = ["exchange", "instrument_type", "symbol"]
+            self.last_path: Path | None = None
+            self.last_index: bool | None = None
+
+        def to_parquet(self, path: Path, index: bool = False) -> None:
+            self.last_path = path
+            self.last_index = index
+            path.write_bytes(b"PAR1")
+
+        def to_csv(self, path: Path, index: bool = False) -> None:
+            self.last_path = path
+            self.last_index = index
+            path.write_text("exchange,instrument_type,symbol\nbinance,spot,BTCUSDT\n", encoding="utf-8")
+
+    fake_df = FakeDataFrame()
+    captured: dict[str, object] = {}
+
+    def fake_loader(**kwargs: object) -> FakeDataFrame:
+        captured.update(kwargs)
+        return fake_df
+
+    output_path = tmp_path / "combined.parquet"
+    monkeypatch.setattr(cli, "SingleInstanceLock", FailIfEnteredLock)
+    monkeypatch.setattr(cli, "load_timescale_config_from_env", lambda: object())
+    monkeypatch.setattr(cli, "load_combined_dataframe_from_db", fake_loader)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "main.py",
+            "export-combined-df",
+            "--output",
+            str(output_path),
+            "--format",
+            "parquet",
+            "--no-json-output",
+        ],
+    )
+
+    cli.main()
+
+    assert output_path.exists()
+    assert captured["instrument_types"] == ["spot", "perp"]

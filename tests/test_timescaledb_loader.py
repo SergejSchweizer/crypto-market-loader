@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 from ingestion.timescaledb_loader import (
     _ensure_tables,
+    _upsert_rows,
     list_parquet_files,
     load_timescale_config_from_env,
     parquet_file_signature,
@@ -183,3 +187,59 @@ def test_ensure_tables_tolerates_hypertable_failure() -> None:
             return FakeCursor()
 
     _ensure_tables(FakeConnection())
+
+
+def test_upsert_rows_serializes_datetime_in_extra() -> None:
+    class FakeCursor:
+        def __init__(self) -> None:
+            self.params: list[tuple[Any, ...]] = []
+
+        def __enter__(self) -> "FakeCursor":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+        def executemany(self, query: str, params: list[tuple[Any, ...]]) -> None:
+            del query
+            self.params.extend(params)
+
+    class FakeConnection:
+        def __init__(self) -> None:
+            self.cursor_obj = FakeCursor()
+
+        def cursor(self) -> FakeCursor:
+            return self.cursor_obj
+
+    connection = FakeConnection()
+    now = datetime(2026, 4, 27, 12, 0, tzinfo=timezone.utc)
+    row = {
+        "schema_version": "v1",
+        "dataset_type": "ohlcv",
+        "exchange": "binance",
+        "symbol": "BTCUSDT",
+        "instrument_type": "spot",
+        "event_time": now,
+        "ingested_at": now,
+        "run_id": "run-1",
+        "source_endpoint": "public_market_data",
+        "open_time": now,
+        "close_time": now,
+        "timeframe": "1m",
+        "open": 1.0,
+        "high": 2.0,
+        "low": 0.5,
+        "close": 1.5,
+        "volume": 10.0,
+        "quote_volume": 15.0,
+        "trade_count": 2,
+        "extra": {"open_time": now, "nested": {"close_time": now}},
+    }
+
+    upserted = _upsert_rows(connection=connection, rows=[row], batch_size=1000)
+
+    assert upserted == 1
+    serialized_extra = connection.cursor_obj.params[0][-1]
+    parsed_extra = json.loads(serialized_extra)
+    assert parsed_extra["open_time"] == now.isoformat()
+    assert parsed_extra["nested"]["close_time"] == now.isoformat()
