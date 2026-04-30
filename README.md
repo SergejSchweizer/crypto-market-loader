@@ -41,6 +41,12 @@ If the repository folder is renamed or moved, recreate the virtualenv (`rm -rf .
 Core dependencies are managed through `pyproject.toml` and include:
 - `matplotlib` for optional plot generation
 - `pyarrow` for parquet lake output
+- `numpy` (via `pandas`) for vectorized numeric operations used in dataframe/statistics workflows
+
+Tooling and test purpose:
+- `ruff`: fast linting and import/style/error checks to keep code quality consistent.
+- `numpy`: numerical array/math foundation used underneath analytics/dataframe operations.
+- `tests` (`pytest`): executable behavior checks for ingestion, storage, CLI orchestration, and regression prevention.
 
 ## 5. Module Explanations
 
