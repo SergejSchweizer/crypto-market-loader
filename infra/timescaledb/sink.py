@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,10 @@ FundingTableName = "funding"
 _SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEFAULT_PARQUET_BATCH_SIZE = 10_000
 DEFAULT_DB_WRITE_BATCH_SIZE = 5_000
+DEFAULT_TIMESCALE_INGEST_WORKERS = 1
 PartitionFilter = Callable[[dict[str, str]], bool]
+IngestProgressCallback = Callable[[dict[str, str]], None]
+SeriesKey = tuple[str, str, str, str]
 
 
 def _validate_sql_identifier(value: str, kind: str = "identifier") -> str:
@@ -104,6 +108,20 @@ def _iter_parquet_rows(
         parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
         for batch in parquet_file.iter_batches(batch_size=batch_size):  # type: ignore[no-untyped-call]
             yield from batch.to_pylist()
+
+
+def _iter_matching_parquet_files(
+    lake_root: str,
+    glob_pattern: str,
+    allow_partition: PartitionFilter,
+) -> list[Path]:
+    """Return sorted parquet file paths matching glob and partition filter."""
+
+    matching_files: list[Path] = []
+    for data_file in sorted(Path(lake_root).glob(glob_pattern)):
+        if allow_partition(_partition_from_path(data_file)):
+            matching_files.append(data_file)
+    return matching_files
 
 
 def _build_ohlcv_db_row(row: dict[str, object]) -> dict[str, object]:
@@ -195,6 +213,70 @@ def _upsert_rows_in_batches(
     if buffer:
         total_count += upsert_fn(conn, schema, buffer)
     return total_count
+
+
+def _upsert_rows_from_parquet_files(
+    *,
+    settings: dict[str, Any],
+    schema: str,
+    parquet_files: list[Path],
+    batch_size: int,
+    write_batch_size: int,
+    row_builder: Callable[[dict[str, object]], dict[str, object]],
+    upsert_fn: Callable[[Any, str, list[dict[str, object]]], int],
+    max_open_time_by_series: dict[SeriesKey, datetime],
+    progress_callback: IngestProgressCallback | None = None,
+) -> int:
+    """Read parquet files and upsert rows in bounded batches using one DB connection."""
+
+    try:
+        import psycopg
+    except ImportError as exc:
+        raise RuntimeError("psycopg is required for TimescaleDB output. Install project dependencies.") from exc
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise RuntimeError("pyarrow is required for parquet ingestion. Install project dependencies.") from exc
+
+    def _row_iter() -> Iterator[dict[str, object]]:
+        for data_file in parquet_files:
+            partition = _partition_from_path(data_file)
+            if progress_callback is not None:
+                progress_callback(
+                    {
+                        "dataset": partition.get("dataset_type", "unknown"),
+                        "exchange": partition.get("exchange", "unknown"),
+                        "instrument_type": partition.get("instrument_type", "unknown"),
+                        "symbol": partition.get("symbol", "unknown"),
+                        "timeframe": partition.get("timeframe", "unknown"),
+                        "time_range": partition.get("date", "unknown"),
+                    }
+                )
+            parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
+            for arrow_batch in parquet_file.iter_batches(batch_size=batch_size):  # type: ignore[no-untyped-call]
+                for row in arrow_batch.to_pylist():
+                    db_row = row_builder(row)
+                    series_key = (
+                        str(db_row.get("exchange", "")),
+                        str(db_row.get("instrument_type", "")),
+                        str(db_row.get("symbol", "")),
+                        str(db_row.get("timeframe", "")),
+                    )
+                    last_open_time = max_open_time_by_series.get(series_key)
+                    open_time = db_row.get("open_time")
+                    if isinstance(open_time, datetime) and last_open_time is not None and open_time <= last_open_time:
+                        continue
+                    yield db_row
+
+    with psycopg.connect(**settings) as conn:
+        with conn.transaction():
+            return _upsert_rows_in_batches(
+                row_iter=_row_iter(),
+                write_batch_size=write_batch_size,
+                upsert_fn=upsert_fn,
+                conn=conn,
+                schema=schema,
+            )
 
 
 def _create_schema_and_tables(conn: Any, schema: str) -> None:
@@ -321,6 +403,31 @@ def _create_schema_and_tables(conn: Any, schema: str) -> None:
             ON {safe_schema}.{FundingTableName} (exchange, symbol, timeframe, open_time DESC);
             """
         )
+
+
+def _load_latest_open_time_by_key(conn: Any, schema: str, table_name: str) -> dict[SeriesKey, datetime]:
+    """Load latest ingested open_time per exchange/instrument/symbol/timeframe series."""
+
+    safe_schema = _validate_sql_identifier(value=schema, kind="schema")
+    safe_table_name = _validate_sql_identifier(value=table_name, kind="table")
+    sql = f"""
+        SELECT exchange, instrument_type, symbol, timeframe, MAX(open_time) AS max_open_time
+        FROM {safe_schema}.{safe_table_name}
+        GROUP BY exchange, instrument_type, symbol, timeframe
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql)
+        rows = cur.fetchall()
+
+    result: dict[SeriesKey, datetime] = {}
+    for row in rows:
+        if len(row) != 5:
+            continue
+        exchange, instrument_type, symbol, timeframe, max_open_time = row
+        if not isinstance(max_open_time, datetime):
+            continue
+        result[(str(exchange), str(instrument_type), str(symbol), str(timeframe))] = max_open_time
+    return result
 
 
 def _upsert_ohlcv(conn: Any, schema: str, rows: list[dict[str, object]]) -> int:
@@ -516,6 +623,7 @@ def save_parquet_lake_to_timescaledb(
     symbols: list[str] | None = None,
     timeframes: list[str] | None = None,
     instrument_types: list[str] | None = None,
+    progress_callback: IngestProgressCallback | None = None,
 ) -> dict[str, int | str]:
     """Ingest existing parquet lake rows into TimescaleDB without fetching from exchanges."""
 
@@ -531,6 +639,7 @@ def save_parquet_lake_to_timescaledb(
     safe_schema = _validate_sql_identifier(value=schema, kind="schema")
     parquet_batch_size = _positive_env_int("L2_TSDB_PARQUET_BATCH_SIZE", DEFAULT_PARQUET_BATCH_SIZE)
     write_batch_size = _positive_env_int("L2_TSDB_WRITE_BATCH_SIZE", DEFAULT_DB_WRITE_BATCH_SIZE)
+    ingest_workers = _positive_env_int("TIMESCALE_INGEST_WORKERS", DEFAULT_TIMESCALE_INGEST_WORKERS)
     exchange_filter = {item.lower() for item in exchanges} if exchanges else None
     symbol_filter = {item.upper() for item in symbols} if symbols else None
     timeframe_filter = {item.lower() for item in timeframes} if timeframes else None
@@ -551,34 +660,20 @@ def save_parquet_lake_to_timescaledb(
             return False
         return True
 
-    ohlcv_rows = (
-        _build_ohlcv_db_row(row)
-        for row in _iter_parquet_rows(
-            lake_root=lake_root,
-            glob_pattern="dataset_type=ohlcv/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
-            allow_partition=_allow,
-            batch_size=parquet_batch_size,
-        )
+    ohlcv_files = _iter_matching_parquet_files(
+        lake_root=lake_root,
+        glob_pattern="dataset_type=ohlcv/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
+        allow_partition=_allow,
     )
-    oi_rows = (
-        _build_open_interest_db_row(row)
-        for row in _iter_parquet_rows(
-            lake_root=lake_root,
-            glob_pattern=(
-                "dataset_type=open_interest/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"
-            ),
-            allow_partition=_allow,
-            batch_size=parquet_batch_size,
-        )
+    oi_files = _iter_matching_parquet_files(
+        lake_root=lake_root,
+        glob_pattern="dataset_type=open_interest/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
+        allow_partition=_allow,
     )
-    funding_rows = (
-        _build_funding_db_row(row)
-        for row in _iter_parquet_rows(
-            lake_root=lake_root,
-            glob_pattern="dataset_type=funding/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
-            allow_partition=_allow,
-            batch_size=parquet_batch_size,
-        )
+    funding_files = _iter_matching_parquet_files(
+        lake_root=lake_root,
+        glob_pattern="dataset_type=funding/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
+        allow_partition=_allow,
     )
 
     settings = _db_settings()
@@ -586,27 +681,97 @@ def save_parquet_lake_to_timescaledb(
         with conn.transaction():
             if create_schema:
                 _create_schema_and_tables(conn=conn, schema=safe_schema)
-            ohlcv_count = _upsert_rows_in_batches(
-                row_iter=ohlcv_rows,
+            ohlcv_latest_by_key = _load_latest_open_time_by_key(
+                conn=conn,
+                schema=safe_schema,
+                table_name=OhlcvTableName,
+            )
+            oi_latest_by_key = _load_latest_open_time_by_key(
+                conn=conn,
+                schema=safe_schema,
+                table_name=OpenInterestTableName,
+            )
+            funding_latest_by_key = _load_latest_open_time_by_key(
+                conn=conn,
+                schema=safe_schema,
+                table_name=FundingTableName,
+            )
+
+    if ingest_workers <= 1:
+        ohlcv_count = _upsert_rows_from_parquet_files(
+            settings=settings,
+            schema=safe_schema,
+            parquet_files=ohlcv_files,
+            batch_size=parquet_batch_size,
+            write_batch_size=write_batch_size,
+            row_builder=_build_ohlcv_db_row,
+            upsert_fn=_upsert_ohlcv,
+            max_open_time_by_series=ohlcv_latest_by_key,
+            progress_callback=progress_callback,
+        )
+        oi_count = _upsert_rows_from_parquet_files(
+            settings=settings,
+            schema=safe_schema,
+            parquet_files=oi_files,
+            batch_size=parquet_batch_size,
+            write_batch_size=write_batch_size,
+            row_builder=_build_open_interest_db_row,
+            upsert_fn=_upsert_open_interest,
+            max_open_time_by_series=oi_latest_by_key,
+            progress_callback=progress_callback,
+        )
+        funding_count = _upsert_rows_from_parquet_files(
+            settings=settings,
+            schema=safe_schema,
+            parquet_files=funding_files,
+            batch_size=parquet_batch_size,
+            write_batch_size=write_batch_size,
+            row_builder=_build_funding_db_row,
+            upsert_fn=_upsert_funding,
+            max_open_time_by_series=funding_latest_by_key,
+            progress_callback=progress_callback,
+        )
+    else:
+        with ThreadPoolExecutor(max_workers=min(ingest_workers, 3)) as pool:
+            ohlcv_future = pool.submit(
+                _upsert_rows_from_parquet_files,
+                settings=settings,
+                schema=safe_schema,
+                parquet_files=ohlcv_files,
+                batch_size=parquet_batch_size,
                 write_batch_size=write_batch_size,
+                row_builder=_build_ohlcv_db_row,
                 upsert_fn=_upsert_ohlcv,
-                conn=conn,
-                schema=safe_schema,
+                max_open_time_by_series=ohlcv_latest_by_key,
+                progress_callback=progress_callback,
             )
-            oi_count = _upsert_rows_in_batches(
-                row_iter=oi_rows,
+            oi_future = pool.submit(
+                _upsert_rows_from_parquet_files,
+                settings=settings,
+                schema=safe_schema,
+                parquet_files=oi_files,
+                batch_size=parquet_batch_size,
                 write_batch_size=write_batch_size,
+                row_builder=_build_open_interest_db_row,
                 upsert_fn=_upsert_open_interest,
-                conn=conn,
-                schema=safe_schema,
+                max_open_time_by_series=oi_latest_by_key,
+                progress_callback=progress_callback,
             )
-            funding_count = _upsert_rows_in_batches(
-                row_iter=funding_rows,
+            funding_future = pool.submit(
+                _upsert_rows_from_parquet_files,
+                settings=settings,
+                schema=safe_schema,
+                parquet_files=funding_files,
+                batch_size=parquet_batch_size,
                 write_batch_size=write_batch_size,
+                row_builder=_build_funding_db_row,
                 upsert_fn=_upsert_funding,
-                conn=conn,
-                schema=safe_schema,
+                max_open_time_by_series=funding_latest_by_key,
+                progress_callback=progress_callback,
             )
+            ohlcv_count = ohlcv_future.result()
+            oi_count = oi_future.result()
+            funding_count = funding_future.result()
 
     return {
         "schema": safe_schema,

@@ -371,7 +371,7 @@ Note:
 - Loader network fetch tasks run in parallel via `asyncio` with bounded concurrency.
 - Parallel fetch orchestration is implemented in `application/services/fetch_service.py`; `api/cli.py` delegates to this service.
 - Parquet partition writes are parallelized.
-- Concurrency is controlled by `DEPTH_FETCH_CONCURRENCY` (default: `8`).
+- Concurrency is controlled by `DEPTH_FETCH_CONCURRENCY` (default: `2`).
 
 Run silently without JSON output:
 
@@ -510,7 +510,11 @@ Current coverage includes:
 - Logs rotate every 7 days and rotated files are date-suffixed (for example `loader.log.2026-04-27`) and retained in the same directory.
 - Local `.env` is loaded automatically when present and is excluded from git tracking.
 - Optional override: set `DEPTH_SYNC_LOG_DIR` to change the log directory.
-- Optional override: set `DEPTH_FETCH_CONCURRENCY` to control loader fetch parallelism (minimum `1`, default `8`).
+- Optional override: set `DEPTH_FETCH_CONCURRENCY` to control loader fetch parallelism (minimum `1`, default `2`).
+- Optional override: set `LOADER_OHLCV_CONCURRENCY` to control OHLCV task parallelism (minimum `1`, default falls back to `DEPTH_FETCH_CONCURRENCY`).
+- Optional override: set `LOADER_OI_CONCURRENCY` to control OI task parallelism (minimum `1`, default falls back to `DEPTH_FETCH_CONCURRENCY`).
+- Optional override: set `LOADER_FUNDING_CONCURRENCY` to control funding task parallelism (minimum `1`, default falls back to `DEPTH_FETCH_CONCURRENCY`).
+- Optional override: set `TIMESCALE_INGEST_WORKERS` to parallelize `ingest-timescaledb` across dataset types (`ohlcv`, `open_interest`, `funding`); default `1` (sequential), practical max `3`.
 - TimescaleDB sink env vars: `TIMESCALEDB_HOST`, `TIMESCALEDB_PORT`, `TIMESCALEDB_USER`, `TIMESCALEDB_PASSWORD`, `TIMESCALEDB_DB`, `PGSSLMODE`.
 - `TIMESCALEDB_PASSWORD` is required at runtime (no insecure default fallback).
 - Run quality gates via module form (`python -m pytest`, `python -m mypy`, `python -m ruff`) to avoid local venv entrypoint shebang drift when directories move.

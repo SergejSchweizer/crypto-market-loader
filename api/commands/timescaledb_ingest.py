@@ -39,6 +39,17 @@ def add_ingest_timescaledb_parser(subparsers: argparse._SubParsersAction[argpars
 def run_ingest_timescaledb(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run ``ingest-timescaledb`` command."""
 
+    def _progress(info: dict[str, str]) -> None:
+        logger.info(
+            "Ingest progress dataset=%s symbol=%s timeframe=%s time_range=%s exchange=%s instrument_type=%s",
+            info.get("dataset", "unknown"),
+            info.get("symbol", "unknown"),
+            info.get("timeframe", "unknown"),
+            info.get("time_range", "unknown"),
+            info.get("exchange", "unknown"),
+            info.get("instrument_type", "unknown"),
+        )
+
     summary = save_parquet_lake_to_timescaledb(
         lake_root=cast(str, args.lake_root),
         schema=cast(str, args.timescaledb_schema),
@@ -47,6 +58,7 @@ def run_ingest_timescaledb(args: argparse.Namespace, logger: logging.Logger) -> 
         symbols=cast(list[str] | None, args.symbols),
         timeframes=cast(list[str] | None, args.timeframes),
         instrument_types=cast(list[str] | None, args.instrument_types),
+        progress_callback=_progress,
     )
     if not bool(args.no_json_output):
         print(json.dumps(summary, indent=2))

@@ -6,6 +6,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 from dataclasses import asdict
 from datetime import datetime
 from typing import Literal, cast
@@ -64,6 +65,19 @@ from ingestion.spot import (
 )
 
 DataType = Literal["spot", "perp", "oi", "funding"]
+
+
+def _env_concurrency(name: str, default: int) -> int:
+    """Read bounded concurrency value from environment with fallback."""
+
+    raw = os.getenv(name)
+    if raw is None:
+        return max(1, default)
+    try:
+        value = int(raw)
+    except ValueError:
+        return max(1, default)
+    return max(1, value)
 
 
 def add_loader_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -272,6 +286,59 @@ async def _fetch_funding_tasks_parallel(
     return result.rows, result.errors
 
 
+async def _fetch_all_task_groups(
+    tasks: list[tuple[Exchange, Market, str, str]],
+    oi_tasks: list[tuple[Exchange, str, str]],
+    funding_tasks: list[tuple[Exchange, str, str]],
+    lake_root: str,
+    candle_concurrency: int,
+    oi_concurrency: int,
+    funding_concurrency: int,
+    logger: logging.Logger,
+) -> tuple[
+    dict[tuple[Exchange, Market, str, str], list[SpotCandle]],
+    dict[tuple[Exchange, Market, str, str], str],
+    dict[tuple[Exchange, str, str], list[OpenInterestPoint]],
+    dict[tuple[Exchange, str, str], str],
+    dict[tuple[Exchange, str, str], list[FundingPoint]],
+    dict[tuple[Exchange, str, str], str],
+]:
+    """Fetch OHLCV, OI, and funding task groups concurrently."""
+
+    candle_job = _fetch_candle_tasks_parallel(
+        tasks=tasks,
+        lake_root=lake_root,
+        concurrency=candle_concurrency,
+        logger=logger,
+    )
+    oi_job = (
+        _fetch_open_interest_tasks_parallel(
+            oi_tasks=oi_tasks,
+            lake_root=lake_root,
+            concurrency=oi_concurrency,
+            logger=logger,
+        )
+        if oi_tasks
+        else asyncio.sleep(0, result=({}, {}))
+    )
+    funding_job = (
+        _fetch_funding_tasks_parallel(
+            funding_tasks=funding_tasks,
+            lake_root=lake_root,
+            concurrency=funding_concurrency,
+            logger=logger,
+        )
+        if funding_tasks
+        else asyncio.sleep(0, result=({}, {}))
+    )
+    (task_results, task_errors), (oi_results, oi_errors), (funding_results, funding_errors) = await asyncio.gather(
+        candle_job,
+        oi_job,
+        funding_job,
+    )
+    return task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors
+
+
 def _write_loader_samples(
     candles_for_storage: dict[Market, dict[str, dict[str, list[SpotCandle]]]],
     open_interest_for_storage: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]],
@@ -340,38 +407,29 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                         for symbol in args.symbols:
                             funding_tasks.append((exchange, symbol, timeframe))
 
-            current_fetch_concurrency = fetch_concurrency()
-            logger.info("Parallel fetch enabled with asyncio concurrency=%s", current_fetch_concurrency)
-            task_results, task_errors = asyncio.run(
-                _fetch_candle_tasks_parallel(
+            base_concurrency = fetch_concurrency()
+            candle_concurrency = _env_concurrency("LOADER_OHLCV_CONCURRENCY", base_concurrency)
+            oi_concurrency = _env_concurrency("LOADER_OI_CONCURRENCY", base_concurrency)
+            funding_concurrency = _env_concurrency("LOADER_FUNDING_CONCURRENCY", base_concurrency)
+            logger.info(
+                "Parallel fetch enabled with asyncio concurrency ohlcv=%s oi=%s funding=%s base=%s",
+                candle_concurrency,
+                oi_concurrency,
+                funding_concurrency,
+                base_concurrency,
+            )
+            task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors = asyncio.run(
+                _fetch_all_task_groups(
                     tasks=tasks,
-                    lake_root=args.lake_root,
-                    concurrency=current_fetch_concurrency,
+                    oi_tasks=oi_tasks,
+                    funding_tasks=funding_tasks,
+                    lake_root=cast(str, args.lake_root),
+                    candle_concurrency=candle_concurrency,
+                    oi_concurrency=oi_concurrency,
+                    funding_concurrency=funding_concurrency,
                     logger=logger,
                 )
             )
-            oi_results: dict[tuple[Exchange, str, str], list[OpenInterestPoint]] = {}
-            oi_errors: dict[tuple[Exchange, str, str], str] = {}
-            if oi_tasks:
-                oi_results, oi_errors = asyncio.run(
-                    _fetch_open_interest_tasks_parallel(
-                        oi_tasks=oi_tasks,
-                        lake_root=args.lake_root,
-                        concurrency=current_fetch_concurrency,
-                        logger=logger,
-                    )
-                )
-            funding_results: dict[tuple[Exchange, str, str], list[FundingPoint]] = {}
-            funding_errors: dict[tuple[Exchange, str, str], str] = {}
-            if funding_tasks:
-                funding_results, funding_errors = asyncio.run(
-                    _fetch_funding_tasks_parallel(
-                        funding_tasks=funding_tasks,
-                        lake_root=args.lake_root,
-                        concurrency=current_fetch_concurrency,
-                        logger=logger,
-                    )
-                )
 
             for exchange, market, symbol, timeframe in tasks:
                 exchange_output = cast(dict[str, object], output[exchange])

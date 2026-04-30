@@ -41,6 +41,11 @@ class _FakeCursor:
         assert isinstance(payloads, list)
         payloads.append(payload)
 
+    def fetchall(self) -> list[tuple[object, ...]]:
+        rows = self._state.get("fetchall_rows", [])
+        assert isinstance(rows, list)
+        return cast(list[tuple[object, ...]], rows)
+
 
 class _FakeConnection:
     """Connection stub providing transaction/cursor context managers."""
@@ -65,7 +70,13 @@ def _install_fake_psycopg(monkeypatch: pytest.MonkeyPatch, state: dict[str, obje
     """Inject fake psycopg modules so sink functions run without a real DB."""
 
     psycopg_mod = ModuleType("psycopg")
-    psycopg_mod.connect = lambda **kwargs: _FakeConnection(state)  # type: ignore[attr-defined]
+    def _connect(**kwargs: object) -> _FakeConnection:
+        del kwargs
+        current_calls = cast(int, state.get("connect_calls", 0))
+        state["connect_calls"] = current_calls + 1
+        return _FakeConnection(state)
+
+    psycopg_mod.connect = _connect  # type: ignore[attr-defined]
     json_mod = ModuleType("psycopg.types.json")
     json_mod.Json = lambda value: value  # type: ignore[attr-defined]
     types_mod = ModuleType("psycopg.types")
@@ -222,3 +233,146 @@ def test_loader_parquet_then_ingest_timescaledb_end_to_end(
     assert isinstance(executed, list)
     assert any("market_data.ohlcv" in sql for sql in executed)
     assert any("market_data.open_interest" in sql for sql in executed)
+
+
+def test_save_parquet_lake_to_timescaledb_parallel_workers(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    state: dict[str, object] = {}
+    _install_fake_psycopg(monkeypatch, state)
+    monkeypatch.setenv("TIMESCALE_INGEST_WORKERS", "3")
+
+    sink.save_parquet_lake_to_timescaledb(
+        lake_root=str(tmp_path),
+        schema="market_data",
+        create_schema=True,
+    )
+
+    assert cast(int, state.get("connect_calls", 0)) == 4
+
+
+def test_save_parquet_lake_to_timescaledb_reports_ingest_progress(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _NoopLock:
+        def __init__(self, lock_path: str) -> None:
+            del lock_path
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+    monkeypatch.setattr(cli, "SingleInstanceLock", _NoopLock)
+    monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
+    monkeypatch.setattr(cli, "open_times_in_lake_by_dataset", lambda **kwargs: [])
+    monkeypatch.setattr(cli, "fetch_candles_all_history", lambda **kwargs: [_sample_candle()])
+    monkeypatch.setattr(cli, "fetch_open_interest_all_history", lambda **kwargs: [_sample_oi()])
+    monkeypatch.setattr(cli, "_write_loader_samples", lambda **kwargs: None)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "main.py",
+            "loader",
+            "--exchange",
+            "deribit",
+            "--market",
+            "spot",
+            "oi",
+            "--symbols",
+            "BTCUSDT",
+            "--timeframe",
+            "5m",
+            "--save-parquet-lake",
+            "--lake-root",
+            str(tmp_path),
+            "--no-json-output",
+        ],
+    )
+    cli.main()
+
+    state: dict[str, object] = {}
+    _install_fake_psycopg(monkeypatch, state)
+    progress_events: list[dict[str, str]] = []
+    sink.save_parquet_lake_to_timescaledb(
+        lake_root=str(tmp_path),
+        schema="market_data",
+        create_schema=True,
+        progress_callback=progress_events.append,
+    )
+
+    assert progress_events
+    assert any(event.get("dataset") == "ohlcv" for event in progress_events)
+    assert any(event.get("dataset") == "open_interest" for event in progress_events)
+    assert any(event.get("symbol") == "BTCUSDT" for event in progress_events)
+    assert all(event.get("time_range") for event in progress_events)
+
+
+def test_save_parquet_lake_to_timescaledb_ingests_only_delta(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class _NoopLock:
+        def __init__(self, lock_path: str) -> None:
+            del lock_path
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+    monkeypatch.setattr(cli, "SingleInstanceLock", _NoopLock)
+    monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
+    monkeypatch.setattr(cli, "open_times_in_lake_by_dataset", lambda **kwargs: [])
+    monkeypatch.setattr(cli, "fetch_candles_all_history", lambda **kwargs: [_sample_candle()])
+    monkeypatch.setattr(cli, "fetch_open_interest_all_history", lambda **kwargs: [_sample_oi()])
+    monkeypatch.setattr(cli, "_write_loader_samples", lambda **kwargs: None)
+
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "main.py",
+            "loader",
+            "--exchange",
+            "deribit",
+            "--market",
+            "spot",
+            "oi",
+            "--symbols",
+            "BTCUSDT",
+            "--timeframe",
+            "5m",
+            "--save-parquet-lake",
+            "--lake-root",
+            str(tmp_path),
+            "--no-json-output",
+        ],
+    )
+    cli.main()
+
+    state: dict[str, object] = {}
+    _install_fake_psycopg(monkeypatch, state)
+
+    last_open_time = datetime(2026, 4, 27, 10, 0, tzinfo=UTC)
+
+    def _latest_by_key(conn: object, schema: str, table_name: str) -> dict[tuple[str, str, str, str], datetime]:
+        del conn, schema
+        if table_name == sink.OhlcvTableName:
+            return {("deribit", "spot", "BTCUSDT", "5m"): last_open_time}
+        return {}
+
+    monkeypatch.setattr(sink, "_load_latest_open_time_by_key", _latest_by_key)
+
+    summary = sink.save_parquet_lake_to_timescaledb(
+        lake_root=str(tmp_path),
+        schema="market_data",
+        create_schema=True,
+    )
+
+    assert summary["ohlcv_rows"] == 0
+    assert summary["open_interest_rows"] == 1
