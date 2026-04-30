@@ -8,7 +8,7 @@ import os
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
 
-LOGGER_NAME = "crypto_l2_loader"
+LOGGER_NAME = "crypto_market_loader"
 DEFAULT_LOG_DIR = "/volume1/Temp/logs"
 DEFAULT_FETCH_CONCURRENCY = 8
 
@@ -108,7 +108,7 @@ class SingleInstanceLock:
         except BlockingIOError as exc:
             os.close(self._fd)
             self._fd = None
-            raise SingleInstanceError("Another crypto-l2-loader instance is already running. Exiting.") from exc
+            raise SingleInstanceError("Another crypto-market-loader instance is already running. Exiting.") from exc
         os.ftruncate(self._fd, 0)
         os.write(self._fd, str(os.getpid()).encode("utf-8"))
         return self
@@ -125,10 +125,10 @@ def _safe_log_module_name(module_name: str) -> str:
     """Return a filesystem-safe log module name."""
 
     normalized = module_name.strip().replace("/", "-").replace("\\", "-")
-    return normalized or "crypto-l2-loader"
+    return normalized or "crypto-market-loader"
 
 
-def configure_logging(module_name: str = "crypto-l2-loader") -> logging.Logger:
+def configure_logging(module_name: str = "crypto-market-loader") -> logging.Logger:
     """Configure module-specific file logging with weekly rotation."""
 
     safe_module_name = _safe_log_module_name(module_name)
@@ -139,7 +139,7 @@ def configure_logging(module_name: str = "crypto-l2-loader") -> logging.Logger:
     logger.setLevel(logging.INFO)
     logger.propagate = False
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    log_dir = Path(os.getenv("L2_SYNC_LOG_DIR", DEFAULT_LOG_DIR))
+    log_dir = Path(os.getenv("DEPTH_SYNC_LOG_DIR", DEFAULT_LOG_DIR))
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
         file_handler = TimedRotatingFileHandler(
@@ -166,7 +166,7 @@ def configure_logging(module_name: str = "crypto-l2-loader") -> logging.Logger:
 def fetch_concurrency() -> int:
     """Return bounded fetch concurrency from environment."""
 
-    raw = os.getenv("L2_FETCH_CONCURRENCY", str(DEFAULT_FETCH_CONCURRENCY))
+    raw = os.getenv("DEPTH_FETCH_CONCURRENCY", str(DEFAULT_FETCH_CONCURRENCY))
     try:
         value = int(raw)
     except ValueError:

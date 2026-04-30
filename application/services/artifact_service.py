@@ -7,6 +7,7 @@ import re
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import TypeVar
 
 import pandas as pd
 
@@ -17,11 +18,22 @@ from ingestion.open_interest import OpenInterestPoint
 from ingestion.plotting import save_candle_plots, save_funding_plot, save_open_interest_plot
 from ingestion.spot import Market, SpotCandle
 
+MAX_FULL_PLOT_POINTS = 1000
+T = TypeVar("T")
+
 
 def _funding_open_time(item: FundingPoint) -> datetime:
     """Return funding row open timestamp for stable sorting."""
 
     return item.open_time
+
+
+def _tail_limit(items: list[T], max_points: int = MAX_FULL_PLOT_POINTS) -> list[T]:
+    """Return at most the latest ``max_points`` items while preserving order."""
+
+    if len(items) <= max_points:
+        return items
+    return items[-max_points:]
 
 
 def write_loader_samples_dto(
@@ -70,8 +82,9 @@ def write_loader_samples_dto(
                 logger.info("Sample CSV written rows=%s path=%s", len(sample), csv_path)
 
                 if resolved_options.generate_plots:
+                    plot_candles = _tail_limit(candles)
                     generated = save_candle_plots_fn(
-                        candles_by_exchange={exchange: {symbol_key: candles}},
+                        candles_by_exchange={exchange: {symbol_key: plot_candles}},
                         output_dir=str(sample_dir),
                         price_field="spot",
                     )
@@ -102,7 +115,7 @@ def write_loader_samples_dto(
                 logger.info("Sample CSV written rows=%s path=%s", len(sample), csv_path)
 
                 if resolved_options.generate_plots:
-                    sorted_items = sorted(oi_items, key=lambda value: value.open_time)
+                    sorted_items = _tail_limit(sorted(oi_items, key=lambda value: value.open_time))
                     plot_path = sample_dir / f"{base_name}.png"
                     save_open_interest_plot_fn(
                         exchange=exchange,
@@ -146,7 +159,7 @@ def write_loader_samples_dto(
                 logger.info("Sample CSV written rows=%s path=%s", len(sample), csv_path)
 
                 if resolved_options.generate_plots:
-                    funding_sorted_items = sorted(funding_items, key=_funding_open_time)
+                    funding_sorted_items = _tail_limit(sorted(funding_items, key=_funding_open_time))
                     plot_path = sample_dir / f"{base_name}.png"
                     save_funding_plot_fn(
                         exchange=exchange,

@@ -17,8 +17,8 @@ def test_configure_logging_uses_module_name_for_log_file(
 ) -> None:
     """Module-specific logging should write to a matching log filename."""
 
-    monkeypatch.setenv("L2_SYNC_LOG_DIR", str(tmp_path))
-    logger = configure_logging(module_name="loader-l2-m1")
+    monkeypatch.setenv("DEPTH_SYNC_LOG_DIR", str(tmp_path))
+    logger = configure_logging(module_name="loader")
 
     try:
         file_names = [
@@ -27,13 +27,13 @@ def test_configure_logging_uses_module_name_for_log_file(
             if hasattr(handler, "baseFilename")
         ]
 
-        assert logger.name == "crypto_l2_loader.loader-l2-m1"
-        assert "loader-l2-m1.log" in file_names
+        assert logger.name == "crypto_market_loader.loader"
+        assert "loader.log" in file_names
     finally:
         for handler in list(logger.handlers):
             logger.removeHandler(handler)
             handler.close()
-        logging.getLogger("crypto_l2_loader.loader-l2-m1").handlers.clear()
+        logging.getLogger("crypto_market_loader.loader").handlers.clear()
 
 
 def test_load_env_file_populates_missing_environment_values(
@@ -46,18 +46,18 @@ def test_load_env_file_populates_missing_environment_values(
     env_file.write_text(
         "\n".join(
             [
-                "L2_INGEST_SYMBOLS=BTC ETH",
-                "L2_INGEST_LEVELS=50",
+                "SYMBOLS=BTC ETH",
+                "LEVELS=50",
                 "EXISTING_VALUE=from_file",
             ]
         ),
         encoding="utf-8",
     )
-    monkeypatch.delenv("L2_INGEST_SYMBOLS", raising=False)
+    monkeypatch.delenv("SYMBOLS", raising=False)
     monkeypatch.setenv("EXISTING_VALUE", "from_process")
 
     load_env_file(str(env_file))
 
-    assert env_list("L2_INGEST_SYMBOLS", []) == ["BTC", "ETH"]
+    assert env_list("SYMBOLS", []) == ["BTC", "ETH"]
     assert env_list("MISSING_LIST", ["BTC"]) == ["BTC"]
     assert env_list("EXISTING_VALUE", []) == ["from_process"]

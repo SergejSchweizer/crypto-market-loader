@@ -1,4 +1,4 @@
-# crypto-l2-loader
+# crypto-market-loader
 
 ## 1. Project Overview
 
@@ -7,10 +7,9 @@ This repository provides a modular framework for ingesting crypto market data wi
 Current implemented scope (Step 1):
 - Pull BTC/ETH data from Deribit public APIs for `spot`, `perp`, `oi`, and `funding`.
 - Expose a CLI command for repeatable loader runs.
-- Ingest Deribit perp L2 snapshots and aggregate to 1-minute (`M1`) microstructure feature bars.
 
 Scope note:
-- The repository name reflects the long-term direction (`crypto-l2-loader`). The current production implementation supports Deribit OHLCV, open interest, funding, and perpetual L2 order book snapshots aggregated into M1 microstructure feature bars.
+- The repository name reflects the long-term direction (`crypto-market-loader`). The current production implementation supports Deribit OHLCV, open interest, and funding.
 
 ## 2. Architecture Diagram
 
@@ -18,10 +17,6 @@ Scope note:
 CLI -> Application Services (fetch/gapfill/storage/artifacts)
     -> Ingestion Adapters -> HTTP Client -> Exchange REST API
     -> Parquet Lake/TimescaleDB
-
-CLI (loader-l2-m1) -> L2 Fetch Config -> Async Polling Ticks
-    -> Deribit L2 Adapter -> L2Snapshot -> M1 Feature Aggregation
-    -> Parquet Lake
 ```
 
 ## 3. Installation Guide
@@ -67,9 +62,6 @@ Core dependencies are managed through `pyproject.toml` and include:
 - `ingestion/exchanges/deribit_funding.py`: Deribit funding-rate adapter.
 - `ingestion/lake.py`: parquet lake read/write and partition utility functions.
 - `ingestion/plotting.py`: chart rendering for loaded price/volume/open-interest/funding data.
-- `ingestion/l2.py`: Deribit perp L2 fetch configuration, bounded async multi-symbol polling, snapshot normalization, and M1 feature aggregation.
-- `ingestion/exchanges/deribit_l2.py`: Deribit L2 orderbook adapter.
-
 ### 5.3 API Layer
 - `api/cli.py`: CLI command registration, argument parsing, orchestration entrypoint, and JSON output formatting.
 
@@ -239,7 +231,7 @@ Exchange coverage:
 | Deribit | Yes | Yes | Yes | Yes | Spot maps to instruments like `BTC_USDC`; perp maps to `BTC-PERPETUAL`. |
 
 Current production note:
-- The ingestion runtime supports Deribit only. Any non-Deribit sample artifacts are historical comparison outputs and not active adapter coverage.
+- The ingestion runtime supports Deribit only.
 
 ### 5.3 Perpetual Field Mapping (Deribit Origin -> Storage)
 
@@ -285,12 +277,6 @@ Load spot and perp in one run:
 python3 main.py loader --exchange deribit --market spot perp --symbols BTC ETH --timeframe M1
 ```
 
-Load in one run:
-
-```bash
-python3 main.py loader --exchange deribit --market spot --symbols BTC ETH --timeframe M1
-```
-
 Load multiple timeframes in one run:
 
 ```bash
@@ -324,33 +310,6 @@ Fetch OHLCV (spot+perp), open interest, and funding in one run:
 ```bash
 python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH --timeframe 5m --save-parquet-lake --lake-root lake/bronze
 ```
-
-Fetch L2 snapshots and aggregate/store M1 feature bars:
-
-```bash
-python3 main.py loader-l2-m1
-```
-
-The `loader-l2-m1` command loads defaults from local `.env` config when present. CLI flags still override config values for one-off runs.
-
-```bash
-L2_INGEST_EXCHANGE=deribit
-L2_INGEST_SYMBOLS=BTC ETH
-L2_INGEST_LEVELS=50
-L2_INGEST_SNAPSHOT_COUNT=5
-L2_INGEST_POLL_INTERVAL_S=10
-L2_INGEST_MAX_RUNTIME_S=55
-L2_INGEST_SAVE_PARQUET_LAKE=true
-L2_INGEST_LAKE_ROOT=lake/bronze
-L2_INGEST_NO_JSON_OUTPUT=true
-```
-
-Runtime behavior:
-- `snapshot-count` controls the number of polling ticks per run.
-- `poll-interval-s` controls the wait between ticks.
-- Each tick fetches all configured symbols concurrently before sleeping, so BTC/ETH perp snapshots are collected on the same polling cadence.
-- `L2_FETCH_CONCURRENCY` bounds concurrent per-tick symbol fetches.
-- `max-runtime-s` caps collection time; if Deribit/API latency pushes the run near the budget, the command writes whatever snapshots were collected and logs a warning.
 
 Parquet lake write mode uses a stable file per partition (`data.parquet`) with staged merge+rewrite on each run to keep file counts bounded. Partition schema:
 
@@ -397,7 +356,7 @@ Note:
 - Loader network fetch tasks run in parallel via `asyncio` with bounded concurrency.
 - Parallel fetch orchestration is implemented in `application/services/fetch_service.py`; `api/cli.py` delegates to this service.
 - Parquet partition writes are parallelized.
-- Concurrency is controlled by `L2_FETCH_CONCURRENCY` (default: `8`).
+- Concurrency is controlled by `DEPTH_FETCH_CONCURRENCY` (default: `8`).
 
 Run silently without JSON output:
 
@@ -512,31 +471,27 @@ Current coverage includes:
 - Fetch orchestration success/error split for parallel task runners (`application/services/fetch_service.py`).
 - Storage orchestration behavior for parquet+Timescale side effects (`application/services/storage_service.py`).
 - Canonical dataset contract mapping (`application/schema.py`).
-- CLI locking, parquet lake persistence, plotting, TimescaleDB sink behavior, and async L2 multi-symbol polling.
+- CLI locking, parquet lake persistence, plotting, and TimescaleDB sink behavior.
 
 ## 9. Deployment Instructions
 
 - For now this is a local CLI tool.
 - Next stage will add scheduled runs and orchestrated pipelines.
-- The main loader enforces a single running instance using `.run/crypto-l2-loader.lock`.
-- The L2 M1 loader enforces a separate single running instance using `.run/crypto-l2-loader-l2.lock`.
+- The main loader enforces a single running instance using `.run/crypto-market-loader.lock`.
 - Runtime logs are written to a command-specific file under `/volume1/Temp/logs/` by default.
-- Log filenames match the CLI command/module, for example `loader.log`, `loader-l2-m1.log`, and `ingest-timescaledb.log`.
-- Logs rotate every 7 days and rotated files are date-suffixed (for example `loader-l2-m1.log.2026-04-27`) and retained in the same directory.
-- `loader-l2-m1.log` includes one `L2 minute stats` line per generated M1 bar with snapshot counts, fetch durations, mid-price OHLC, spread, depth, imbalance, microprice, open interest, and funding fields, plus one `L2 run summary` line per cron run.
+- Log filenames match the CLI command/module, for example `loader.log` and `ingest-timescaledb.log`.
+- Logs rotate every 7 days and rotated files are date-suffixed (for example `loader.log.2026-04-27`) and retained in the same directory.
 - Local `.env` is loaded automatically when present and is excluded from git tracking.
-- Optional override: set `L2_SYNC_LOG_DIR` to change the log directory.
-- Optional override: set `L2_FETCH_CONCURRENCY` to control loader fetch parallelism (minimum `1`, default `8`).
+- Optional override: set `DEPTH_SYNC_LOG_DIR` to change the log directory.
+- Optional override: set `DEPTH_FETCH_CONCURRENCY` to control loader fetch parallelism (minimum `1`, default `8`).
 - TimescaleDB sink env vars: `TIMESCALEDB_HOST`, `TIMESCALEDB_PORT`, `TIMESCALEDB_USER`, `TIMESCALEDB_PASSWORD`, `TIMESCALEDB_DB`, `PGSSLMODE`.
 - `TIMESCALEDB_PASSWORD` is required at runtime (no insecure default fallback).
 - Run quality gates via module form (`python -m pytest`, `python -m mypy`, `python -m ruff`) to avoid local venv entrypoint shebang drift when directories move.
 
 ## 10. Known Limitations
 
-- L2 ingestion currently uses finite REST order book snapshots, not a continuous websocket depth stream.
 - No exchange failover yet.
 
 ## 11. Future Improvements
 
-- Add continuous Deribit websocket order book ingestion for higher-frequency depth reconstruction.
 - Add scheduled lake compaction and retention policies.
