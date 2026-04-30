@@ -6,9 +6,8 @@ import asyncio
 import logging
 from datetime import UTC, datetime
 
+from application.dto import CandleFetchTaskDTO, OpenInterestFetchTaskDTO
 from application.services.fetch_service import (
-    CandleFetchTask,
-    OpenInterestFetchTask,
     fetch_candle_tasks_parallel,
     fetch_open_interest_tasks_parallel,
 )
@@ -17,8 +16,8 @@ from ingestion.spot import SpotCandle
 
 
 def test_fetch_candle_tasks_parallel_splits_success_and_errors() -> None:
-    task_ok = CandleFetchTask(exchange="deribit", market="spot", symbol="BTCUSDT", timeframe="1m")
-    task_fail = CandleFetchTask(exchange="deribit", market="spot", symbol="ETHUSDT", timeframe="1m")
+    task_ok = CandleFetchTaskDTO(exchange="deribit", market="spot", symbol="BTCUSDT", timeframe="1m")
+    task_fail = CandleFetchTaskDTO(exchange="deribit", market="spot", symbol="ETHUSDT", timeframe="1m")
 
     candle = SpotCandle(
         exchange="deribit",
@@ -58,8 +57,8 @@ def test_fetch_candle_tasks_parallel_splits_success_and_errors() -> None:
 
 
 def test_fetch_open_interest_tasks_parallel_splits_success_and_errors() -> None:
-    task_ok = OpenInterestFetchTask(exchange="deribit", symbol="BTCUSDT", timeframe="5m")
-    task_fail = OpenInterestFetchTask(exchange="deribit", symbol="ETHUSDT", timeframe="5m")
+    task_ok = OpenInterestFetchTaskDTO(exchange="deribit", symbol="BTCUSDT", timeframe="5m")
+    task_fail = OpenInterestFetchTaskDTO(exchange="deribit", symbol="ETHUSDT", timeframe="5m")
 
     point = OpenInterestPoint(
         exchange="deribit",

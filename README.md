@@ -31,7 +31,7 @@ CLI -> Application Services (fetch/gapfill/storage/artifacts)
 python -m venv .venv
 source .venv/bin/activate
 pip install -U pip
-pip install -e .
+pip install -e ".[dev]"
 ```
 
 If the repository folder is renamed or moved, recreate the virtualenv (`rm -rf .venv && make setup`) so script shebangs remain valid.
@@ -89,6 +89,15 @@ Naming rules:
 - Use `spot`, `perp`, `oi`, and `funding` as the user-facing data-type names.
 - `dataset_type=open_interest` is the storage-layer parquet label for `oi`.
 - `dataset_type=funding` is the storage-layer parquet label for `funding`.
+
+Market ownership by datatype:
+
+| Datatype | Belongs To |
+|---|---|
+| `spot` | Spot markets |
+| `perp` | Perpetual markets |
+| `oi` | Perpetual markets |
+| `funding` | Perpetual markets |
 
 ### 5.0.1 Data Type Purpose And Meaning
 
@@ -408,6 +417,9 @@ Description:
 OHLCV spot rows capture exchange-traded candle bars for cash markets.  
 The loader writes grouped sample artifacts per run under `samples/`.
 
+CSV sample:
+`samples/spot_<exchange>_<symbol>_<timeframe>_sample_10_rows.csv` (10 sampled rows).
+
 Plot:
 `samples/spot_<exchange>_<symbol>_<timeframe>_sample_10_rows.png` (full-history price + volume plot for that group).
 
@@ -417,6 +429,9 @@ Example:
 ### 7.2 OHLCV (Perp)
 Description:
 Perpetual OHLCV rows follow the same candle schema and are stored independently per market group.
+
+CSV sample:
+`samples/perp_<exchange>_<symbol>_<timeframe>_sample_10_rows.csv` (10 sampled rows).
 
 Plot:
 `samples/perp_<exchange>_<symbol>_<timeframe>_sample_10_rows.png` (full-history price + volume plot for that group).
@@ -428,6 +443,9 @@ Example:
 Description:
 Open-interest rows are stored under `dataset_type=open_interest` and sampled per run when `--market oi` is used.
 
+CSV sample:
+`samples/oi_<market>_<exchange>_<symbol>_<timeframe>_sample_10_rows.csv` (10 sampled rows).
+
 Plot:
 `samples/oi_<market>_<exchange>_<symbol>_<timeframe>_sample_10_rows.png` (full-history OI time-series line chart for that group).
 
@@ -437,6 +455,9 @@ Example:
 ### 7.4 Funding
 Description:
 Funding rows are stored under `dataset_type=funding` and sampled per run when `--market funding` is used.
+
+CSV sample:
+`samples/funding_<market>_<exchange>_<symbol>_<timeframe>_sample_10_rows.csv` (10 sampled rows).
 
 Plot:
 `samples/funding_<market>_<exchange>_<symbol>_<timeframe>_sample_10_rows.png` (full-history funding-rate time-series line chart for that group).

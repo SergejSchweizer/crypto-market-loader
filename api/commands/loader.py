@@ -104,11 +104,6 @@ def add_loader_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
     )
     parser.add_argument("--plot", action="store_true", help="Create and save price/volume plots")
     parser.add_argument(
-        "--plot-dir",
-        default="samples",
-        help="Deprecated: plots are always written under samples/; this option is kept for compatibility.",
-    )
-    parser.add_argument(
         "--plot-price",
         choices=["spot", "close", "open", "high", "low"],
         default="close",
@@ -297,9 +292,6 @@ def _write_loader_samples(
 
 def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run loader command."""
-
-    if bool(args.plot) and cast(str, args.plot_dir) != "samples":
-        logger.info("Ignoring --plot-dir=%s; plots are always written under samples/", args.plot_dir)
 
     try:
         with SingleInstanceLock(".run/crypto-market-loader.lock"):

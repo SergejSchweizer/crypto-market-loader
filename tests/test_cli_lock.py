@@ -221,7 +221,7 @@ def test_main_loader_saves_timescaledb_when_enabled(monkeypatch: pytest.MonkeyPa
     assert captured["create_schema"] is False
 
 
-def test_write_loader_samples_writes_grouped_csv_and_matching_plot_names(
+def test_write_loader_samples_writes_grouped_dataframes_and_matching_plot_names(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -294,4 +294,3 @@ def test_export_descriptive_stats_writes_csv(monkeypatch: pytest.MonkeyPatch, tm
     written = pd.read_csv(output_csv)
     assert list(written.columns) == ["Variable", "Mean", "Std", "Min", "Max"]
     assert set(written["Variable"]) == {"open", "high", "low", "close", "volume"}
-

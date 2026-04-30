@@ -41,11 +41,6 @@ from ingestion.spot import (
     normalize_storage_symbol,
 )
 
-# Backward-compat aliases
-CandleFetchTask = CandleFetchTaskDTO
-OpenInterestFetchTask = OpenInterestFetchTaskDTO
-FundingFetchTask = FundingFetchTaskDTO
-
 
 def fetch_symbol_candles(
     exchange: Exchange,
