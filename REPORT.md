@@ -3,7 +3,7 @@
 ## Abstract
 This report presents a production-oriented baseline for cryptocurrency market-data ingestion designed to support downstream quantitative research. The problem addressed is the lack of reproducible, maintainable ingestion layers in early-stage quant projects, where exchange-specific scripts and schema drift frequently undermine empirical validity. We implement a typed, modular ingestion pipeline with adapter abstractions for Deribit, command-line interfaces for deterministic execution, and partitioned parquet-lake storage. Data are sourced from public exchange REST endpoints and normalized into canonical OHLCV, open-interest, and funding schemas with metadata fields for run traceability. The main finding is engineering-focused: the system provides deterministic normalization, supports backward pagination and gap-fill synchronization for historical series, enforces 1-minute ingestion policy, and preserves idempotent persistence via natural-key partition merges plus Timescale watermark-based delta ingest. The contribution is a maintainable ingestion foundation suitable for subsequent market microstructure, regime, and forecasting studies, with explicit reproducibility controls (strict typing, tests, linting, config-driven runs, and stable execution commands).
 
-Canonical data-type naming in this project is fixed as `spot`, `perp`, `oi`, and `funding` across CLI, code, and documentation (with parquet storage label `dataset_type=open_interest` representing `oi`). Ingestion timeframe scope is restricted to `1m` / `M1`.
+Canonical data-type naming in this project is fixed as `spot`, `perp`, `oi`, and `funding` across CLI, code, and documentation (with parquet storage label `dataset_type=oi` representing `oi`). Ingestion timeframe scope is restricted to `1m` / `M1`.
 
 ## Introduction
 Reliable market-data ingestion is a prerequisite for valid quantitative inference in crypto research.
@@ -12,7 +12,7 @@ Many practical pipelines fail due to exchange-specific one-off scripts, inconsis
 
 This project proposes a modular ingestion architecture with typed interfaces, explicit normalization, and reproducible command-line workflows focused on Deribit as the current production exchange.
 
-The contributions of this stage are: (1) Deribit OHLCV, open-interest, and funding normalization for BTC/ETH/SOL, (2) parquet-lake persistence paths, (3) tested operational workflows for repeatable data acquisition.
+The contributions of this stage are: (1) Deribit `spot`, `perp`, `oi`, and `funding` normalization for BTC/ETH/SOL, (2) parquet-lake persistence paths, (3) tested operational workflows for repeatable data acquisition.
 
 ## Literature Review
 Volatility clustering and regime dependence motivate robust historical market-data pipelines. ARCH/GARCH foundations establish heteroskedastic behavior in financial time series, requiring high-integrity timestamped observations (Engle, 1982; Bollerslev, 1986). Regime-switching frameworks further highlight sensitivity to data quality and temporal consistency (Hamilton, 1989). Later work on high-frequency econometrics and realized-volatility estimation reinforces the need for reliable, granular data ingestion and synchronization processes (Andersen et al., 2001; Barndorff-Nielsen and Shephard, 2002).
@@ -162,7 +162,7 @@ No predictive or regime models are trained in this stage.
 | Loader sample artifacts | Per market/exchange/symbol/timeframe CSV + full-history plot | Passed with deterministic naming |
 | Chunked Timescale ingest | Streaming parquet read + bounded DB upsert batches | Passed with stable memory profile |
 | Timescale delta ingest | Per-series watermark state (`ingest_watermarks`) + newer-than-watermark row filter | Passed and idempotent across reruns |
-| Open-interest integration | Deribit perp dataset_type=open_interest | Passed for all-history and gap-fill paths |
+| OI integration | Deribit perp dataset_type=oi | Passed for all-history and gap-fill paths |
 
 ### Figures
 Figure 1. OHLCV Spot series (Deribit BTCUSDT 1m).

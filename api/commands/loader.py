@@ -6,7 +6,6 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 from dataclasses import asdict
 from datetime import datetime
 from typing import Literal, cast
@@ -29,7 +28,7 @@ from application.services.fetch_service import (
     fetch_symbol_open_interest,
 )
 from application.services.gapfill_service import _last_closed_open_ms, _missing_ranges_ms
-from application.services.runtime_service import SingleInstanceError, SingleInstanceLock, fetch_concurrency
+from application.services.runtime_service import SingleInstanceError, SingleInstanceLock
 from application.services.storage_service import persist_loader_outputs_dto
 from infra.timescaledb import save_market_data_to_timescaledb
 from ingestion.funding import (
@@ -67,23 +66,8 @@ from ingestion.spot import (
 )
 
 DataType = Literal["spot", "perp", "oi", "funding"]
-MAX_LOADER_TASK_CONCURRENCY = 2
-MAX_GLOBAL_QUERY_CONCURRENCY = 2
 _ALLOWED_TIMEFRAME_VALUES = {"1m", "m1"}
 _TAIL_DELTA_ONLY = True
-
-
-def _env_concurrency(name: str, default: int) -> int:
-    """Read bounded concurrency value from environment with fallback."""
-
-    raw = os.getenv(name)
-    if raw is None:
-        return min(MAX_LOADER_TASK_CONCURRENCY, max(1, default))
-    try:
-        value = int(raw)
-    except ValueError:
-        return min(MAX_LOADER_TASK_CONCURRENCY, max(1, default))
-    return min(MAX_LOADER_TASK_CONCURRENCY, max(1, value))
 
 
 def _validate_loader_timeframe_input(raw_timeframe: str) -> None:
@@ -349,45 +333,34 @@ async def _fetch_all_task_groups(
     dict[tuple[Exchange, str, str], list[FundingPoint]],
     dict[tuple[Exchange, str, str], str],
 ]:
-    """Fetch OHLCV, OI, and funding task groups concurrently."""
+    """Fetch OHLCV, OI, and funding task groups sequentially."""
 
-    max_global_queries = _env_concurrency("LOADER_GLOBAL_QUERY_CONCURRENCY", MAX_GLOBAL_QUERY_CONCURRENCY)
-    shared_semaphore = asyncio.Semaphore(max(1, max_global_queries))
-
-    candle_job = _fetch_candle_tasks_parallel(
+    task_results, task_errors = await _fetch_candle_tasks_parallel(
         tasks=tasks,
         lake_root=lake_root,
         concurrency=candle_concurrency,
         logger=logger,
-        shared_semaphore=shared_semaphore,
     )
-    oi_job = (
-        _fetch_open_interest_tasks_parallel(
+    if oi_tasks:
+        oi_results, oi_errors = await _fetch_open_interest_tasks_parallel(
             oi_tasks=oi_tasks,
             lake_root=lake_root,
             concurrency=oi_concurrency,
             logger=logger,
-            shared_semaphore=shared_semaphore,
         )
-        if oi_tasks
-        else asyncio.sleep(0, result=({}, {}))
-    )
-    funding_job = (
-        _fetch_funding_tasks_parallel(
+    else:
+        oi_results, oi_errors = {}, {}
+
+    if funding_tasks:
+        funding_results, funding_errors = await _fetch_funding_tasks_parallel(
             funding_tasks=funding_tasks,
             lake_root=lake_root,
             concurrency=funding_concurrency,
             logger=logger,
-            shared_semaphore=shared_semaphore,
         )
-        if funding_tasks
-        else asyncio.sleep(0, result=({}, {}))
-    )
-    (task_results, task_errors), (oi_results, oi_errors), (funding_results, funding_errors) = await asyncio.gather(
-        candle_job,
-        oi_job,
-        funding_job,
-    )
+    else:
+        funding_results, funding_errors = {}, {}
+
     return task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors
 
 
@@ -463,18 +436,10 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                         for symbol in args.symbols:
                             funding_tasks.append((exchange, symbol, timeframe))
 
-            base_concurrency = fetch_concurrency()
-            candle_concurrency = _env_concurrency("LOADER_OHLCV_CONCURRENCY", base_concurrency)
-            oi_concurrency = _env_concurrency("LOADER_OI_CONCURRENCY", base_concurrency)
-            funding_concurrency = _env_concurrency("LOADER_FUNDING_CONCURRENCY", base_concurrency)
-            logger.info(
-                "Parallel fetch enabled with asyncio concurrency ohlcv=%s oi=%s funding=%s base=%s global_max=%s",
-                candle_concurrency,
-                oi_concurrency,
-                funding_concurrency,
-                base_concurrency,
-                _env_concurrency("LOADER_GLOBAL_QUERY_CONCURRENCY", MAX_GLOBAL_QUERY_CONCURRENCY),
-            )
+            candle_concurrency = 1
+            oi_concurrency = 1
+            funding_concurrency = 1
+            logger.info("Sequential fetch mode enabled for spot/perp, oi, and funding")
             task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors = asyncio.run(
                 _fetch_all_task_groups(
                     tasks=tasks,
@@ -486,6 +451,22 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                     funding_concurrency=funding_concurrency,
                     logger=logger,
                 )
+            )
+            ohlcv_success_count = len(task_results)
+            ohlcv_error_count = len(task_errors)
+            oi_success_count = len(oi_results)
+            oi_error_count = len(oi_errors)
+            funding_success_count = len(funding_results)
+            funding_error_count = len(funding_errors)
+            logger.info(
+                "Fetch summary spot/perp: success=%s failed=%s | "
+                "oi: success=%s failed=%s | funding: success=%s failed=%s",
+                ohlcv_success_count,
+                ohlcv_error_count,
+                oi_success_count,
+                oi_error_count,
+                funding_success_count,
+                funding_error_count,
             )
 
             for exchange, market, symbol, timeframe in tasks:
@@ -703,7 +684,7 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                         normalized_oi_timeframe = normalize_open_interest_timeframe(exchange=exchange, value=timeframe)
                         stored_oi_times = open_times_in_lake_by_dataset(
                             lake_root=args.lake_root,
-                            dataset_type="open_interest",
+                            dataset_type="oi",
                             market="perp",
                             exchange=exchange,
                             symbol=storage_symbol,

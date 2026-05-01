@@ -28,12 +28,17 @@ def _funding_open_time(item: FundingPoint) -> datetime:
     return item.open_time
 
 
-def _tail_limit(items: list[T], max_points: int = MAX_FULL_PLOT_POINTS) -> list[T]:
-    """Return at most the latest ``max_points`` items while preserving order."""
+def _downsample_full_period(items: list[T], max_points: int = MAX_FULL_PLOT_POINTS) -> list[T]:
+    """Downsample a sorted series across its full period to at most ``max_points`` items."""
 
     if len(items) <= max_points:
         return items
-    return items[-max_points:]
+    if max_points <= 1:
+        return [items[-1]]
+
+    last_index = len(items) - 1
+    sampled_indices = [int(idx * last_index / (max_points - 1)) for idx in range(max_points)]
+    return [items[item_index] for item_index in sampled_indices]
 
 
 def write_loader_samples_dto(
@@ -82,7 +87,8 @@ def write_loader_samples_dto(
                 logger.info("Sample CSV written rows=%s path=%s", len(sample), csv_path)
 
                 if resolved_options.generate_plots:
-                    plot_candles = _tail_limit(candles)
+                    sorted_candles = sorted(candles, key=lambda value: value.open_time)
+                    plot_candles = _downsample_full_period(sorted_candles)
                     generated = save_candle_plots_fn(
                         candles_by_exchange={exchange: {symbol_key: plot_candles}},
                         output_dir=str(sample_dir),
@@ -115,7 +121,7 @@ def write_loader_samples_dto(
                 logger.info("Sample CSV written rows=%s path=%s", len(sample), csv_path)
 
                 if resolved_options.generate_plots:
-                    sorted_items = _tail_limit(sorted(oi_items, key=lambda value: value.open_time))
+                    sorted_items = _downsample_full_period(sorted(oi_items, key=lambda value: value.open_time))
                     plot_path = sample_dir / f"{base_name}.png"
                     save_open_interest_plot_fn(
                         exchange=exchange,
@@ -159,7 +165,7 @@ def write_loader_samples_dto(
                 logger.info("Sample CSV written rows=%s path=%s", len(sample), csv_path)
 
                 if resolved_options.generate_plots:
-                    funding_sorted_items = _tail_limit(sorted(funding_items, key=_funding_open_time))
+                    funding_sorted_items = _downsample_full_period(sorted(funding_items, key=_funding_open_time))
                     plot_path = sample_dir / f"{base_name}.png"
                     save_funding_plot_fn(
                         exchange=exchange,

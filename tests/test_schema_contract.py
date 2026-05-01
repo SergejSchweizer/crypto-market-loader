@@ -17,7 +17,7 @@ def test_dataset_contract_maps_spot_perp_oi() -> None:
     assert perp.dataset_type == "perp"
     assert perp.instrument_type == "perp"
 
-    assert oi.dataset_type == "open_interest"
+    assert oi.dataset_type == "oi"
     assert oi.instrument_type == "perp"
 
     assert funding.dataset_type == "funding"

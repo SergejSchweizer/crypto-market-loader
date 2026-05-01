@@ -110,7 +110,7 @@ def open_interest_record(
 
     return {
         "schema_version": "v1",
-        "dataset_type": "open_interest",
+        "dataset_type": "oi",
         "exchange": item.exchange,
         "symbol": item.symbol,
         "instrument_type": market,
@@ -461,7 +461,7 @@ def load_open_interest_from_lake(
 
     partition_root = (
         Path(lake_root)
-        / "dataset_type=open_interest"
+        / "dataset_type=oi"
         / f"exchange={exchange}"
         / f"instrument_type={market}"
         / f"symbol={symbol}"
@@ -592,7 +592,7 @@ def save_open_interest_parquet_lake(
 
     run_id = utc_run_id()
     ingested_at = datetime.now(UTC)
-    dataset_type = "open_interest"
+    dataset_type = "oi"
 
     grouped: defaultdict[PartitionKey, list[dict[str, object]]] = defaultdict(list)
     for symbol_map in open_interest_by_exchange.values():
@@ -749,7 +749,7 @@ def load_combined_dataframe_from_lake(
     if include_open_interest:
         oi_files = sorted(
             Path(lake_root).glob(
-                "dataset_type=open_interest/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"
+                "dataset_type=oi/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"
             )
         )
         oi_frames: list[Any] = []

@@ -213,7 +213,7 @@ def _build_open_interest_db_row(row: dict[str, object]) -> dict[str, object]:
         "open_interest": row.get("open_interest"),
         "open_interest_value": row.get("open_interest_value", 0.0),
         "schema_version": row.get("schema_version", "v1"),
-        "dataset_type": row.get("dataset_type", "open_interest"),
+        "dataset_type": row.get("dataset_type", "oi"),
         "event_time": row.get("event_time", row.get("open_time")),
         "ingested_at": row.get("ingested_at"),
         "run_id": row.get("run_id", "unknown"),
@@ -729,7 +729,7 @@ def save_market_data_to_timescaledb(
     return {
         "schema": safe_schema,
         "ohlcv_rows": ohlcv_count,
-        "open_interest_rows": oi_count,
+        "oi_rows": oi_count,
         "funding_rows": funding_count,
     }
 
@@ -800,7 +800,7 @@ def save_parquet_lake_to_timescaledb(
     )
     all_oi_files = _iter_matching_parquet_files(
         lake_root=lake_root,
-        glob_pattern="dataset_type=open_interest/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
+        glob_pattern="dataset_type=oi/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
         allow_partition=_allow,
     )
     all_funding_files = _iter_matching_parquet_files(
@@ -833,7 +833,7 @@ def save_parquet_lake_to_timescaledb(
             oi_latest_by_key = _load_latest_open_time_by_key(
                 conn=conn,
                 schema=safe_schema,
-                dataset_type="open_interest",
+                dataset_type="oi",
             )
             funding_latest_by_key = _load_latest_open_time_by_key(
                 conn=conn,
@@ -944,7 +944,7 @@ def save_parquet_lake_to_timescaledb(
             _upsert_ingest_watermarks(
                 conn=conn,
                 schema=safe_schema,
-                dataset_type="open_interest",
+                dataset_type="oi",
                 watermark_by_series=oi_watermarks,
             )
             _upsert_ingest_watermarks(
@@ -957,15 +957,15 @@ def save_parquet_lake_to_timescaledb(
     return {
         "schema": safe_schema,
         "ohlcv_rows": ohlcv_count,
-        "open_interest_rows": oi_count,
+        "oi_rows": oi_count,
         "funding_rows": funding_count,
         "ohlcv_files": len(ohlcv_files),
-        "open_interest_files": len(oi_files),
+        "oi_files": len(oi_files),
         "funding_files": len(funding_files),
         "ohlcv_scanned_rows": ohlcv_scanned,
-        "open_interest_scanned_rows": oi_scanned,
+        "oi_scanned_rows": oi_scanned,
         "funding_scanned_rows": funding_scanned,
         "ohlcv_skipped_rows": ohlcv_skipped,
-        "open_interest_skipped_rows": oi_skipped,
+        "oi_skipped_rows": oi_skipped,
         "funding_skipped_rows": funding_skipped,
     }

@@ -87,7 +87,7 @@ Use these names consistently in code, CLI usage, and documentation:
 
 Naming rules:
 - Use `spot`, `perp`, `oi`, and `funding` as the user-facing data-type names.
-- `dataset_type=open_interest` is the storage-layer parquet label for `oi`.
+- `dataset_type=oi` is the storage-layer parquet label for `oi`.
 - `dataset_type=funding` is the storage-layer parquet label for `funding`.
 
 Market ownership by datatype:
@@ -154,7 +154,7 @@ Loaded candle variables (`SpotCandle`):
 
 ### 5.1.1 Dataset Semantics And Variable Computation
 
-#### `spot` dataset (`dataset_type=ohlcv`, `instrument_type=spot`)
+#### `spot` dataset (`dataset_type=spot`, `instrument_type=spot`)
 - Meaning:
   Executed cash-market candles used as the baseline non-derivative price/volume process.
 - Canonical normalized variables:
@@ -169,7 +169,7 @@ Loaded candle variables (`SpotCandle`):
 - Exchange-specific details:
   - Deribit spot: built from `ticks/open/high/low/close/volume`; `close_time = open_time + timeframe_ms - 1`, `quote_volume = volume` fallback, `trade_count = 0`.
 
-#### `perp` dataset (`dataset_type=ohlcv`, `instrument_type=perp`)
+#### `perp` dataset (`dataset_type=perp`, `instrument_type=perp`)
 - Meaning:
   Executed perpetual-futures candles (derivatives market) normalized to the same schema as `spot`.
 - Canonical normalized variables:
@@ -179,7 +179,7 @@ Loaded candle variables (`SpotCandle`):
 - Exchange-specific details:
   - Deribit perp: TradingView chart endpoint with computed `close_time` and fallback fields identical to Deribit spot behavior.
 
-#### `oi` dataset (`dataset_type=open_interest`, `instrument_type=perp`)
+#### `oi` dataset (`dataset_type=oi`, `instrument_type=perp`)
 - Meaning:
   Time-bucketed open interest for perpetual instruments; reflects outstanding open positions rather than executed candle flow.
 - Availability rule:
@@ -218,7 +218,7 @@ Parquet row metadata fields:
 | Variable | Type | Description |
 |---|---|---|
 | `schema_version` | `str` | Version marker for row schema evolution (`v1` currently). |
-| `dataset_type` | `str` | Dataset family label (`ohlcv`, `open_interest`, or `funding`). |
+| `dataset_type` | `str` | Dataset family label (`spot`, `perp`, `oi`, or `funding`). |
 | `instrument_type` | `str` | Market class used for loading (`spot` or `perp`). |
 | `event_time` | `datetime (UTC)` | Canonical event timestamp for the row (currently aligned to `open_time`). |
 | `ingested_at` | `datetime (UTC)` | Wall-clock timestamp when the row was written by the pipeline. |
@@ -328,15 +328,23 @@ python3 main.py loader --exchange deribit --market spot perp oi funding --symbol
 Parquet lake write mode uses a stable file per partition (`data.parquet`) with staged merge+rewrite on each run to keep file counts bounded. Partition schema:
 
 ```text
-dataset_type=ohlcv/
+dataset_type=spot/
   exchange=<exchange>/
-  instrument_type=<spot|perp>/
+  instrument_type=<spot>/
   symbol=<symbol>/
   timeframe=<interval>/
   date=<YYYY-MM>/
     data.parquet
 
-dataset_type=open_interest/
+dataset_type=perp/
+  exchange=<exchange>/
+  instrument_type=<perp>/
+  symbol=<symbol>/
+  timeframe=<interval>/
+  date=<YYYY-MM>/
+    data.parquet
+
+dataset_type=oi/
   exchange=<exchange>/
   instrument_type=<perp>/
   symbol=<symbol>/
@@ -386,7 +394,7 @@ Note:
 - Parallel fetch orchestration is implemented in `application/services/fetch_service.py`; `api/cli.py` delegates to this service.
 - Parquet partition writes are parallelized.
 - Global concurrent exchange queries are capped by `LOADER_GLOBAL_QUERY_CONCURRENCY` (default: `2`).
-- Per-stream caps (`ohlcv`, `oi`, `funding`) are also bounded and cannot exceed the global cap.
+- Per-stream caps (`spot/perp`, `oi`, `funding`) are also bounded and cannot exceed the global cap.
 
 Run silently without JSON output:
 
@@ -456,7 +464,7 @@ Example:
 
 ### 7.3 Open Interest (OI)
 Description:
-Open-interest rows are stored under `dataset_type=open_interest` and sampled per run when `--market oi` is used.
+Open-interest rows are stored under `dataset_type=oi` and sampled per run when `--market oi` is used.
 
 CSV sample:
 `samples/oi_<market>_<exchange>_<symbol>_<timeframe>_sample_10_rows.csv` (10 sampled rows).
@@ -530,7 +538,7 @@ Current coverage includes:
 - Optional override: set `LOADER_OI_CONCURRENCY` to control OI task parallelism in range `1..2` (default falls back to `DEPTH_FETCH_CONCURRENCY`).
 - Optional override: set `LOADER_FUNDING_CONCURRENCY` to control funding task parallelism in range `1..2` (default falls back to `DEPTH_FETCH_CONCURRENCY`).
 - Optional override: set `DEPTH_HTTP_TIMEOUT_S`, `DEPTH_HTTP_MAX_RETRIES`, and `DEPTH_HTTP_RETRY_BACKOFF_S` (defaults: `8`, `2`, `0.5`) for unstable network behavior tuning.
-- Optional override: set `TIMESCALE_INGEST_WORKERS` to parallelize `ingest-timescaledb` across dataset types (`ohlcv`, `open_interest`, `funding`); default `1` (sequential), practical max `3`.
+- Optional override: set `TIMESCALE_INGEST_WORKERS` to parallelize `ingest-timescaledb` across dataset types (`spot/perp`, `oi`, `funding`); default `1` (sequential), practical max `3`.
 - `ingest-timescaledb` persists per-series watermarks and ingests only rows newer than the recorded watermark.
 - TimescaleDB sink env vars: `TIMESCALEDB_HOST`, `TIMESCALEDB_PORT`, `TIMESCALEDB_USER`, `TIMESCALEDB_PASSWORD`, `TIMESCALEDB_DB`, `PGSSLMODE`.
 - `TIMESCALEDB_PASSWORD` is required at runtime (no insecure default fallback).

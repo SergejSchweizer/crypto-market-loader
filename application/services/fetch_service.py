@@ -172,7 +172,7 @@ def fetch_symbol_open_interest(
             raise ValueError("latest_open_time_reader is required when tail_delta_only is enabled")
         latest_open_time = latest_reader(
             lake_root=lake_root,
-            dataset_type="open_interest",
+            dataset_type="oi",
             market=market,
             exchange=exchange,
             symbol=storage_symbol,
@@ -201,7 +201,7 @@ def fetch_symbol_open_interest(
 
     stored_open_times = open_times_reader(
         lake_root=lake_root,
-        dataset_type="open_interest",
+        dataset_type="oi",
         market=market,
         exchange=exchange,
         symbol=storage_symbol,
@@ -355,15 +355,13 @@ async def fetch_candle_tasks_parallel(
     symbol_fetcher: Callable[..., list[SpotCandle]] = fetch_symbol_candles,
     shared_semaphore: asyncio.Semaphore | None = None,
 ) -> CandleFetchResultDTO:
-    """Fetch OHLCV tasks concurrently with bounded parallelism."""
+    """Fetch OHLCV tasks sequentially."""
 
-    semaphore = shared_semaphore or asyncio.Semaphore(max(1, concurrency))
+    del concurrency, shared_semaphore
     total_tasks = len(tasks)
-
-    async def _worker(
-        idx: int,
-        task: CandleFetchTaskDTO,
-    ) -> tuple[tuple[Exchange, Market, str, str], list[SpotCandle], str | None]:
+    task_results: dict[tuple[Exchange, Market, str, str], list[SpotCandle]] = {}
+    task_errors: dict[tuple[Exchange, Market, str, str], str] = {}
+    for idx, task in enumerate(tasks, start=1):
         logger.info(
             "Fetch start [%s/%s] exchange=%s market=%s symbol=%s timeframe=%s mode=%s",
             idx,
@@ -375,45 +373,35 @@ async def fetch_candle_tasks_parallel(
             "auto-bootstrap-or-gap-fill",
         )
         key = (task.exchange, task.market, task.symbol, task.timeframe)
-        async with semaphore:
-            try:
-                candles = await asyncio.to_thread(
-                    symbol_fetcher,
-                    task.exchange,
-                    task.market,
-                    task.symbol,
-                    task.timeframe,
-                    lake_root,
-                )
-                logger.info(
-                    "Fetch complete [%s/%s] exchange=%s market=%s symbol=%s timeframe=%s candles=%s",
-                    idx,
-                    total_tasks,
-                    task.exchange,
-                    task.market,
-                    task.symbol,
-                    task.timeframe,
-                    len(candles),
-                )
-                return key, candles, None
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "Fetch failed exchange=%s market=%s symbol=%s timeframe=%s",
-                    task.exchange,
-                    task.market,
-                    task.symbol,
-                    task.timeframe,
-                )
-                return key, [], str(exc)
-
-    results = await asyncio.gather(*[_worker(idx, task) for idx, task in enumerate(tasks, start=1)])
-    task_results: dict[tuple[Exchange, Market, str, str], list[SpotCandle]] = {}
-    task_errors: dict[tuple[Exchange, Market, str, str], str] = {}
-    for key, candles, error in results:
-        if error is None:
+        try:
+            candles = await asyncio.to_thread(
+                symbol_fetcher,
+                task.exchange,
+                task.market,
+                task.symbol,
+                task.timeframe,
+                lake_root,
+            )
+            logger.info(
+                "Fetch complete [%s/%s] exchange=%s market=%s symbol=%s timeframe=%s candles=%s",
+                idx,
+                total_tasks,
+                task.exchange,
+                task.market,
+                task.symbol,
+                task.timeframe,
+                len(candles),
+            )
             task_results[key] = candles
-        else:
-            task_errors[key] = error
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Fetch failed exchange=%s market=%s symbol=%s timeframe=%s",
+                task.exchange,
+                task.market,
+                task.symbol,
+                task.timeframe,
+            )
+            task_errors[key] = str(exc)
     return CandleFetchResultDTO(rows=task_results, errors=task_errors)
 
 
@@ -425,15 +413,13 @@ async def fetch_open_interest_tasks_parallel(
     symbol_fetcher: Callable[..., list[OpenInterestPoint]] = fetch_symbol_open_interest,
     shared_semaphore: asyncio.Semaphore | None = None,
 ) -> OpenInterestFetchResultDTO:
-    """Fetch open-interest tasks concurrently with bounded parallelism."""
+    """Fetch open-interest tasks sequentially."""
 
-    semaphore = shared_semaphore or asyncio.Semaphore(max(1, concurrency))
+    del concurrency, shared_semaphore
     total_tasks = len(tasks)
-
-    async def _worker(
-        idx: int,
-        task: OpenInterestFetchTaskDTO,
-    ) -> tuple[tuple[Exchange, str, str], list[OpenInterestPoint], str | None]:
+    task_results: dict[tuple[Exchange, str, str], list[OpenInterestPoint]] = {}
+    task_errors: dict[tuple[Exchange, str, str], str] = {}
+    for idx, task in enumerate(tasks, start=1):
         logger.info(
             "OI fetch start [%s/%s] exchange=%s market=oi symbol=%s timeframe=%s mode=%s",
             idx,
@@ -444,43 +430,33 @@ async def fetch_open_interest_tasks_parallel(
             "auto-bootstrap-or-gap-fill",
         )
         key = (task.exchange, task.symbol, task.timeframe)
-        async with semaphore:
-            try:
-                rows = await asyncio.to_thread(
-                    symbol_fetcher,
-                    task.exchange,
-                    "perp",
-                    task.symbol,
-                    task.timeframe,
-                    lake_root,
-                )
-                logger.info(
-                    "OI fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",
-                    idx,
-                    total_tasks,
-                    task.exchange,
-                    task.symbol,
-                    task.timeframe,
-                    len(rows),
-                )
-                return key, rows, None
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "OI fetch failed exchange=%s symbol=%s timeframe=%s",
-                    task.exchange,
-                    task.symbol,
-                    task.timeframe,
-                )
-                return key, [], str(exc)
-
-    results = await asyncio.gather(*[_worker(idx, task) for idx, task in enumerate(tasks, start=1)])
-    task_results: dict[tuple[Exchange, str, str], list[OpenInterestPoint]] = {}
-    task_errors: dict[tuple[Exchange, str, str], str] = {}
-    for key, rows, error in results:
-        if error is None:
+        try:
+            rows = await asyncio.to_thread(
+                symbol_fetcher,
+                task.exchange,
+                "perp",
+                task.symbol,
+                task.timeframe,
+                lake_root,
+            )
+            logger.info(
+                "OI fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",
+                idx,
+                total_tasks,
+                task.exchange,
+                task.symbol,
+                task.timeframe,
+                len(rows),
+            )
             task_results[key] = rows
-        else:
-            task_errors[key] = error
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "OI fetch failed exchange=%s symbol=%s timeframe=%s",
+                task.exchange,
+                task.symbol,
+                task.timeframe,
+            )
+            task_errors[key] = str(exc)
     return OpenInterestFetchResultDTO(rows=task_results, errors=task_errors)
 
 
@@ -492,15 +468,13 @@ async def fetch_funding_tasks_parallel(
     symbol_fetcher: Callable[..., list[FundingPoint]] = fetch_symbol_funding,
     shared_semaphore: asyncio.Semaphore | None = None,
 ) -> FundingFetchResultDTO:
-    """Fetch funding tasks concurrently with bounded parallelism."""
+    """Fetch funding tasks sequentially."""
 
-    semaphore = shared_semaphore or asyncio.Semaphore(max(1, concurrency))
+    del concurrency, shared_semaphore
     total_tasks = len(tasks)
-
-    async def _worker(
-        idx: int,
-        task: FundingFetchTaskDTO,
-    ) -> tuple[tuple[Exchange, str, str], list[FundingPoint], str | None]:
+    task_results: dict[tuple[Exchange, str, str], list[FundingPoint]] = {}
+    task_errors: dict[tuple[Exchange, str, str], str] = {}
+    for idx, task in enumerate(tasks, start=1):
         logger.info(
             "Funding fetch start [%s/%s] exchange=%s market=funding symbol=%s timeframe=%s mode=%s",
             idx,
@@ -511,41 +485,31 @@ async def fetch_funding_tasks_parallel(
             "auto-bootstrap-or-gap-fill",
         )
         key = (task.exchange, task.symbol, task.timeframe)
-        async with semaphore:
-            try:
-                rows = await asyncio.to_thread(
-                    symbol_fetcher,
-                    task.exchange,
-                    "perp",
-                    task.symbol,
-                    task.timeframe,
-                    lake_root,
-                )
-                logger.info(
-                    "Funding fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",
-                    idx,
-                    total_tasks,
-                    task.exchange,
-                    task.symbol,
-                    task.timeframe,
-                    len(rows),
-                )
-                return key, rows, None
-            except Exception as exc:  # noqa: BLE001
-                logger.exception(
-                    "Funding fetch failed exchange=%s symbol=%s timeframe=%s",
-                    task.exchange,
-                    task.symbol,
-                    task.timeframe,
-                )
-                return key, [], str(exc)
-
-    results = await asyncio.gather(*[_worker(idx, task) for idx, task in enumerate(tasks, start=1)])
-    task_results: dict[tuple[Exchange, str, str], list[FundingPoint]] = {}
-    task_errors: dict[tuple[Exchange, str, str], str] = {}
-    for key, rows, error in results:
-        if error is None:
+        try:
+            rows = await asyncio.to_thread(
+                symbol_fetcher,
+                task.exchange,
+                "perp",
+                task.symbol,
+                task.timeframe,
+                lake_root,
+            )
+            logger.info(
+                "Funding fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",
+                idx,
+                total_tasks,
+                task.exchange,
+                task.symbol,
+                task.timeframe,
+                len(rows),
+            )
             task_results[key] = rows
-        else:
-            task_errors[key] = error
+        except Exception as exc:  # noqa: BLE001
+            logger.exception(
+                "Funding fetch failed exchange=%s symbol=%s timeframe=%s",
+                task.exchange,
+                task.symbol,
+                task.timeframe,
+            )
+            task_errors[key] = str(exc)
     return FundingFetchResultDTO(rows=task_results, errors=task_errors)

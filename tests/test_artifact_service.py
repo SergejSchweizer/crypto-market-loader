@@ -80,18 +80,20 @@ def _build_funding(count: int) -> list[FundingPoint]:
 
 
 def test_full_history_plots_are_capped_to_1000_points(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Full plot series should be tail-capped to ``MAX_FULL_PLOT_POINTS`` values."""
+    """Full plot series should span full period and cap to ``MAX_FULL_PLOT_POINTS`` values."""
 
     monkeypatch.chdir(tmp_path)
     candles = _build_candles(1200)
     oi = _build_open_interest(1200)
     funding = _build_funding(1200)
-    captured: dict[str, int] = {}
+    captured: dict[str, object] = {}
 
     def fake_save_candle_plots(**kwargs: object) -> list[str]:
         candles_by_exchange = cast(dict[str, dict[str, list[SpotCandle]]], kwargs["candles_by_exchange"])
         series = candles_by_exchange["deribit"]["BTCUSDT"]
         captured["candles"] = len(series)
+        captured["candles_first"] = series[0].open_time
+        captured["candles_last"] = series[-1].open_time
         output_path = tmp_path / "samples" / "deribit_BTCUSDT_1m_spot.png"
         output_path.write_text("plot", encoding="utf-8")
         return [str(output_path)]
@@ -99,11 +101,15 @@ def test_full_history_plots_are_capped_to_1000_points(tmp_path: Path, monkeypatc
     def fake_save_open_interest_plot(**kwargs: object) -> str:
         times = cast(list[datetime], kwargs["times"])
         captured["oi"] = len(times)
+        captured["oi_first"] = times[0]
+        captured["oi_last"] = times[-1]
         return str(tmp_path / "samples" / "oi.png")
 
     def fake_save_funding_plot(**kwargs: object) -> str:
         times = cast(list[datetime], kwargs["times"])
         captured["funding"] = len(times)
+        captured["funding_first"] = times[0]
+        captured["funding_last"] = times[-1]
         return str(tmp_path / "samples" / "funding.png")
 
     write_loader_samples_dto(
@@ -122,3 +128,9 @@ def test_full_history_plots_are_capped_to_1000_points(tmp_path: Path, monkeypatc
     assert captured["candles"] == MAX_FULL_PLOT_POINTS
     assert captured["oi"] == MAX_FULL_PLOT_POINTS
     assert captured["funding"] == MAX_FULL_PLOT_POINTS
+    assert captured["candles_first"] == candles[0].open_time
+    assert captured["candles_last"] == candles[-1].open_time
+    assert captured["oi_first"] == oi[0].open_time
+    assert captured["oi_last"] == oi[-1].open_time
+    assert captured["funding_first"] == funding[0].open_time
+    assert captured["funding_last"] == funding[-1].open_time

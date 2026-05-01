@@ -228,7 +228,7 @@ def test_loader_parquet_then_ingest_timescaledb_end_to_end(
     )
 
     assert summary["ohlcv_rows"] == 1
-    assert summary["open_interest_rows"] == 1
+    assert summary["oi_rows"] == 1
     executed = state.get("executemany_sql")
     assert isinstance(executed, list)
     assert any("market_data.ohlcv" in sql for sql in executed)
@@ -306,8 +306,8 @@ def test_save_parquet_lake_to_timescaledb_reports_ingest_progress(
     )
 
     assert progress_events
-    assert any(event.get("dataset") in {"spot", "perp", "ohlcv"} for event in progress_events)
-    assert any(event.get("dataset") == "open_interest" for event in progress_events)
+    assert any(event.get("dataset") in {"spot", "perp"} for event in progress_events)
+    assert any(event.get("dataset") == "oi" for event in progress_events)
     assert any(event.get("symbol") == "BTCUSDT" for event in progress_events)
     assert all(event.get("time_range") for event in progress_events)
 
@@ -375,7 +375,7 @@ def test_save_parquet_lake_to_timescaledb_ingests_only_delta(
     )
 
     assert summary["ohlcv_rows"] == 0
-    assert summary["open_interest_rows"] == 1
+    assert summary["oi_rows"] == 1
 
 
 def test_filter_files_by_watermark_month_skips_older_partitions(tmp_path: Path) -> None:

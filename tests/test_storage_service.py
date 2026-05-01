@@ -60,7 +60,7 @@ def test_persist_loader_outputs_writes_parquet_and_timescaledb() -> None:
     def fake_save_tsdb_fn(**kwargs: object) -> dict[str, int | str]:
         del kwargs
         calls["tsdb"] += 1
-        return {"schema": "market_data", "ohlcv_rows": 1, "open_interest_rows": 1}
+        return {"schema": "market_data", "ohlcv_rows": 1, "oi_rows": 1}
 
     result = persist_loader_outputs(
         candles_for_storage=candles,
@@ -77,5 +77,5 @@ def test_persist_loader_outputs_writes_parquet_and_timescaledb() -> None:
     )
 
     assert result["_parquet_files"] == ["spot.parquet", "oi.parquet"]
-    assert result["_timescaledb"] == {"schema": "market_data", "ohlcv_rows": 1, "open_interest_rows": 1}
+    assert result["_timescaledb"] == {"schema": "market_data", "ohlcv_rows": 1, "oi_rows": 1}
     assert calls == {"spot": 1, "oi": 1, "tsdb": 1}

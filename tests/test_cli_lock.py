@@ -196,7 +196,7 @@ def test_main_loader_saves_timescaledb_when_enabled(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         cli,
         "save_market_data_to_timescaledb",
-        lambda **kwargs: captured.update(kwargs) or {"schema": "market_data", "ohlcv_rows": 1, "open_interest_rows": 0},
+        lambda **kwargs: captured.update(kwargs) or {"schema": "market_data", "ohlcv_rows": 1, "oi_rows": 0},
     )
     monkeypatch.setattr(
         "sys.argv",
