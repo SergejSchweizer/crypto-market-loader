@@ -1,31 +1,120 @@
 # crypto-market-loader
 
-## 1. Project Overview
+## 1. Why This Project Exists
 
-This repository provides a modular framework for ingesting crypto market data with emphasis on reproducibility and production quality.
+`crypto-market-loader` ingests Deribit market data into reproducible research storage.
 
-Current implemented scope (Step 1):
-- Pull BTC/ETH/SOL data from Deribit public APIs for `spot`, `perp`, `oi`, and `funding`.
-- Expose a CLI command for repeatable loader runs.
+It is built for:
+- deterministic backfills
+- incremental delta updates
+- strict schema consistency
+- production-ready downstream modeling inputs
 
-Scope note:
-- The repository name reflects the long-term direction (`crypto-market-loader`). The current production implementation supports Deribit OHLCV, open interest, and funding.
+Scope in this repository:
+- Exchange: `deribit`
+- Datatypes: `spot`, `perp`, `oi_m1_feature`, `funding`
+- Symbols: `BTC`, `ETH`, `SOL`
+- Ingestion policy: `1m` loader timeframe (funding remains native `8h`)
+- Storage targets: Parquet lake and TimescaleDB
 
-## 2. Architecture Diagram
+## 2. End-to-End Flow
 
 ```text
-CLI -> Application Services (fetch/gapfill/storage/artifacts)
-    -> Ingestion Adapters -> HTTP Client -> Exchange REST API
-    -> Parquet Lake/TimescaleDB
+CLI command
+  -> application services (fetch, gapfill, storage, artifacts)
+  -> ingestion adapters (Deribit endpoints)
+  -> normalized typed rows
+  -> sinks:
+       A) Parquet partition lake
+       B) TimescaleDB typed tables
+  -> optional sample CSV + plot artifacts
 ```
 
-## 3. Installation Guide
+## 3. Project Overview
 
-### 3.1 Prerequisites
+### 3.1 Datatype Importance (Quant Modeling)
 
-- Python 3.11+
+| Datatype | Market Domain | Importance |
+|---|---|---|
+| `perp` | Perpetual markets | `5/5` |
+| `oi_m1_feature` | Perpetual markets | `4/5` |
+| `funding` | Perpetual markets | `3/5` |
+| `spot` | Spot markets | `2/5` |
 
-### 3.2 Setup
+### 3.2 Market Ownership
+
+| Datatype | Belongs To |
+|---|---|
+| `spot` | Spot markets |
+| `perp` | Perpetual markets |
+| `oi_m1_feature` | Perpetual markets |
+| `funding` | Perpetual markets |
+
+## 4. Data Contracts By Datatype
+
+### 4.1 `spot`
+- Source endpoint: `public/get_tradingview_chart_data`
+- Stored cadence: `1m`
+- Parquet dataset: `dataset_type=spot`
+- Timescale table: `spot`
+- Core fields: `open, high, low, close, volume, quote_volume, trade_count`
+
+### 4.2 `perp`
+- Source endpoint: `public/get_tradingview_chart_data`
+- Stored cadence: `1m`
+- Parquet dataset: `dataset_type=perp`
+- Timescale table: `perp`
+- Core fields: `open, high, low, close, volume, quote_volume, trade_count`
+
+### 4.3 `oi_m1_feature`
+- Source endpoint: `public/get_last_settlements_by_instrument`
+- Stored cadence: `1m` feature grid
+- Parquet dataset: `dataset_type=oi_m1_feature`
+- Timescale table: `open_interest`
+- Core fields:
+  - `open_interest`, `open_interest_value`
+  - `oi_ffill`, `oi_is_observed`, `minutes_since_oi_observation`
+- Semantics:
+  - observed OI minute: `oi_is_observed=true`, `minutes_since_oi_observation=0`
+  - synthetic minute: forward-filled value, `oi_is_observed=false`, counter increments
+  - no backward-fill before first observed point
+
+### 4.4 `funding`
+- Source endpoint: `public/get_funding_rate_history`
+- Stored cadence: native `8h` (not transformed to `1m`)
+- Parquet dataset: `dataset_type=funding`
+- Timescale table: `funding`
+- Core fields: `funding_rate`, `index_price`, `mark_price`
+
+## 5. Repository Architecture
+
+```text
+project/
+|-- api/
+|-- application/
+|-- infra/
+|-- ingestion/
+|-- tests/
+|-- README.md
+|-- REPORT.md
+`-- AGENTS.md
+```
+
+Key modules:
+- `application/services/fetch_service.py`: sequential fetch orchestration
+- `application/services/storage_service.py`: parquet + Timescale write orchestration
+- `application/services/artifact_service.py`: sample CSV/plot output
+- `ingestion/lake.py`: partitioned parquet read/write/load
+- `infra/timescaledb/sink.py`: table DDL, upserts, watermarks
+- `api/commands/loader.py`: main online ingestion entrypoint
+- `api/commands/timescaledb_ingest.py`: offline parquet -> Timescale ingest
+
+## 6. Installation And Environment
+
+### 6.1 Prerequisites
+- Python `3.11+`
+
+### 6.2 Setup
 
 ```bash
 python -m venv .venv
@@ -34,502 +123,114 @@ pip install -U pip
 pip install -e ".[dev]"
 ```
 
-If the repository folder is renamed or moved, recreate the virtualenv (`rm -rf .venv && make setup`) so script shebangs remain valid.
+If repository path changes, recreate `.venv` so entrypoint shebangs stay valid.
 
-## 4. Dependency Setup
+### 6.3 Core Dependencies
+- `pyarrow`: parquet I/O
+- `pandas`, `numpy`: dataframe and numerical operations
+- `matplotlib`: optional plotting
 
-Core dependencies are managed through `pyproject.toml` and include:
-- `matplotlib` for optional plot generation
-- `pyarrow` for parquet lake output
-- `numpy` (via `pandas`) for vectorized numeric operations used in dataframe/statistics workflows
+### 6.4 Tooling Dependencies
+- `ruff`: lint/style checks
+- `mypy`: static typing checks
+- `pytest`: tests
 
-Tooling and test purpose:
-- `ruff`: fast linting and import/style/error checks to keep code quality consistent.
-- `numpy`: numerical array/math foundation used underneath analytics/dataframe operations.
-- `tests` (`pytest`): executable behavior checks for ingestion, storage, CLI orchestration, and regression prevention.
+## 7. Running The Loader
 
-## 5. Module Explanations
+### 7.1 Canonical Commands
 
-### 5.1 Application Layer
-- `application/dto.py`: shared DTO definitions for fetch/storage/artifact service boundaries.
-- `application/schema.py`: canonical contract mapping for CLI data types to storage `dataset_type` + `instrument_type`.
-- `application/services/gapfill_service.py`: pure time/gap range helpers used by loader synchronization logic.
-- `application/services/fetch_service.py`: fetch orchestration service (task DTOs + sequential execution + symbol-level bootstrap/gap-fill fetch).
-- `application/services/storage_service.py`: orchestration for parquet-lake and TimescaleDB persistence side effects.
-- `application/services/artifact_service.py`: sample CSV/plot artifact generation service.
-
-### 5.2 Ingestion Layer
-- `ingestion/http_client.py`: lightweight JSON HTTP utilities.
-- `ingestion/spot.py`: Deribit candle load/normalization interface for `spot` and `perp`.
-- `ingestion/open_interest.py`: open-interest load/normalization interface for perpetual instruments.
-- `ingestion/funding.py`: funding-rate load/normalization interface for perpetual instruments.
-- `ingestion/exchanges/deribit.py`: Deribit adapter with symbol and timeframe mapping.
-- `ingestion/exchanges/deribit_open_interest.py`: Deribit open-interest adapter.
-- `ingestion/exchanges/deribit_funding.py`: Deribit funding-rate adapter.
-- `ingestion/lake.py`: parquet lake read/write and partition utility functions.
-- `ingestion/plotting.py`: chart rendering for loaded price/volume/open-interest/funding data.
-### 5.3 API Layer
-- `api/cli.py`: CLI command registration, argument parsing, orchestration entrypoint, and JSON output formatting.
-
-### 5.4 Infrastructure Layer
-- `infra/timescaledb/sink.py`: TimescaleDB schema bootstrap and idempotent upsert sink with dedicated tables for `spot`, `perp`, `open_interest`, and `funding`.
-
-### 5.0 Canonical Data Type Naming
-
-Use these names consistently in code, CLI usage, and documentation:
-
-| Data Type | Canonical Name | Meaning |
-|---|---|---|
-| Spot candles | `spot` | Cash/spot OHLCV candles. |
-| Perpetual candles | `perp` | Perpetual futures/swap OHLCV candles. |
-| Open interest | `oi` | Open-interest time series for perpetual instruments. |
-| Funding rate | `funding` | Perpetual funding-rate time series for perpetual instruments. |
-
-Naming rules:
-- Use `spot`, `perp`, `oi`, and `funding` as the user-facing data-type names.
-- `dataset_type=oi_m1_feature` is the storage-layer parquet label for `oi`.
-- `dataset_type=funding` is the storage-layer parquet label for `funding`.
-
-Market ownership by datatype:
-
-| Datatype | Belongs To |
-|---|---|
-| `spot` | Spot markets |
-| `perp` | Perpetual markets |
-| `oi` | Perpetual markets |
-| `funding` | Perpetual markets |
-
-### 5.0.1 Data Type Purpose And Meaning
-
-#### `spot`
-- Why this data exists:
-  Spot candles are the base market state for unlevered price discovery and benchmark return construction.
-- Meaning:
-  `spot` represents executed cash-market OHLCV bars for assets such as BTC and ETH.
-- Typical usage:
-  Baseline volatility, return, and liquidity feature generation.
-
-#### `perp`
-- Why this data exists:
-  Perpetual futures dominate crypto derivatives flow and often lead or amplify directional moves.
-- Meaning:
-  `perp` represents OHLCV bars from perpetual swap markets, normalized to the same schema as `spot`.
-- Typical usage:
-  Derivatives-aware price/volume signals and cross-market spread analysis against `spot`.
-
-#### `oi`
-- Why this data exists:
-  Open interest captures positioning intensity and participation in derivatives markets.
-- Meaning:
-  `oi` represents open-interest time series aligned to perpetual instruments and intervals.
-- Typical usage:
-  Position build-up/unwind detection, confirmation/divergence checks with `perp` price action.
-
-#### `funding`
-- Why this data exists:
-  Funding captures the periodic transfer mechanism that anchors perpetual prices to spot.
-- Meaning:
-  `funding` represents time-bucketed perpetual funding-rate observations.
-- Typical usage:
-  Carry analysis, perp crowding diagnostics, and regime filters for derivatives positioning.
-
-### 5.1 Data Dictionary
-
-Loaded candle variables (`SpotCandle`):
-
-| Variable | Type | Description |
-|---|---|---|
-| `exchange` | `str` | Exchange identifier used by the adapter (`deribit`). |
-| `symbol` | `str` | Normalized instrument symbol in storage form for the selected exchange/market. |
-| `interval` | `str` | Candle granularity (for example `1m`, `5m`, `1h`, `1d`). |
-| `open_time` | `datetime (UTC)` | Timestamp when the candle interval starts (inclusive). |
-| `close_time` | `datetime (UTC)` | Timestamp when the candle interval ends (inclusive in exchange payload mapping). |
-| `open_price` | `float` | First traded price observed in the candle interval. |
-| `high_price` | `float` | Maximum traded price observed in the candle interval. |
-| `low_price` | `float` | Minimum traded price observed in the candle interval. |
-| `close_price` | `float` | Last traded price observed in the candle interval. |
-| `volume` | `float` | Base-asset traded volume during the interval. |
-| `quote_volume` | `float \| null` | Quote-asset traded volume during the interval when provided by exchange; otherwise `null`. |
-| `trade_count` | `int` | Number of trades aggregated into the candle (exchange dependent). |
-
-### 5.1.1 Dataset Semantics And Variable Computation
-
-#### `spot` dataset (`dataset_type=spot`, `instrument_type=spot`)
-- Meaning:
-  Executed cash-market candles used as the baseline non-derivative price/volume process.
-- Canonical normalized variables:
-  `open_time`, `close_time`, `open`, `high`, `low`, `close`, `volume`, `quote_volume`, `trade_count`.
-- Computation in pipeline:
-  - `open_time = datetime_utc(row[0] / 1000)`.
-  - `close_time = datetime_utc(row[6] / 1000)` for endpoints that return explicit close timestamp.
-  - `open, high, low, close = float(row[1]), float(row[2]), float(row[3]), float(row[4])`.
-  - `volume = float(row[5])`.
-  - `quote_volume = float(row[7])` when provided by endpoint.
-  - `trade_count = int(row[8])` when provided by endpoint, else `0` on adapters without trade-count payloads.
-- Exchange-specific details:
-  - Deribit spot: built from `ticks/open/high/low/close/volume`; `close_time = open_time + timeframe_ms - 1`, `quote_volume = null` when exchange quote turnover is unavailable, `trade_count = 0`.
-
-#### `perp` dataset (`dataset_type=perp`, `instrument_type=perp`)
-- Meaning:
-  Executed perpetual-futures candles (derivatives market) normalized to the same schema as `spot`.
-- Canonical normalized variables:
-  Same OHLCV schema and formulas as `spot`; only instrument source/endpoint differs.
-- Computation in pipeline:
-  Uses the same `SpotCandle` parser and same storage row builder (`candle_record`) as `spot`, preserving identical field semantics.
-- Exchange-specific details:
-  - Deribit perp: TradingView chart endpoint with computed `close_time` and fallback fields identical to Deribit spot behavior.
-
-#### `oi` dataset (`dataset_type=oi_m1_feature`, `instrument_type=perp`)
-- Meaning:
-  Time-bucketed open interest for perpetual instruments; reflects outstanding open positions rather than executed candle flow.
-- Availability rule:
-  Collected only when market context is `perp`; requesting `oi` for `spot` returns no rows by design.
-- Canonical normalized variables:
-  `open_time`, `close_time`, `open_interest`, `open_interest_value`, `oi_ffill`, `oi_is_observed`, `minutes_since_oi_observation`.
-- Computation in pipeline:
-  - `open_time` is parsed from exchange timestamp and converted to UTC.
-  - `close_time = open_time + timeframe_ms - 1` (inclusive interval boundary).
-  - `open_interest` comes from exchange OI quantity field.
-  - `open_interest_value` is used when exchange provides notional/value OI, otherwise set to `0.0`.
-  - `oi_ffill` stores forward-filled OI on 1m grid between observed OI points.
-  - `oi_is_observed` is `true` on exchange-observed timestamps and `false` on synthesized forward-fill rows.
-  - `minutes_since_oi_observation` counts minutes from the latest observed OI point (`0` on observed rows).
-- Exchange-specific OI mapping:
-  - Deribit (`/api/v2/public/get_last_settlements_by_instrument`):
-    - Raw settlement `timestamp` is bucketed to requested timeframe:
-      `bucket_open_ms = floor(timestamp / timeframe_ms) * timeframe_ms`.
-    - `open_interest = float(position)`.
-    - `open_interest_value = 0.0` (not provided by adapter source payload).
-
-#### `funding` dataset (`dataset_type=funding`, `instrument_type=perp`)
-- Meaning:
-  Time-bucketed funding-rate observations for perpetual instruments.
-- Availability rule:
-  Collected only when market context is `perp`; requesting `funding` for `spot` returns no rows by design.
-- Canonical normalized variables:
-  `open_time`, `close_time`, `funding_rate`, `index_price`, `mark_price`.
-- Computation in pipeline:
-  - `open_time` is parsed from exchange timestamp and converted to UTC.
-  - `close_time = open_time + timeframe_ms - 1` (inclusive interval boundary).
-  - `funding_rate` is taken from exchange funding-rate field for the interval.
-  - `index_price` and `mark_price` are propagated from exchange payload when available.
-- Exchange-specific funding mapping:
-  - Deribit (`/api/v2/public/get_funding_rate_history`): records are stored in native exchange cadence (`8h`) to preserve original funding granularity.
-
-Parquet row metadata fields:
-
-| Variable | Type | Description |
-|---|---|---|
-| `schema_version` | `str` | Version marker for row schema evolution (`v1` currently). |
-| `dataset_type` | `str` | Dataset family label (`spot`, `perp`, `oi_m1_feature`, or `funding`). |
-| `instrument_type` | `str` | Market class used for loading (`spot` or `perp`). |
-| `event_time` | `datetime (UTC)` | Canonical event timestamp for the row (currently aligned to `open_time`). |
-| `ingested_at` | `datetime (UTC)` | Wall-clock timestamp when the row was written by the pipeline. |
-| `run_id` | `str` | Unique ingestion execution identifier for traceability. |
-| `source_endpoint` | `str` | Exchange endpoint group used to produce the row (`public_market_data`, `public_open_interest`, or `public_funding`). |
-| `timeframe` | `str` | Storage timeframe field (same semantic meaning as `interval`). |
-| `open`, `high`, `low`, `close` | `float` | Parquet OHLC aliases mapped from candle prices. |
-| `extra` | `json/object` | Full normalized candle payload snapshot for reproducibility/debugging. |
-
-### 5.2 Market Types
-
-Supported `--market` values (data types):
-
-| Market Type | Storage `instrument_type` | Meaning |
-|---|---|---|
-| `spot` | `spot` | Cash/spot market candles. |
-| `perp` | `perp` | Perpetual futures/swap candles. |
-| `oi` | `perp` | Open-interest time series for perpetual instruments. |
-| `funding` | `perp` | Funding-rate time series for perpetual instruments. |
-
-Exchange coverage:
-
-| Exchange | Spot | Perp | OI | Funding | Notes |
-|---|---|---|---|---|---|
-| Deribit | Yes | Yes | Yes | Yes | Spot maps to instruments like `BTC_USDC`; perp maps to `BTC-PERPETUAL`. |
-
-Current production note:
-- The ingestion runtime supports Deribit only.
-
-### 5.3 Perpetual Field Mapping (Deribit Origin -> Storage)
-
-Perpetual rows are normalized into the same storage schema as spot:
-`open_time`, `close_time`, `open`, `high`, `low`, `close`, `volume`, `quote_volume`, `trade_count`, plus metadata.
-
-Deribit perp (`/api/v2/public/get_tradingview_chart_data`) mapping:
-
-| Origin Field | Storage Field |
-|---|---|
-| `result.ticks[i]` | `open_time` |
-| `result.ticks[i] + candle_width_ms - 1` | `close_time` |
-| `result.open[i]` | `open` |
-| `result.high[i]` | `high` |
-| `result.low[i]` | `low` |
-| `result.close[i]` | `close` |
-| `result.volume[i]` | `volume` |
-| not provided by endpoint | `quote_volume = null` |
-| not provided by endpoint | `trade_count = 0` |
-
-### 5.4 Perpetual Symbol Naming by Exchange
-
-Perpetual symbol normalization (Deribit):
-
-| Exchange | Canonical Perp Symbols | Accepted Input Aliases | Normalized Output |
-|---|---|---|---|
-| Deribit | `BTC-PERPETUAL`, `ETH-PERPETUAL`, `SOL-PERPETUAL` | `BTC`, `BTCUSDT`, `BTCUSD`, `BTC-PERPETUAL`; `ETH`, `ETHUSDT`, `ETHUSD`, `ETH-PERPETUAL`; `SOL`, `SOLUSDT`, `SOLUSD`, `SOL-PERPETUAL` | `BTC-PERPETUAL`, `ETH-PERPETUAL`, `SOL-PERPETUAL` |
-
-CLI recommendation:
-- Use `BTC` / `ETH` / `SOL`; Deribit adapters normalize to canonical Deribit symbols.
-
-## 6. Execution Workflow
-
-Load BTC/ETH spot candles:
+Spot:
 
 ```bash
-python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL --timeframe M1
+python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL --timeframe 1m
 ```
 
-Load spot and perp in one run:
-
-```bash
-python3 main.py loader --exchange deribit --market spot perp --symbols BTC ETH SOL --timeframe M1
-```
-
-Timeframe policy:
-- Ingestion is restricted to `1m` only (`1m` / `M1`).
-- Non-`1m` loader and `ingest-timescaledb` runs are rejected.
-- Default timeframe is `1m` when no timeframe is explicitly provided.
-
-Load and generate plots (price + volume) under `samples/`:
-
-```bash
-python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL --timeframe M1 --plot --plot-price close
-```
-
-Save loaded data to parquet lake format:
-
-```bash
-python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL --timeframe M1 --save-parquet-lake --lake-root lake/bronze
-```
-
-Save loaded data to TimescaleDB:
-
-```bash
-python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --timeframe 1m --save-timescaledb --timescaledb-schema market_data
-```
-
-TimescaleDB bootstrap options:
-- Default behavior creates schema/tables/hypertables if missing.
-- Use `--timescaledb-no-bootstrap` to write into pre-existing schema objects only.
-
-TimescaleDB table layout:
-- `spot`: spot candle rows (`dataset_type=spot`).
-- `perp`: perp candle rows (`dataset_type=perp`).
-- `open_interest`: OI feature-grid rows (`dataset_type=oi_m1_feature`).
-- `funding`: funding rows (`dataset_type=funding`).
-- `ingest_watermarks`: per-series delta ingest state.
-
-Fetch OHLCV (spot+perp), open interest, and funding in one run:
+All datatypes:
 
 ```bash
 python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --timeframe 1m --save-parquet-lake --lake-root lake/bronze
 ```
 
-Parquet lake write mode uses a stable file per partition (`data.parquet`) with staged merge+rewrite on each run to keep file counts bounded. Partition schema:
+All datatypes + Timescale:
+
+```bash
+python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --timeframe 1m --save-timescaledb --timescaledb-schema market_data
+```
+
+With plots:
+
+```bash
+python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --timeframe 1m --save-parquet-lake --plot
+```
+
+### 7.2 Ingestion Policy
+- Input timeframe must be `1m`/`M1`
+- Effective persisted cadence:
+  - `spot`, `perp`, `oi_m1_feature`: `1m`
+  - `funding`: `8h`
+
+### 7.3 Delta Behavior
+Default mode is delta-first:
+- first run without history: full bootstrap
+- next runs: continue from latest stored open time + one interval
+- optional `--full-gap-fill` performs historical internal gap checks
+
+### 7.4 Concurrency Behavior
+- Fetch execution is sequential to reduce Deribit blocking risk
+- Parquet partition writing remains parallelized
+
+## 8. Storage Design
+
+### 8.1 Parquet Lake Layout
 
 ```text
 dataset_type=spot/
-  exchange=<exchange>/
-  instrument_type=<spot>/
-  symbol=<symbol>/
-  timeframe=<interval>/
-  date=<YYYY-MM>/
-    data.parquet
+  exchange=<exchange>/instrument_type=spot/symbol=<symbol>/timeframe=<interval>/date=<YYYY-MM>/data.parquet
 
 dataset_type=perp/
-  exchange=<exchange>/
-  instrument_type=<perp>/
-  symbol=<symbol>/
-  timeframe=<interval>/
-  date=<YYYY-MM>/
-    data.parquet
+  exchange=<exchange>/instrument_type=perp/symbol=<symbol>/timeframe=<interval>/date=<YYYY-MM>/data.parquet
 
 dataset_type=oi_m1_feature/
-  exchange=<exchange>/
-  instrument_type=<perp>/
-  symbol=<symbol>/
-  timeframe=<interval>/
-  date=<YYYY-MM>/
-    data.parquet
+  exchange=<exchange>/instrument_type=perp/symbol=<symbol>/timeframe=<interval>/date=<YYYY-MM>/data.parquet
 
 dataset_type=funding/
-  exchange=<exchange>/
-  instrument_type=<perp>/
-  symbol=<symbol>/
-  timeframe=<interval>/
-  date=<YYYY-MM>/
-    data.parquet
+  exchange=<exchange>/instrument_type=perp/symbol=<symbol>/timeframe=<interval>/date=<YYYY-MM>/data.parquet
 ```
 
-### 6.7 Loader Delta Behavior (Default)
+### 8.2 TimescaleDB Tables
+- `spot`
+- `perp`
+- `open_interest`
+- `funding`
+- `ingest_watermarks`
 
-The loader is delta-first by default on every run:
-- Default mode is `--tail-delta-only` (enabled by default).
-- If parquet data already exists for a symbol/timeframe, loader fetches only from `latest_stored_open_time + 1 interval` forward.
-- If no parquet data exists for a symbol/timeframe, loader performs an initial full-history bootstrap for that series.
-- Use `--full-gap-fill` when you want historical internal gap checks in addition to tail updates.
+### 8.3 Architecture/Storage Tradeoffs
+- Parquet lake: cheap historical storage, partition-friendly batch reads, reproducibility
+- TimescaleDB: indexed low-latency time-series queries, robust incremental upserts
+- Combined model: keeps history-oriented storage independent from serving-oriented storage
 
-### 6.8 Dataset Time Ranges
+## 9. Datetime, Sampling, And Plot Nuances
 
-OHLCV/OI ingestion runs use `1m` timeframe. Funding is stored in native Deribit cadence (`8h`). Effective time-range coverage by dataset:
+### 9.1 Datetime Semantics
+- `open_time`, `close_time`, `event_time` are UTC timestamps
+- interval alignment follows exchange-derived bucket boundaries
+- `ingested_at` is UTC write timestamp
 
-| Dataset | Exchange Endpoint | Historical Start | Historical End | Notes |
-|---|---|---|---|---|
-| `spot` | `public/get_tradingview_chart_data` | Earliest data available from Deribit for instrument | Latest closed candle at run time | First run bootstraps full history; later runs fetch tail delta by default. |
-| `perp` | `public/get_tradingview_chart_data` | Earliest data available from Deribit for instrument | Latest closed candle at run time | Same bootstrap/delta behavior as `spot`. |
-| `oi` | `public/get_last_settlements_by_instrument` | Earliest settlement/OI records available from Deribit for instrument | Latest available settlement/OI record at run time | SOL OI uses `SOL_USDC-PERPETUAL` mapping on this endpoint. |
-| `funding` | `public/get_funding_rate_history` | **2019-01-01 00:00:00 UTC** (hardcoded lower bound) | Current run time | Stored with native `8h` timeframe regardless of loader `--timeframe` input. |
+### 9.2 Samples And Plots
+- CSV samples are random across full available series (`random_state=42`)
+- if series length `< 10`, sampling uses replacement (duplicates are expected)
+- plots are generated only when `--plot` is enabled
+- each plot uses full available period and downsampling capped at `1000` points
 
-Practical note:
-- The exact stored range in your lake depends on what has already been ingested for each `(exchange, symbol, dataset, timeframe)` series.
+## 10. Testing And Quality Gates
 
-Example full-history bootstrap (first run can be long-running):
-
-```bash
-python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL --timeframe M1 --save-parquet-lake --lake-root lake/bronze --no-json-output
-```
-
-Note:
-- Loader network fetch tasks run sequentially to reduce exchange-side blocking/rate-limit pressure.
-- Fetch orchestration is implemented in `application/services/fetch_service.py`; `api/cli.py` delegates to this service.
-- Parquet partition writes are parallelized.
-- In current sequential mode, exchange query concurrency is effectively `1` even if compatibility concurrency env vars are set.
-
-Run silently without JSON output:
-
-```bash
-python3 main.py loader --exchange deribit --market spot --symbols BTC --timeframe M1 --no-json-output
-```
-
-Ingest existing parquet lake files into TimescaleDB (no internet fetch):
-
-```bash
-python3 main.py ingest-timescaledb --lake-root lake/bronze --timescaledb-schema market_data
-```
-
-Optional filters for offline parquet->Timescale ingestion:
-
-```bash
-python3 main.py ingest-timescaledb --lake-root lake/bronze --exchanges deribit --instrument-types perp --timeframes 1m
-```
-
-Export deterministic descriptive statistics for reporting:
-
-```bash
-python3 main.py export-descriptive-stats --lake-root lake/bronze --output-csv docs/tables/descriptive_stats_baseline.csv --start-time 2026-01-01T00:00:00+00:00 --end-time 2026-01-31T23:59:59+00:00
-```
-
-Load Deribit perpetual candles (portable perp inputs):
-
-```bash
-python3 main.py loader --exchange deribit --market perp --symbols BTC ETH SOL --timeframe M1
-```
-
-List all currently supported spot timeframes:
-
-```bash
-python3 main.py list-spot-timeframes
-python3 main.py list-spot-timeframes --exchange deribit
-```
-
-## 7. Datatype Plots
-
-### 7.1 OHLCV (Spot)
-Description:
-OHLCV spot rows capture exchange-traded candle bars for cash markets.  
-The loader writes grouped sample artifacts per run under `samples/`.
-
-CSV sample:
-`samples/spot_<exchange>_<symbol>_<timeframe>_sample_10_rows.csv` (10 sampled rows).
-
-Plot:
-`samples/spot_<exchange>_<symbol>_<timeframe>_sample_10_rows.png` (full-history price + volume plot for that group).
-
-Example:
-`samples/spot_deribit_BTCUSDT_1m_sample_10_rows.png`
-
-### 7.2 OHLCV (Perp)
-Description:
-Perpetual OHLCV rows follow the same candle schema and are stored independently per market group.
-
-CSV sample:
-`samples/perp_<exchange>_<symbol>_<timeframe>_sample_10_rows.csv` (10 sampled rows).
-
-Plot:
-`samples/perp_<exchange>_<symbol>_<timeframe>_sample_10_rows.png` (full-history price + volume plot for that group).
-
-Example:
-`samples/perp_deribit_BTCUSDT_1m_sample_10_rows.png`
-
-### 7.3 Open Interest (OI)
-Description:
-Open-interest rows are stored under `dataset_type=oi_m1_feature` and sampled per run when `--market oi` is used.
-
-CSV sample:
-`samples/oi_<market>_<exchange>_<symbol>_<timeframe>_sample_10_rows.csv` (10 sampled rows).
-
-Plot:
-`samples/oi_<market>_<exchange>_<symbol>_<timeframe>_sample_10_rows.png` (full-history OI time-series line chart for that group).
-
-Example:
-`samples/oi_perp_deribit_BTCUSDT_1m_sample_10_rows.png`
-
-### 7.4 Funding
-Description:
-Funding rows are stored under `dataset_type=funding` and sampled per run when `--market funding` is used.
-
-CSV sample:
-`samples/funding_<market>_<exchange>_<symbol>_<timeframe>_sample_10_rows.csv` (10 sampled rows).
-
-Plot:
-`samples/funding_<market>_<exchange>_<symbol>_<timeframe>_sample_10_rows.png` (full-history funding-rate time-series line chart for that group).
-
-Example:
-`samples/funding_perp_deribit_BTCUSDT_8h_sample_10_rows.png`
-
-### 7.5 Sampling And Plot Nuances
-- Sample CSVs are random row samples from the full loaded series for the specific `(dataset, exchange, symbol, timeframe)`.
-- Sampling uses deterministic seed `42` for reproducibility.
-- If a series has fewer than 10 rows, sampling uses replacement, so duplicate timestamps can appear in the sample CSV.
-- Plots are generated only when `--plot` is passed.
-- Plot series use the merged full period available for that run context (current fetch + parquet-lake history when readable).
-- Plot values are capped to max `1000` points via full-span downsampling, so first/last timestamps remain represented.
-
-### 7.6 OI Forward-Fill Nuances
-- OI rows are stored on `1m` grid for `oi` dataset.
-- Raw observed OI rows are preserved with `oi_is_observed=true` and `minutes_since_oi_observation=0`.
-- Missing minutes between observed OI rows are synthesized using forward fill:
-  - `oi_ffill` and `open_interest` carry the latest observed OI value.
-  - `oi_is_observed=false`.
-  - `minutes_since_oi_observation` increments by 1 per minute.
-- No backward fill is created before the first observed OI row in a series.
-
-### 7.7 Funding Nuances
-- Funding is always stored at native Deribit cadence (`8h`) even when loader is invoked with `--timeframe 1m`.
-- Funding sample and plot filenames therefore use `..._8h_...` timeframe segment.
-
-## 8. Testing Instructions
+Run all checks:
 
 ```bash
 make check
 ```
 
-Quality gate purpose:
-- `ruff check .`: fast static linting and import/style/error checks (for example unused imports, bad patterns, formatting-related lint rules).
-- `mypy .`: static type checking to catch type mismatches before runtime (`mupy` in notes/messages usually means `mypy`).
-- `pytest`: runtime test suite for behavioral correctness of ingestion, storage, CLI, and service flows.
-
-Equivalent direct commands:
+Equivalent:
 
 ```bash
 .venv/bin/python -m pytest
@@ -537,46 +238,33 @@ Equivalent direct commands:
 .venv/bin/python -m mypy .
 ```
 
-Pre-commit hooks:
+## 11. Deployment And Operations
 
-```bash
-python -m pip install pre-commit
-pre-commit install
-pre-commit run --all-files
-```
+Current mode:
+- local CLI execution
+- single-instance lock file: `.run/crypto-market-loader.lock`
 
-Current coverage includes:
-- Exchange adapter normalization/routing and pagination behavior.
-- Gap-fill utility logic (`application/services/gapfill_service.py`).
-- Datatype-separated artifact tests for `spot`, `oi`, and `funding` plot downsampling/coverage behavior.
-- Fetch orchestration success/error split for sequential task runners (`application/services/fetch_service.py`).
-- Storage orchestration behavior for parquet+Timescale side effects (`application/services/storage_service.py`).
-- Canonical dataset contract mapping (`application/schema.py`).
-- CLI locking, parquet lake persistence, plotting, and TimescaleDB sink behavior.
+Logging:
+- default log path: `/volume1/Temp/logs/`
+- override via `DEPTH_SYNC_LOG_DIR`
 
-## 9. Deployment Instructions
+Environment:
+- `.env` is auto-loaded locally
+- keep `.env` untracked
 
-- For now this is a local CLI tool.
-- Next stage will add scheduled runs and orchestrated pipelines.
-- The main loader enforces a single running instance using `.run/crypto-market-loader.lock`.
-- Runtime logs are written to a command-specific file under `/volume1/Temp/logs/` by default.
-- Log filenames match the CLI command/module, for example `loader.log` and `ingest-timescaledb.log`.
-- Logs rotate every 7 days and rotated files are date-suffixed (for example `loader.log.2026-04-27`) and retained in the same directory.
-- Local `.env` is loaded automatically when present and is excluded from git tracking.
-- Optional override: set `DEPTH_SYNC_LOG_DIR` to change the log directory.
-- Optional override: set `DEPTH_FETCH_CONCURRENCY` to control loader fetch fan-out. Current runtime fetch mode is sequential, so this does not increase concurrent exchange requests.
-- Optional override: `LOADER_OHLCV_CONCURRENCY`, `LOADER_OI_CONCURRENCY`, and `LOADER_FUNDING_CONCURRENCY` are kept for compatibility but do not increase concurrency in sequential fetch mode.
-- Optional override: set `DEPTH_HTTP_TIMEOUT_S`, `DEPTH_HTTP_MAX_RETRIES`, and `DEPTH_HTTP_RETRY_BACKOFF_S` (defaults: `8`, `2`, `0.5`) for unstable network behavior tuning.
-- Optional override: set `TIMESCALE_INGEST_WORKERS` to parallelize `ingest-timescaledb` across dataset types (`spot/perp`, `oi`, `funding`); default `1` (sequential), practical max `3`.
-- `ingest-timescaledb` persists per-series watermarks and ingests only rows newer than the recorded watermark.
-- TimescaleDB sink env vars: `TIMESCALEDB_HOST`, `TIMESCALEDB_PORT`, `TIMESCALEDB_USER`, `TIMESCALEDB_PASSWORD`, `TIMESCALEDB_DB`, `PGSSLMODE`.
-- `TIMESCALEDB_PASSWORD` is required at runtime (no insecure default fallback).
-- Run quality gates via module form (`python -m pytest`, `python -m mypy`, `python -m ruff`) to avoid local venv entrypoint shebang drift when directories move.
+Key variables:
+- HTTP: `DEPTH_HTTP_TIMEOUT_S`, `DEPTH_HTTP_MAX_RETRIES`, `DEPTH_HTTP_RETRY_BACKOFF_S`
+- Compatibility knobs: `DEPTH_FETCH_CONCURRENCY`, `LOADER_OHLCV_CONCURRENCY`, `LOADER_OI_CONCURRENCY`, `LOADER_FUNDING_CONCURRENCY`
+- Timescale ingest workers: `TIMESCALE_INGEST_WORKERS`
+- DB config: `TIMESCALEDB_HOST`, `TIMESCALEDB_PORT`, `TIMESCALEDB_USER`, `TIMESCALEDB_PASSWORD`, `TIMESCALEDB_DB`, `PGSSLMODE`
 
-## 10. Known Limitations
+## 12. Known Limitations
+- Deribit-only integration
+- no exchange failover routing
+- no trade-level ingestion in current scope
 
-- No exchange failover yet.
-
-## 11. Future Improvements
-
-- Add scheduled lake compaction and retention policies.
+## 13. Future Improvements
+- scheduled parquet compaction and retention
+- multi-exchange adapter expansion
+- schema/version migration utilities
+- richer ingestion observability (throughput/error dashboards)
