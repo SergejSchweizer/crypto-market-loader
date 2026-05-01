@@ -22,7 +22,7 @@ Within crypto-specific empirical work, market microstructure studies and liquidi
 
 ## Dataset
 - Source: Deribit `/api/v2/public/get_tradingview_chart_data`, `/api/v2/public/get_last_settlements_by_instrument`, `/api/v2/public/get_funding_rate_history`.
-- Sample period: user-configurable runtime period determined by symbols, markets, and existing parquet coverage; ingestion timeframe is fixed to `1m`.
+- Sample period: user-configurable runtime period determined by symbols, markets, and existing parquet coverage; OHLCV/OI are stored at `1m`, funding is stored at native Deribit `8h`.
 - Number of observations: runtime-dependent on symbol/timeframe scope and auto bootstrap vs gap-fill behavior.
 - Variables: `open_time`, `close_time`, `open`, `high`, `low`, `close`, `volume`, `quote_volume`, `trade_count` plus provenance metadata.
 - Additional perp feature set: `open_interest`, `open_interest_value`, and funding-rate fields.
@@ -59,7 +59,7 @@ Within crypto-specific empirical work, market microstructure studies and liquidi
   - `close_time` is either exchange-provided close timestamp or computed as `open_time + timeframe_ms - 1` for endpoints that publish only interval starts.
   - `open/high/low/close` are direct float-casts of exchange candle values.
   - `volume` is base-asset traded volume over interval.
-  - `quote_volume` is exchange quote-turnover field when available; fallback proxies are adapter-defined (for Deribit chart endpoint, current mapping uses `volume` proxy).
+  - `quote_volume` is exchange quote-turnover field when available; otherwise stored as `null` (Deribit chart endpoint does not provide dedicated quote turnover in the mapped payload).
   - `trade_count` is exchange trade-count field when available; otherwise set to `0`.
 
 #### `perp` (perpetual OHLCV)

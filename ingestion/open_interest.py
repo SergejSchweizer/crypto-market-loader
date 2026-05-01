@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, cast
 
 from ingestion.exchanges import deribit_open_interest
@@ -38,6 +38,85 @@ class OpenInterestPoint:
     close_time: datetime
     open_interest: float
     open_interest_value: float
+    oi_ffill: float | None = None
+    oi_is_observed: bool = True
+    minutes_since_oi_observation: int = 0
+
+
+def expand_open_interest_to_interval_grid(items: list[OpenInterestPoint]) -> list[OpenInterestPoint]:
+    """Expand observed OI points to interval grid with forward-filled values.
+
+    For each interval between two observed points, emits synthetic rows using the
+    most recent observed OI value and marks those rows as non-observed.
+    """
+
+    if not items:
+        return []
+
+    unique_by_open: dict[datetime, OpenInterestPoint] = {item.open_time: item for item in items}
+    observed_points = [unique_by_open[key] for key in sorted(unique_by_open)]
+    interval_ms = open_interest_interval_to_milliseconds(
+        exchange=cast(Exchange, observed_points[0].exchange),
+        interval=observed_points[0].interval,
+    )
+    step = timedelta(milliseconds=interval_ms)
+    close_delta = timedelta(milliseconds=interval_ms - 1)
+
+    expanded: list[OpenInterestPoint] = []
+    last_observed = observed_points[0]
+    expanded.append(
+        OpenInterestPoint(
+            exchange=last_observed.exchange,
+            symbol=last_observed.symbol,
+            interval=last_observed.interval,
+            open_time=last_observed.open_time,
+            close_time=last_observed.close_time,
+            open_interest=last_observed.open_interest,
+            open_interest_value=last_observed.open_interest_value,
+            oi_ffill=last_observed.open_interest,
+            oi_is_observed=True,
+            minutes_since_oi_observation=0,
+        )
+    )
+
+    for observed in observed_points[1:]:
+        cursor = last_observed.open_time + step
+        minutes_since = 1
+        while cursor < observed.open_time:
+            expanded.append(
+                OpenInterestPoint(
+                    exchange=last_observed.exchange,
+                    symbol=last_observed.symbol,
+                    interval=last_observed.interval,
+                    open_time=cursor,
+                    close_time=cursor + close_delta,
+                    open_interest=last_observed.open_interest,
+                    open_interest_value=last_observed.open_interest_value,
+                    oi_ffill=last_observed.open_interest,
+                    oi_is_observed=False,
+                    minutes_since_oi_observation=minutes_since,
+                )
+            )
+            minutes_since += 1
+            cursor += step
+
+        expanded.append(
+            OpenInterestPoint(
+                exchange=observed.exchange,
+                symbol=observed.symbol,
+                interval=observed.interval,
+                open_time=observed.open_time,
+                close_time=observed.close_time,
+                open_interest=observed.open_interest,
+                open_interest_value=observed.open_interest_value,
+                oi_ffill=observed.open_interest,
+                oi_is_observed=True,
+                minutes_since_oi_observation=0,
+            )
+        )
+        last_observed = observed
+
+    return expanded
 
 
 def normalize_open_interest_timeframe(exchange: Exchange, value: str) -> str:

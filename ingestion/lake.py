@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from ingestion.funding import FundingPoint
-from ingestion.open_interest import OpenInterestPoint
+from ingestion.open_interest import OpenInterestPoint, expand_open_interest_to_interval_grid
 from ingestion.spot import SpotCandle
 
 DatasetType = str
@@ -123,6 +123,9 @@ def open_interest_record(
         "timeframe": item.interval,
         "open_interest": item.open_interest,
         "open_interest_value": item.open_interest_value,
+        "oi_ffill": item.open_interest if item.oi_ffill is None else item.oi_ffill,
+        "oi_is_observed": item.oi_is_observed,
+        "minutes_since_oi_observation": item.minutes_since_oi_observation,
     }
 
 
@@ -598,7 +601,8 @@ def save_open_interest_parquet_lake(
     grouped: defaultdict[PartitionKey, list[dict[str, object]]] = defaultdict(list)
     for symbol_map in open_interest_by_exchange.values():
         for items in symbol_map.values():
-            for item in items:
+            expanded_items = expand_open_interest_to_interval_grid(items)
+            for item in expanded_items:
                 key = open_interest_partition_key(item=item, market=market)
                 grouped[key].append(
                     open_interest_record(item=item, market=market, run_id=run_id, ingested_at=ingested_at)

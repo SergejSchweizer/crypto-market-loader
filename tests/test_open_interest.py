@@ -95,3 +95,44 @@ def test_fetch_open_interest_all_maps_sol_to_usdc_perpetual(monkeypatch: pytest.
 
     assert rows == []
     assert captured == ["SOL_USDC-PERPETUAL"]
+
+
+def test_expand_open_interest_to_interval_grid_forward_fills() -> None:
+    first = oi.OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="1m",
+        open_time=datetime(2026, 4, 28, 12, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 28, 12, 0, 59, 999000, tzinfo=UTC),
+        open_interest=100000.0,
+        open_interest_value=0.0,
+    )
+    second = oi.OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="1m",
+        open_time=datetime(2026, 4, 28, 12, 8, tzinfo=UTC),
+        close_time=datetime(2026, 4, 28, 12, 8, 59, 999000, tzinfo=UTC),
+        open_interest=101500.0,
+        open_interest_value=0.0,
+    )
+
+    rows = oi.expand_open_interest_to_interval_grid([first, second])
+    assert len(rows) == 9
+    assert rows[0].open_time == datetime(2026, 4, 28, 12, 0, tzinfo=UTC)
+    assert rows[0].oi_is_observed is True
+    assert rows[0].minutes_since_oi_observation == 0
+    assert rows[0].oi_ffill == 100000.0
+
+    assert rows[1].open_time == datetime(2026, 4, 28, 12, 1, tzinfo=UTC)
+    assert rows[1].oi_is_observed is False
+    assert rows[1].minutes_since_oi_observation == 1
+    assert rows[1].oi_ffill == 100000.0
+    assert rows[7].open_time == datetime(2026, 4, 28, 12, 7, tzinfo=UTC)
+    assert rows[7].minutes_since_oi_observation == 7
+    assert rows[7].oi_ffill == 100000.0
+
+    assert rows[8].open_time == datetime(2026, 4, 28, 12, 8, tzinfo=UTC)
+    assert rows[8].oi_is_observed is True
+    assert rows[8].minutes_since_oi_observation == 0
+    assert rows[8].oi_ffill == 101500.0

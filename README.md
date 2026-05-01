@@ -185,12 +185,15 @@ Loaded candle variables (`SpotCandle`):
 - Availability rule:
   Collected only when market context is `perp`; requesting `oi` for `spot` returns no rows by design.
 - Canonical normalized variables:
-  `open_time`, `close_time`, `open_interest`, `open_interest_value`.
+  `open_time`, `close_time`, `open_interest`, `open_interest_value`, `oi_ffill`, `oi_is_observed`, `minutes_since_oi_observation`.
 - Computation in pipeline:
   - `open_time` is parsed from exchange timestamp and converted to UTC.
   - `close_time = open_time + timeframe_ms - 1` (inclusive interval boundary).
   - `open_interest` comes from exchange OI quantity field.
   - `open_interest_value` is used when exchange provides notional/value OI, otherwise set to `0.0`.
+  - `oi_ffill` stores forward-filled OI on 1m grid between observed OI points.
+  - `oi_is_observed` is `true` on exchange-observed timestamps and `false` on synthesized forward-fill rows.
+  - `minutes_since_oi_observation` counts minutes from the latest observed OI point (`0` on observed rows).
 - Exchange-specific OI mapping:
   - Deribit (`/api/v2/public/get_last_settlements_by_instrument`):
     - Raw settlement `timestamp` is bucketed to requested timeframe:
@@ -518,6 +521,7 @@ pre-commit run --all-files
 Current coverage includes:
 - Exchange adapter normalization/routing and pagination behavior.
 - Gap-fill utility logic (`application/services/gapfill_service.py`).
+- Datatype-separated artifact tests for `spot`, `oi`, and `funding` plot downsampling/coverage behavior.
 - Fetch orchestration success/error split for parallel task runners (`application/services/fetch_service.py`).
 - Storage orchestration behavior for parquet+Timescale side effects (`application/services/storage_service.py`).
 - Canonical dataset contract mapping (`application/schema.py`).
