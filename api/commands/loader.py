@@ -6,10 +6,12 @@ import argparse
 import asyncio
 import json
 import logging
+import random
 from dataclasses import asdict
 from datetime import datetime
 from typing import Literal, cast
 
+from application.schema import dataset_contract
 from application.dto import (
     ArtifactOptionsDTO,
     CandleFetchTaskDTO,
@@ -68,6 +70,15 @@ from ingestion.spot import (
 DataType = Literal["spot", "perp", "oi", "funding"]
 _ALLOWED_TIMEFRAME_VALUES = {"1m", "m1"}
 _TAIL_DELTA_ONLY = True
+OI_DATASET_TYPE = dataset_contract("oi").dataset_type
+
+
+def _symbols_in_random_order(symbols: list[str]) -> list[str]:
+    """Return a shuffled copy of symbols for randomized scheduling."""
+
+    randomized = list(symbols)
+    random.shuffle(randomized)
+    return randomized
 
 
 def _validate_loader_timeframe_input(raw_timeframe: str) -> None:
@@ -400,6 +411,7 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
             tasks: list[tuple[Exchange, Market, str, str]] = []
             oi_tasks: list[tuple[Exchange, str, str]] = []
             funding_tasks: list[tuple[Exchange, str, str]] = []
+            randomized_symbols = _symbols_in_random_order(cast(list[str], args.symbols))
 
             for exchange in exchanges:
                 exchange_output: dict[str, object] = {}
@@ -420,15 +432,15 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                     continue
                 for market in cast(list[Market], ohlcv_markets):
                     for timeframe in normalized_timeframes:
-                        for symbol in args.symbols:
+                        for symbol in randomized_symbols:
                             tasks.append((exchange, market, symbol, timeframe))
                 if oi_requested:
                     for timeframe in normalized_timeframes:
-                        for symbol in args.symbols:
+                        for symbol in randomized_symbols:
                             oi_tasks.append((exchange, symbol, timeframe))
                 if funding_requested:
                     for timeframe in normalized_timeframes:
-                        for symbol in args.symbols:
+                        for symbol in randomized_symbols:
                             funding_tasks.append((exchange, symbol, timeframe))
 
             candle_concurrency = 1
@@ -679,7 +691,7 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                         normalized_oi_timeframe = normalize_open_interest_timeframe(exchange=exchange, value=timeframe)
                         stored_oi_times = open_times_in_lake_by_dataset(
                             lake_root=args.lake_root,
-                            dataset_type="oi_m1_feature",
+                            dataset_type=OI_DATASET_TYPE,
                             market="perp",
                             exchange=exchange,
                             symbol=storage_symbol,

@@ -224,6 +224,55 @@ def test_main_loader_saves_timescaledb_when_enabled(monkeypatch: pytest.MonkeyPa
     assert captured["create_schema"] is False
 
 
+def test_main_loader_randomizes_symbol_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    class NoopLock:
+        def __init__(self, lock_path: str) -> None:
+            del lock_path
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+    requested_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+    expected_order = ["SOLUSDT", "ETHUSDT", "BTCUSDT"]
+    seen_symbols: list[str] = []
+
+    def fake_shuffle(values: list[str]) -> None:
+        values[:] = expected_order
+
+    def fake_fetch_candles_all_history(**kwargs: object) -> list[SpotCandle]:
+        seen_symbols.append(cast(str, kwargs["symbol"]))
+        return []
+
+    monkeypatch.setattr(cli, "SingleInstanceLock", NoopLock)
+    monkeypatch.setattr(cli.loader_cmd.random, "shuffle", fake_shuffle)
+    monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
+    monkeypatch.setattr(cli, "fetch_candles_all_history", fake_fetch_candles_all_history)
+    monkeypatch.setattr(cli, "_write_loader_samples", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "main.py",
+            "loader",
+            "--exchange",
+            "deribit",
+            "--market",
+            "spot",
+            "--symbols",
+            *requested_symbols,
+            "--timeframe",
+            "1m",
+            "--no-json-output",
+        ],
+    )
+
+    cli.main()
+
+    assert seen_symbols == expected_order
+
+
 def test_write_loader_samples_writes_grouped_dataframes_and_matching_plot_names(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

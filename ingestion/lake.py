@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, cast
 
+from application.schema import dataset_contract
 from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint, expand_open_interest_to_interval_grid
 from ingestion.spot import SpotCandle
@@ -16,6 +17,7 @@ from ingestion.spot import SpotCandle
 DatasetType = str
 PartitionKey = tuple[str, str, str, str, str]
 NaturalKey = tuple[str, str, str, str, datetime]
+OI_DATASET_TYPE = dataset_contract("oi").dataset_type
 
 
 def ohlcv_dataset_type_for_market(market: str) -> str:
@@ -110,7 +112,7 @@ def open_interest_record(
 
     return {
         "schema_version": "v1",
-        "dataset_type": "oi_m1_feature",
+        "dataset_type": OI_DATASET_TYPE,
         "exchange": item.exchange,
         "symbol": item.symbol,
         "instrument_type": market,
@@ -465,7 +467,7 @@ def load_open_interest_from_lake(
 
     partition_root = (
         Path(lake_root)
-        / "dataset_type=oi_m1_feature"
+        / f"dataset_type={OI_DATASET_TYPE}"
         / f"exchange={exchange}"
         / f"instrument_type={market}"
         / f"symbol={symbol}"
@@ -603,7 +605,7 @@ def save_open_interest_parquet_lake(
 
     run_id = utc_run_id()
     ingested_at = datetime.now(UTC)
-    dataset_type = "oi_m1_feature"
+    dataset_type = OI_DATASET_TYPE
 
     grouped: defaultdict[PartitionKey, list[dict[str, object]]] = defaultdict(list)
     for symbol_map in open_interest_by_exchange.values():
@@ -760,7 +762,7 @@ def load_combined_dataframe_from_lake(
     if include_open_interest:
         oi_files = sorted(
             Path(lake_root).glob(
-                "dataset_type=oi_m1_feature/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"
+                f"dataset_type={OI_DATASET_TYPE}/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"
             )
         )
         oi_frames: list[Any] = []

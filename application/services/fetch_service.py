@@ -7,6 +7,7 @@ import logging
 from collections.abc import Callable
 from datetime import datetime
 
+from application.schema import dataset_contract
 from application.dto import (
     CandleFetchResultDTO,
     CandleFetchTaskDTO,
@@ -40,6 +41,8 @@ from ingestion.spot import (
     interval_to_milliseconds,
     normalize_storage_symbol,
 )
+
+OI_DATASET_TYPE = dataset_contract("oi").dataset_type
 
 
 def fetch_symbol_candles(
@@ -172,7 +175,7 @@ def fetch_symbol_open_interest(
             raise ValueError("latest_open_time_reader is required when tail_delta_only is enabled")
         latest_open_time = latest_reader(
             lake_root=lake_root,
-            dataset_type="oi_m1_feature",
+            dataset_type=OI_DATASET_TYPE,
             market=market,
             exchange=exchange,
             symbol=storage_symbol,
@@ -201,7 +204,7 @@ def fetch_symbol_open_interest(
 
     stored_open_times = open_times_reader(
         lake_root=lake_root,
-        dataset_type="oi_m1_feature",
+        dataset_type=OI_DATASET_TYPE,
         market=market,
         exchange=exchange,
         symbol=storage_symbol,
