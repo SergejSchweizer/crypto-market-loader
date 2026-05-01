@@ -227,6 +227,10 @@ PDF -> Parser -> Chunker -> Embeddings -> Vector Store -> Retrieval -> LLM
 
 README must always remain updated after major architectural changes.
 
+Documentation-code consistency is mandatory:
+- Upon essential code changes, agents must compare `README.md` and `REPORT.md` against the current codebase behavior.
+- Any inconsistencies found must be fixed in both files within the same change set.
+
 ---
 
 # REPORT.md Requirements (MANDATORY FOR RESEARCH PROJECTS)

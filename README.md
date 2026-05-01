@@ -221,7 +221,7 @@ Parquet row metadata fields:
 | Variable | Type | Description |
 |---|---|---|
 | `schema_version` | `str` | Version marker for row schema evolution (`v1` currently). |
-| `dataset_type` | `str` | Dataset family label (`spot`, `perp`, `oi`, or `funding`). |
+| `dataset_type` | `str` | Dataset family label (`spot`, `perp`, `oi_m1_feature`, or `funding`). |
 | `instrument_type` | `str` | Market class used for loading (`spot` or `perp`). |
 | `event_time` | `datetime (UTC)` | Canonical event timestamp for the row (currently aligned to `open_time`). |
 | `ingested_at` | `datetime (UTC)` | Wall-clock timestamp when the row was written by the pipeline. |
