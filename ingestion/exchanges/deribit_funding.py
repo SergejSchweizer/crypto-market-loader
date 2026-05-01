@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -24,6 +25,7 @@ def fetch_funding_range(
     period: str,
     start_open_ms: int,
     end_open_ms: int,
+    on_page: Callable[[list[dict[str, object]]], None] | None = None,
 ) -> list[dict[str, object]]:
     """Fetch Deribit funding-rate records by inclusive range."""
 
@@ -46,6 +48,8 @@ def fetch_funding_range(
             end_time_ms=window_end_ms,
         )
         if page:
+            if on_page is not None:
+                on_page(page)
             rows.extend(
                 [item for item in page if start_open_ms <= int(cast(Any, item["timestamp"])) <= end_open_ms]
             )
@@ -60,12 +64,22 @@ def fetch_funding_range(
     return [dedup[key] for key in sorted(dedup)]
 
 
-def fetch_funding_all(symbol: str, period: str) -> list[dict[str, object]]:
+def fetch_funding_all(
+    symbol: str,
+    period: str,
+    on_page: Callable[[list[dict[str, object]]], None] | None = None,
+) -> list[dict[str, object]]:
     """Fetch funding-rate history over broad bounded horizon."""
 
     end_ms = int(datetime.now(UTC).timestamp() * 1000)
     start_ms = int(datetime(2019, 1, 1, tzinfo=UTC).timestamp() * 1000)
-    return fetch_funding_range(symbol=symbol, period=period, start_open_ms=start_ms, end_open_ms=end_ms)
+    return fetch_funding_range(
+        symbol=symbol,
+        period=period,
+        start_open_ms=start_ms,
+        end_open_ms=end_ms,
+        on_page=on_page,
+    )
 
 
 def parse_funding_row(symbol: str, period: str, row: dict[str, object]) -> dict[str, object]:

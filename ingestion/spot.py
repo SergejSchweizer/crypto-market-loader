@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -151,6 +152,7 @@ def fetch_candles_all_history(
     symbol: str,
     interval: str = "1m",
     market: Market = "spot",
+    on_history_chunk: Callable[[list[SpotCandle]], None] | None = None,
 ) -> list[SpotCandle]:
     """Fetch all available candles from exchange history."""
 
@@ -159,10 +161,18 @@ def fetch_candles_all_history(
 
     if exchange != "deribit":
         raise ValueError(f"Unsupported exchange '{exchange}'")
+    def _on_page(page: list[list[object]]) -> None:
+        if on_history_chunk is None:
+            return
+        on_history_chunk(
+            [parse_kline(exchange=exchange, symbol=normalized_symbol, interval=normalized_interval, row=row) for row in page]
+        )
+
     rows = deribit.fetch_klines_all(
         symbol=symbol,
         market=market,
         interval=normalized_interval,
+        on_page=_on_page if on_history_chunk is not None else None,
     )
 
     return [

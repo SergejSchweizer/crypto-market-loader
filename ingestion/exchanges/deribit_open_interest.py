@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from collections.abc import Callable
 from typing import Any, cast
 
 from ingestion.http_client import HttpClientHttpError, get_json
@@ -19,7 +20,11 @@ def _normalize_open_interest_instrument(symbol: str) -> str:
     return symbol
 
 
-def fetch_open_interest_all(symbol: str, period: str) -> list[dict[str, object]]:
+def fetch_open_interest_all(
+    symbol: str,
+    period: str,
+    on_page: Callable[[list[dict[str, object]]], None] | None = None,
+) -> list[dict[str, object]]:
     """Fetch all available Deribit historical open-interest points."""
 
     del period
@@ -32,6 +37,8 @@ def fetch_open_interest_all(symbol: str, period: str) -> list[dict[str, object]]
         if not page:
             break
         pages.append(page)
+        if on_page is not None:
+            on_page(page)
         if next_continuation is None:
             break
         continuation = next_continuation

@@ -60,6 +60,7 @@ def fetch_symbol_candles(
     range_fetcher: Callable[..., list[SpotCandle]] = fetch_candles_range,
     latest_open_time_reader: Callable[..., datetime | None] | None = None,
     tail_delta_only: bool = False,
+    on_history_chunk: Callable[[list[SpotCandle]], None] | None = None,
 ) -> list[SpotCandle]:
     """Fetch candles for one symbol with auto bootstrap/gap-fill behavior."""
 
@@ -113,6 +114,7 @@ def fetch_symbol_candles(
             symbol=symbol,
             market=market,
             interval=timeframe,
+            on_history_chunk=on_history_chunk,
         )
     if end_open_ms < int(min(stored_open_times).timestamp() * 1000):
         return []
@@ -158,6 +160,7 @@ def fetch_symbol_open_interest(
     range_fetcher: Callable[..., list[OpenInterestPoint]] = fetch_open_interest_range,
     latest_open_time_reader: Callable[..., datetime | None] | None = None,
     tail_delta_only: bool = False,
+    on_history_chunk: Callable[[list[OpenInterestPoint]], None] | None = None,
 ) -> list[OpenInterestPoint]:
     """Fetch open-interest for one symbol with auto bootstrap/gap-fill behavior."""
 
@@ -217,6 +220,7 @@ def fetch_symbol_open_interest(
             symbol=symbol,
             interval=normalized_interval,
             market=market,
+            on_history_chunk=on_history_chunk,
         )
     if end_open_ms < int(min(stored_open_times).timestamp() * 1000):
         return []
@@ -262,6 +266,7 @@ def fetch_symbol_funding(
     range_fetcher: Callable[..., list[FundingPoint]] = fetch_funding_range,
     latest_open_time_reader: Callable[..., datetime | None] | None = None,
     tail_delta_only: bool = False,
+    on_history_chunk: Callable[[list[FundingPoint]], None] | None = None,
 ) -> list[FundingPoint]:
     """Fetch funding for one symbol with auto bootstrap/gap-fill behavior."""
 
@@ -321,6 +326,7 @@ def fetch_symbol_funding(
             symbol=symbol,
             interval=normalized_interval,
             market=market,
+            on_history_chunk=on_history_chunk,
         )
     if end_open_ms < int(min(stored_open_times).timestamp() * 1000):
         return []
@@ -357,6 +363,8 @@ async def fetch_candle_tasks_parallel(
     logger: logging.Logger,
     symbol_fetcher: Callable[..., list[SpotCandle]] = fetch_symbol_candles,
     shared_semaphore: asyncio.Semaphore | None = None,
+    on_task_complete: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
+    on_task_chunk: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
 ) -> CandleFetchResultDTO:
     """Fetch OHLCV tasks sequentially."""
 
@@ -377,14 +385,27 @@ async def fetch_candle_tasks_parallel(
         )
         key = (task.exchange, task.market, task.symbol, task.timeframe)
         try:
-            candles = await asyncio.to_thread(
-                symbol_fetcher,
-                task.exchange,
-                task.market,
-                task.symbol,
-                task.timeframe,
-                lake_root,
-            )
+            try:
+                candles = await asyncio.to_thread(
+                    symbol_fetcher,
+                    task.exchange,
+                    task.market,
+                    task.symbol,
+                    task.timeframe,
+                    lake_root,
+                    on_history_chunk=(lambda rows: on_task_chunk(task, rows)) if on_task_chunk is not None else None,
+                )
+            except TypeError as exc:
+                if "on_history_chunk" not in str(exc):
+                    raise
+                candles = await asyncio.to_thread(
+                    symbol_fetcher,
+                    task.exchange,
+                    task.market,
+                    task.symbol,
+                    task.timeframe,
+                    lake_root,
+                )
             logger.info(
                 "Fetch complete [%s/%s] exchange=%s market=%s symbol=%s timeframe=%s candles=%s",
                 idx,
@@ -396,6 +417,8 @@ async def fetch_candle_tasks_parallel(
                 len(candles),
             )
             task_results[key] = candles
+            if on_task_complete is not None:
+                on_task_complete(task, candles)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Fetch failed exchange=%s market=%s symbol=%s timeframe=%s",
@@ -415,6 +438,8 @@ async def fetch_open_interest_tasks_parallel(
     logger: logging.Logger,
     symbol_fetcher: Callable[..., list[OpenInterestPoint]] = fetch_symbol_open_interest,
     shared_semaphore: asyncio.Semaphore | None = None,
+    on_task_complete: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
+    on_task_chunk: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
 ) -> OpenInterestFetchResultDTO:
     """Fetch open-interest tasks sequentially."""
 
@@ -434,14 +459,27 @@ async def fetch_open_interest_tasks_parallel(
         )
         key = (task.exchange, task.symbol, task.timeframe)
         try:
-            rows = await asyncio.to_thread(
-                symbol_fetcher,
-                task.exchange,
-                "perp",
-                task.symbol,
-                task.timeframe,
-                lake_root,
-            )
+            try:
+                rows = await asyncio.to_thread(
+                    symbol_fetcher,
+                    task.exchange,
+                    "perp",
+                    task.symbol,
+                    task.timeframe,
+                    lake_root,
+                    on_history_chunk=(lambda values: on_task_chunk(task, values)) if on_task_chunk is not None else None,
+                )
+            except TypeError as exc:
+                if "on_history_chunk" not in str(exc):
+                    raise
+                rows = await asyncio.to_thread(
+                    symbol_fetcher,
+                    task.exchange,
+                    "perp",
+                    task.symbol,
+                    task.timeframe,
+                    lake_root,
+                )
             logger.info(
                 "OI fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",
                 idx,
@@ -452,6 +490,8 @@ async def fetch_open_interest_tasks_parallel(
                 len(rows),
             )
             task_results[key] = rows
+            if on_task_complete is not None:
+                on_task_complete(task, rows)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "OI fetch failed exchange=%s symbol=%s timeframe=%s",
@@ -470,6 +510,8 @@ async def fetch_funding_tasks_parallel(
     logger: logging.Logger,
     symbol_fetcher: Callable[..., list[FundingPoint]] = fetch_symbol_funding,
     shared_semaphore: asyncio.Semaphore | None = None,
+    on_task_complete: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
+    on_task_chunk: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
 ) -> FundingFetchResultDTO:
     """Fetch funding tasks sequentially."""
 
@@ -489,14 +531,27 @@ async def fetch_funding_tasks_parallel(
         )
         key = (task.exchange, task.symbol, task.timeframe)
         try:
-            rows = await asyncio.to_thread(
-                symbol_fetcher,
-                task.exchange,
-                "perp",
-                task.symbol,
-                task.timeframe,
-                lake_root,
-            )
+            try:
+                rows = await asyncio.to_thread(
+                    symbol_fetcher,
+                    task.exchange,
+                    "perp",
+                    task.symbol,
+                    task.timeframe,
+                    lake_root,
+                    on_history_chunk=(lambda values: on_task_chunk(task, values)) if on_task_chunk is not None else None,
+                )
+            except TypeError as exc:
+                if "on_history_chunk" not in str(exc):
+                    raise
+                rows = await asyncio.to_thread(
+                    symbol_fetcher,
+                    task.exchange,
+                    "perp",
+                    task.symbol,
+                    task.timeframe,
+                    lake_root,
+                )
             logger.info(
                 "Funding fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",
                 idx,
@@ -507,6 +562,8 @@ async def fetch_funding_tasks_parallel(
                 len(rows),
             )
             task_results[key] = rows
+            if on_task_complete is not None:
+                on_task_complete(task, rows)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Funding fetch failed exchange=%s symbol=%s timeframe=%s",

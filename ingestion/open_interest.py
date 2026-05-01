@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, cast
@@ -141,6 +142,7 @@ def fetch_open_interest_all_history(
     symbol: str,
     interval: str,
     market: Market,
+    on_history_chunk: Callable[[list[OpenInterestPoint]], None] | None = None,
 ) -> list[OpenInterestPoint]:
     """Fetch all available open-interest history."""
 
@@ -151,9 +153,32 @@ def fetch_open_interest_all_history(
     parsed: list[dict[str, object]] = []
     if exchange != "deribit":
         return []
+    def _on_page(page: list[dict[str, object]]) -> None:
+        if on_history_chunk is None:
+            return
+        parsed_page = [
+            deribit_open_interest.parse_open_interest_row(normalized_symbol, normalized_interval, row)
+            for row in page
+        ]
+        on_history_chunk(
+            [
+                OpenInterestPoint(
+                    exchange=exchange,
+                    symbol=normalized_symbol,
+                    interval=normalized_interval,
+                    open_time=cast(datetime, cast(Any, item["open_time"])),
+                    close_time=cast(datetime, cast(Any, item["close_time"])),
+                    open_interest=float(cast(Any, item["open_interest"])),
+                    open_interest_value=float(cast(Any, item["open_interest_value"])),
+                )
+                for item in parsed_page
+            ]
+        )
+
     rows = deribit_open_interest.fetch_open_interest_all(
         symbol=normalized_symbol,
         period=normalized_interval,
+        on_page=_on_page if on_history_chunk is not None else None,
     )
     parsed = [
         deribit_open_interest.parse_open_interest_row(normalized_symbol, normalized_interval, row)

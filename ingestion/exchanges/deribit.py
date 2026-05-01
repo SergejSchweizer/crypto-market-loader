@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from collections.abc import Callable
 from typing import Any, cast
 
 from ingestion.http_client import get_json
@@ -152,7 +153,12 @@ def fetch_klines(symbol: str, market: str, interval: str, limit: int) -> list[li
     return rows
 
 
-def fetch_klines_all(symbol: str, market: str, interval: str) -> list[list[object]]:
+def fetch_klines_all(
+    symbol: str,
+    market: str,
+    interval: str,
+    on_page: Callable[[list[list[object]]], None] | None = None,
+) -> list[list[object]]:
     """Fetch all available Deribit candles by paging backward until exhaustion."""
 
     instrument_name = normalize_symbol(symbol=symbol, market=market)
@@ -176,6 +182,8 @@ def fetch_klines_all(symbol: str, market: str, interval: str) -> list[list[objec
             break
 
         pages.append(page)
+        if on_page is not None:
+            on_page(page)
         earliest_tick_ms = _extract_open_time_ms(page[0])
         next_end_time_ms = earliest_tick_ms - 1
         if next_end_time_ms < 0:

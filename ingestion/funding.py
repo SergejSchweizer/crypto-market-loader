@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
@@ -75,6 +76,7 @@ def fetch_funding_all_history(
     symbol: str,
     interval: str,
     market: Market,
+    on_history_chunk: Callable[[list[FundingPoint]], None] | None = None,
 ) -> list[FundingPoint]:
     """Fetch all available funding-rate history."""
 
@@ -85,7 +87,31 @@ def fetch_funding_all_history(
     normalized_interval = normalize_funding_timeframe(exchange=exchange, value=interval)
     normalized_symbol = normalize_storage_symbol(exchange=exchange, symbol=symbol, market=market)
     try:
-        rows = deribit_funding.fetch_funding_all(symbol=normalized_symbol, period=normalized_interval)
+        def _on_page(page: list[dict[str, object]]) -> None:
+            if on_history_chunk is None:
+                return
+            parsed_page = [deribit_funding.parse_funding_row(normalized_symbol, normalized_interval, row) for row in page]
+            on_history_chunk(
+                [
+                    FundingPoint(
+                        exchange=exchange,
+                        symbol=normalized_symbol,
+                        interval=normalized_interval,
+                        open_time=cast(datetime, cast(Any, item["open_time"])),
+                        close_time=cast(datetime, cast(Any, item["close_time"])),
+                        funding_rate=float(cast(Any, item["funding_rate"])),
+                        index_price=float(cast(Any, item["index_price"])),
+                        mark_price=float(cast(Any, item["mark_price"])),
+                    )
+                    for item in parsed_page
+                ]
+            )
+
+        rows = deribit_funding.fetch_funding_all(
+            symbol=normalized_symbol,
+            period=normalized_interval,
+            on_page=_on_page if on_history_chunk is not None else None,
+        )
     except HttpClientHttpError as exc:
         # Deribit may return HTTP 400 for unsupported/per-symbol funding history windows.
         # Treat that as "no rows" so one symbol does not fail the full loader run.

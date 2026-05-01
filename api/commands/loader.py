@@ -7,6 +7,7 @@ import asyncio
 import json
 import logging
 import random
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import datetime
 from typing import Literal, cast
@@ -160,12 +161,23 @@ def _serialize_candle(candle: SpotCandle) -> dict[str, object]:
     return data
 
 
+def _extract_date_partition(file_path: str) -> str | None:
+    """Extract ``YYYY-MM`` from parquet partition path segment ``date=YYYY-MM``."""
+
+    marker = "/date="
+    if marker not in file_path:
+        return None
+    tail = file_path.split(marker, 1)[1]
+    return tail.split("/", 1)[0] if tail else None
+
+
 def _fetch_symbol_candles(
     exchange: Exchange,
     market: Market,
     symbol: str,
     timeframe: str,
     lake_root: str,
+    on_history_chunk: Callable[[list[SpotCandle]], None] | None = None,
 ) -> list[SpotCandle]:
     return fetch_symbol_candles(
         exchange=exchange,
@@ -182,6 +194,7 @@ def _fetch_symbol_candles(
         range_fetcher=fetch_candles_range,
         latest_open_time_reader=latest_open_time_in_lake,
         tail_delta_only=_TAIL_DELTA_ONLY,
+        on_history_chunk=on_history_chunk,
     )
 
 
@@ -191,6 +204,7 @@ def _fetch_symbol_open_interest(
     symbol: str,
     timeframe: str,
     lake_root: str,
+    on_history_chunk: Callable[[list[OpenInterestPoint]], None] | None = None,
 ) -> list[OpenInterestPoint]:
     return fetch_symbol_open_interest(
         exchange=exchange,
@@ -208,6 +222,7 @@ def _fetch_symbol_open_interest(
         range_fetcher=fetch_open_interest_range,
         latest_open_time_reader=latest_open_time_in_lake_by_dataset,
         tail_delta_only=_TAIL_DELTA_ONLY,
+        on_history_chunk=on_history_chunk,
     )
 
 
@@ -217,6 +232,7 @@ def _fetch_symbol_funding(
     symbol: str,
     timeframe: str,
     lake_root: str,
+    on_history_chunk: Callable[[list[FundingPoint]], None] | None = None,
 ) -> list[FundingPoint]:
     return fetch_symbol_funding(
         exchange=exchange,
@@ -234,6 +250,7 @@ def _fetch_symbol_funding(
         range_fetcher=fetch_funding_range,
         latest_open_time_reader=latest_open_time_in_lake_by_dataset,
         tail_delta_only=_TAIL_DELTA_ONLY,
+        on_history_chunk=on_history_chunk,
     )
 
 
@@ -243,6 +260,8 @@ async def _fetch_candle_tasks_parallel(
     concurrency: int,
     logger: logging.Logger,
     shared_semaphore: asyncio.Semaphore | None = None,
+    on_task_complete: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
+    on_task_chunk: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
 ) -> tuple[dict[tuple[Exchange, Market, str, str], list[SpotCandle]], dict[tuple[Exchange, Market, str, str], str]]:
     service_tasks = [
         CandleFetchTaskDTO(exchange=exchange, market=market, symbol=symbol, timeframe=timeframe)
@@ -255,6 +274,8 @@ async def _fetch_candle_tasks_parallel(
         logger=logger,
         symbol_fetcher=_fetch_symbol_candles,
         shared_semaphore=shared_semaphore,
+        on_task_complete=on_task_complete,
+        on_task_chunk=on_task_chunk,
     )
     return result.rows, result.errors
 
@@ -265,6 +286,8 @@ async def _fetch_open_interest_tasks_parallel(
     concurrency: int,
     logger: logging.Logger,
     shared_semaphore: asyncio.Semaphore | None = None,
+    on_task_complete: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
+    on_task_chunk: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
 ) -> tuple[dict[tuple[Exchange, str, str], list[OpenInterestPoint]], dict[tuple[Exchange, str, str], str]]:
     service_tasks = [
         OpenInterestFetchTaskDTO(exchange=exchange, symbol=symbol, timeframe=timeframe)
@@ -277,6 +300,8 @@ async def _fetch_open_interest_tasks_parallel(
         logger=logger,
         symbol_fetcher=_fetch_symbol_open_interest,
         shared_semaphore=shared_semaphore,
+        on_task_complete=on_task_complete,
+        on_task_chunk=on_task_chunk,
     )
     return result.rows, result.errors
 
@@ -287,6 +312,8 @@ async def _fetch_funding_tasks_parallel(
     concurrency: int,
     logger: logging.Logger,
     shared_semaphore: asyncio.Semaphore | None = None,
+    on_task_complete: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
+    on_task_chunk: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
 ) -> tuple[dict[tuple[Exchange, str, str], list[FundingPoint]], dict[tuple[Exchange, str, str], str]]:
     service_tasks = [
         FundingFetchTaskDTO(exchange=exchange, symbol=symbol, timeframe=timeframe)
@@ -299,6 +326,8 @@ async def _fetch_funding_tasks_parallel(
         logger=logger,
         symbol_fetcher=_fetch_symbol_funding,
         shared_semaphore=shared_semaphore,
+        on_task_complete=on_task_complete,
+        on_task_chunk=on_task_chunk,
     )
     return result.rows, result.errors
 
@@ -313,6 +342,12 @@ async def _fetch_all_task_groups(
     oi_concurrency: int,
     funding_concurrency: int,
     logger: logging.Logger,
+    on_candle_task_complete: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
+    on_oi_task_complete: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
+    on_funding_task_complete: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
+    on_candle_task_chunk: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
+    on_oi_task_chunk: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
+    on_funding_task_chunk: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
 ) -> tuple[
     dict[tuple[Exchange, Market, str, str], list[SpotCandle]],
     dict[tuple[Exchange, Market, str, str], str],
@@ -340,6 +375,8 @@ async def _fetch_all_task_groups(
                 lake_root=lake_root,
                 concurrency=candle_concurrency,
                 logger=logger,
+                on_task_complete=on_candle_task_complete,
+                on_task_chunk=on_candle_task_chunk,
             )
             task_results.update(rows)
             task_errors.update(errors)
@@ -352,6 +389,8 @@ async def _fetch_all_task_groups(
                 lake_root=lake_root,
                 concurrency=oi_concurrency,
                 logger=logger,
+                on_task_complete=on_oi_task_complete,
+                on_task_chunk=on_oi_task_chunk,
             )
             oi_results.update(rows)
             oi_errors.update(errors)
@@ -364,6 +403,8 @@ async def _fetch_all_task_groups(
                 lake_root=lake_root,
                 concurrency=funding_concurrency,
                 logger=logger,
+                on_task_complete=on_funding_task_complete,
+                on_task_chunk=on_funding_task_chunk,
             )
             funding_results.update(rows)
             funding_errors.update(errors)
@@ -435,7 +476,136 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
             candle_concurrency = 1
             oi_concurrency = 1
             funding_concurrency = 1
+            incremental_parquet_on_fetch = bool(args.save_parquet_lake) and not bool(args.tail_delta_only)
+            incremental_parquet_files: list[str] = []
+            streamed_candle_tasks: set[tuple[Exchange, Market, str, str]] = set()
+            streamed_oi_tasks: set[tuple[Exchange, str, str]] = set()
+            streamed_funding_tasks: set[tuple[Exchange, str, str]] = set()
             logger.info("Sequential fetch mode enabled for spot/perp, oi, and funding")
+            if incremental_parquet_on_fetch:
+                logger.info("Incremental parquet flush enabled for full-gap-fill runs")
+
+            def _persist_candle_task(task: CandleFetchTaskDTO, rows: list[SpotCandle]) -> None:
+                if not rows:
+                    return
+                storage_result = persist_loader_outputs_dto(
+                    storage=LoaderStorageDTO(candles={task.market: {task.exchange: {task.symbol.upper(): rows}}}),
+                    options=PersistOptionsDTO(
+                        save_parquet_lake=True,
+                        save_timescaledb=False,
+                        lake_root=cast(str, args.lake_root),
+                        timescaledb_schema=cast(str, args.timescaledb_schema),
+                        create_schema=not bool(args.timescaledb_no_bootstrap),
+                        oi_requested=False,
+                        funding_requested=False,
+                    ),
+                    save_tsdb_fn=save_market_data_to_timescaledb,
+                )
+                incremental_parquet_files.extend(storage_result.parquet_files)
+                months = sorted(
+                    {
+                        month
+                        for month in (_extract_date_partition(path) for path in storage_result.parquet_files)
+                        if month is not None
+                    }
+                )
+                logger.info(
+                    "Incremental parquet flush complete type=ohlcv exchange=%s market=%s symbol=%s timeframe=%s rows=%s files=%s months=%s",
+                    task.exchange,
+                    task.market,
+                    task.symbol,
+                    task.timeframe,
+                    len(rows),
+                    len(storage_result.parquet_files),
+                    ",".join(months) if months else "unknown",
+                )
+
+            def _persist_oi_task(task: OpenInterestFetchTaskDTO, rows: list[OpenInterestPoint]) -> None:
+                if not rows:
+                    return
+                storage_result = persist_loader_outputs_dto(
+                    storage=LoaderStorageDTO(open_interest={"perp": {task.exchange: {task.symbol.upper(): rows}}}),
+                    options=PersistOptionsDTO(
+                        save_parquet_lake=True,
+                        save_timescaledb=False,
+                        lake_root=cast(str, args.lake_root),
+                        timescaledb_schema=cast(str, args.timescaledb_schema),
+                        create_schema=not bool(args.timescaledb_no_bootstrap),
+                        oi_requested=True,
+                        funding_requested=False,
+                    ),
+                    save_tsdb_fn=save_market_data_to_timescaledb,
+                )
+                incremental_parquet_files.extend(storage_result.parquet_files)
+                months = sorted(
+                    {
+                        month
+                        for month in (_extract_date_partition(path) for path in storage_result.parquet_files)
+                        if month is not None
+                    }
+                )
+                logger.info(
+                    "Incremental parquet flush complete type=oi exchange=%s symbol=%s timeframe=%s rows=%s files=%s months=%s",
+                    task.exchange,
+                    task.symbol,
+                    task.timeframe,
+                    len(rows),
+                    len(storage_result.parquet_files),
+                    ",".join(months) if months else "unknown",
+                )
+
+            def _persist_funding_task(task: FundingFetchTaskDTO, rows: list[FundingPoint]) -> None:
+                if not rows:
+                    return
+                storage_result = persist_loader_outputs_dto(
+                    storage=LoaderStorageDTO(funding={"perp": {task.exchange: {task.symbol.upper(): rows}}}),
+                    options=PersistOptionsDTO(
+                        save_parquet_lake=True,
+                        save_timescaledb=False,
+                        lake_root=cast(str, args.lake_root),
+                        timescaledb_schema=cast(str, args.timescaledb_schema),
+                        create_schema=not bool(args.timescaledb_no_bootstrap),
+                        oi_requested=False,
+                        funding_requested=True,
+                    ),
+                    save_tsdb_fn=save_market_data_to_timescaledb,
+                )
+                incremental_parquet_files.extend(storage_result.parquet_files)
+                months = sorted(
+                    {
+                        month
+                        for month in (_extract_date_partition(path) for path in storage_result.parquet_files)
+                        if month is not None
+                    }
+                )
+                logger.info(
+                    "Incremental parquet flush complete type=funding exchange=%s symbol=%s timeframe=%s rows=%s files=%s months=%s",
+                    task.exchange,
+                    task.symbol,
+                    task.timeframe,
+                    len(rows),
+                    len(storage_result.parquet_files),
+                    ",".join(months) if months else "unknown",
+                )
+
+            def _persist_candle_chunk(task: CandleFetchTaskDTO, rows: list[SpotCandle]) -> None:
+                if not rows:
+                    return
+                streamed_candle_tasks.add((task.exchange, task.market, task.symbol, task.timeframe))
+                _persist_candle_task(task, rows)
+
+            def _persist_oi_chunk(task: OpenInterestFetchTaskDTO, rows: list[OpenInterestPoint]) -> None:
+                if not rows:
+                    return
+                streamed_oi_tasks.add((task.exchange, task.symbol, task.timeframe))
+                _persist_oi_task(task, rows)
+
+            def _persist_funding_chunk(task: FundingFetchTaskDTO, rows: list[FundingPoint]) -> None:
+                if not rows:
+                    return
+                streamed_funding_tasks.add((task.exchange, task.symbol, task.timeframe))
+                _persist_funding_task(task, rows)
+
             task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors = asyncio.run(
                 _fetch_all_task_groups(
                     tasks_by_market=tasks_by_market,
@@ -447,6 +617,30 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                     oi_concurrency=oi_concurrency,
                     funding_concurrency=funding_concurrency,
                     logger=logger,
+                    on_candle_task_complete=(
+                        lambda task, rows: _persist_candle_task(task, rows)
+                        if (task.exchange, task.market, task.symbol, task.timeframe) not in streamed_candle_tasks
+                        else None
+                    )
+                    if incremental_parquet_on_fetch
+                    else None,
+                    on_oi_task_complete=(
+                        lambda task, rows: _persist_oi_task(task, rows)
+                        if (task.exchange, task.symbol, task.timeframe) not in streamed_oi_tasks
+                        else None
+                    )
+                    if incremental_parquet_on_fetch
+                    else None,
+                    on_funding_task_complete=(
+                        lambda task, rows: _persist_funding_task(task, rows)
+                        if (task.exchange, task.symbol, task.timeframe) not in streamed_funding_tasks
+                        else None
+                    )
+                    if incremental_parquet_on_fetch
+                    else None,
+                    on_candle_task_chunk=_persist_candle_chunk if incremental_parquet_on_fetch else None,
+                    on_oi_task_chunk=_persist_oi_chunk if incremental_parquet_on_fetch else None,
+                    on_funding_task_chunk=_persist_funding_chunk if incremental_parquet_on_fetch else None,
                 )
             )
             ohlcv_success_count = len(task_results)
@@ -570,7 +764,7 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                         funding_plot_key = symbol_key
                     funding_exchange_rows[funding_plot_key] = funding_rows
 
-            if args.save_parquet_lake:
+            if args.save_parquet_lake and not incremental_parquet_on_fetch:
                 try:
                     storage_result = persist_loader_outputs_dto(
                         storage=LoaderStorageDTO(
@@ -593,6 +787,8 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                 except Exception as exc:  # noqa: BLE001
                     output["_parquet_error"] = str(exc)
                     logger.exception("Parquet lake write failed")
+            elif incremental_parquet_on_fetch:
+                output["_parquet_files"] = incremental_parquet_files
 
             if args.save_timescaledb:
                 try:
