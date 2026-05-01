@@ -7,7 +7,8 @@ from datetime import datetime
 from typing import Any, cast
 
 from ingestion.exchanges import deribit_funding
-from ingestion.spot import Exchange, Market, interval_to_milliseconds, normalize_storage_symbol, normalize_timeframe
+from ingestion.http_client import HttpClientHttpError
+from ingestion.spot import Exchange, Market, interval_to_milliseconds, normalize_storage_symbol
 
 DERIBIT_FUNDING_NATIVE_INTERVAL = "8h"
 
@@ -53,7 +54,11 @@ def normalize_funding_timeframe(exchange: Exchange, value: str) -> str:
 
     if exchange != "deribit":
         raise ValueError(f"Unsupported exchange '{exchange}'")
-    normalize_timeframe(exchange=exchange, value=value)
+    normalized = value.strip().lower()
+    if normalized not in {"1m", "m1", DERIBIT_FUNDING_NATIVE_INTERVAL}:
+        raise ValueError(
+            f"Unsupported funding timeframe '{value}' for {exchange}. Supported values: 1m, M1, {DERIBIT_FUNDING_NATIVE_INTERVAL}"
+        )
     return DERIBIT_FUNDING_NATIVE_INTERVAL
 
 
@@ -79,7 +84,14 @@ def fetch_funding_all_history(
         return []
     normalized_interval = normalize_funding_timeframe(exchange=exchange, value=interval)
     normalized_symbol = normalize_storage_symbol(exchange=exchange, symbol=symbol, market=market)
-    rows = deribit_funding.fetch_funding_all(symbol=normalized_symbol, period=normalized_interval)
+    try:
+        rows = deribit_funding.fetch_funding_all(symbol=normalized_symbol, period=normalized_interval)
+    except HttpClientHttpError as exc:
+        # Deribit may return HTTP 400 for unsupported/per-symbol funding history windows.
+        # Treat that as "no rows" so one symbol does not fail the full loader run.
+        if exc.status_code == 400:
+            return []
+        raise
     parsed = [deribit_funding.parse_funding_row(normalized_symbol, normalized_interval, row) for row in rows]
     return [
         FundingPoint(
@@ -112,12 +124,17 @@ def fetch_funding_range(
         return []
     normalized_interval = normalize_funding_timeframe(exchange=exchange, value=interval)
     normalized_symbol = normalize_storage_symbol(exchange=exchange, symbol=symbol, market=market)
-    rows = deribit_funding.fetch_funding_range(
-        symbol=normalized_symbol,
-        period=normalized_interval,
-        start_open_ms=start_open_ms,
-        end_open_ms=end_open_ms,
-    )
+    try:
+        rows = deribit_funding.fetch_funding_range(
+            symbol=normalized_symbol,
+            period=normalized_interval,
+            start_open_ms=start_open_ms,
+            end_open_ms=end_open_ms,
+        )
+    except HttpClientHttpError as exc:
+        if exc.status_code == 400:
+            return []
+        raise
     parsed = [deribit_funding.parse_funding_row(normalized_symbol, normalized_interval, row) for row in rows]
     return [
         FundingPoint(

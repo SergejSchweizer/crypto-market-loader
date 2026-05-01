@@ -235,19 +235,20 @@ def test_main_loader_randomizes_symbol_schedule(monkeypatch: pytest.MonkeyPatch)
         def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
             del exc_type, exc, tb
 
-    requested_symbols = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
     expected_order = ["SOLUSDT", "ETHUSDT", "BTCUSDT"]
     seen_symbols: list[str] = []
 
-    def fake_shuffle(values: list[str]) -> None:
-        values[:] = expected_order
+    def fake_random_order(values: list[str]) -> list[str]:
+        if values == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+            return expected_order
+        return values
 
     def fake_fetch_candles_all_history(**kwargs: object) -> list[SpotCandle]:
         seen_symbols.append(cast(str, kwargs["symbol"]))
         return []
 
     monkeypatch.setattr(cli, "SingleInstanceLock", NoopLock)
-    monkeypatch.setattr(cli.loader_cmd.random, "shuffle", fake_shuffle)
+    monkeypatch.setattr(cli.loader_cmd, "_items_in_random_order", fake_random_order)
     monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
     monkeypatch.setattr(cli, "fetch_candles_all_history", fake_fetch_candles_all_history)
     monkeypatch.setattr(cli, "_write_loader_samples", lambda **kwargs: None)
@@ -261,7 +262,9 @@ def test_main_loader_randomizes_symbol_schedule(monkeypatch: pytest.MonkeyPatch)
             "--market",
             "spot",
             "--symbols",
-            *requested_symbols,
+            "BTCUSDT",
+            "ETHUSDT",
+            "SOLUSDT",
             "--timeframe",
             "1m",
             "--no-json-output",
@@ -271,6 +274,119 @@ def test_main_loader_randomizes_symbol_schedule(monkeypatch: pytest.MonkeyPatch)
     cli.main()
 
     assert seen_symbols == expected_order
+
+
+def test_main_loader_randomizes_market_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+    class NoopLock:
+        def __init__(self, lock_path: str) -> None:
+            del lock_path
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+    seen_markets: list[str] = []
+
+    def fake_random_order(values: list[str]) -> list[str]:
+        if values == ["spot", "perp"]:
+            return ["perp", "spot"]
+        return values
+
+    def fake_fetch_candles_all_history(**kwargs: object) -> list[SpotCandle]:
+        seen_markets.append(cast(str, kwargs["market"]))
+        return []
+
+    monkeypatch.setattr(cli, "SingleInstanceLock", NoopLock)
+    monkeypatch.setattr(cli.loader_cmd, "_items_in_random_order", fake_random_order)
+    monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
+    monkeypatch.setattr(cli, "fetch_candles_all_history", fake_fetch_candles_all_history)
+    monkeypatch.setattr(cli, "_write_loader_samples", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "main.py",
+            "loader",
+            "--exchange",
+            "deribit",
+            "--market",
+            "spot",
+            "perp",
+            "--symbols",
+            "BTCUSDT",
+            "--timeframe",
+            "1m",
+            "--no-json-output",
+        ],
+    )
+
+    cli.main()
+
+    assert seen_markets == ["perp", "spot"]
+
+
+def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.MonkeyPatch) -> None:
+    class NoopLock:
+        def __init__(self, lock_path: str) -> None:
+            del lock_path
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+    call_order: list[str] = []
+
+    async def fake_fetch_candle_tasks_parallel(**kwargs: object) -> tuple[dict[tuple[object, ...], list[object]], dict[tuple[object, ...], str]]:
+        tasks = cast(list[tuple[str, str, str, str]], kwargs["tasks"])
+        if tasks:
+            call_order.append(tasks[0][1])
+        return {}, {}
+
+    async def fake_fetch_open_interest_tasks_parallel(**kwargs: object) -> tuple[dict[tuple[object, ...], list[object]], dict[tuple[object, ...], str]]:
+        call_order.append("oi")
+        return {}, {}
+
+    async def fake_fetch_funding_tasks_parallel(**kwargs: object) -> tuple[dict[tuple[object, ...], list[object]], dict[tuple[object, ...], str]]:
+        call_order.append("funding")
+        return {}, {}
+
+    def fake_random_order(values: list[str]) -> list[str]:
+        if values == ["spot", "perp", "oi", "funding"]:
+            return ["funding", "oi", "perp", "spot"]
+        return values
+
+    monkeypatch.setattr(cli, "SingleInstanceLock", NoopLock)
+    monkeypatch.setattr(cli.loader_cmd, "_items_in_random_order", fake_random_order)
+    monkeypatch.setattr(cli.loader_cmd, "_fetch_candle_tasks_parallel", fake_fetch_candle_tasks_parallel)
+    monkeypatch.setattr(cli.loader_cmd, "_fetch_open_interest_tasks_parallel", fake_fetch_open_interest_tasks_parallel)
+    monkeypatch.setattr(cli.loader_cmd, "_fetch_funding_tasks_parallel", fake_fetch_funding_tasks_parallel)
+    monkeypatch.setattr(cli, "_write_loader_samples", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "main.py",
+            "loader",
+            "--exchange",
+            "deribit",
+            "--market",
+            "spot",
+            "perp",
+            "oi",
+            "funding",
+            "--symbols",
+            "BTCUSDT",
+            "--timeframe",
+            "1m",
+            "--no-json-output",
+        ],
+    )
+
+    cli.main()
+
+    assert call_order == ["funding", "oi", "perp", "spot"]
 
 
 def test_write_loader_samples_writes_grouped_dataframes_and_matching_plot_names(

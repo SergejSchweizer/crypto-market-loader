@@ -11,6 +11,14 @@ DERIBIT_FUNDING_URL = "https://www.deribit.com/api/v2/public/get_funding_rate_hi
 DERIBIT_FUNDING_MAX_POINTS_PER_REQUEST = 500
 
 
+def _normalize_funding_instrument(symbol: str) -> str:
+    """Map normalized perp symbols to Deribit funding endpoint instrument names."""
+
+    if symbol == "SOL-PERPETUAL":
+        return "SOL_USDC-PERPETUAL"
+    return symbol
+
+
 def fetch_funding_range(
     symbol: str,
     period: str,
@@ -22,6 +30,7 @@ def fetch_funding_range(
     if end_open_ms < start_open_ms:
         return []
 
+    instrument_name = _normalize_funding_instrument(symbol)
     period_ms = _period_to_milliseconds(period)
     cursor = start_open_ms
     rows: list[dict[str, object]] = []
@@ -32,7 +41,7 @@ def fetch_funding_range(
             cursor + (DERIBIT_FUNDING_MAX_POINTS_PER_REQUEST * period_ms) - 1,
         )
         page = _fetch_funding_page(
-            symbol=symbol,
+            symbol=instrument_name,
             start_time_ms=cursor,
             end_time_ms=window_end_ms,
         )
@@ -116,4 +125,3 @@ def _fetch_funding_page(symbol: str, start_time_ms: int, end_time_ms: int) -> li
         rows.append(item)
     rows.sort(key=lambda x: int(cast(Any, x["timestamp"])))
     return rows
-

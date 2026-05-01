@@ -73,12 +73,12 @@ _TAIL_DELTA_ONLY = True
 OI_DATASET_TYPE = dataset_contract("oi").dataset_type
 
 
-def _symbols_in_random_order(symbols: list[str]) -> list[str]:
-    """Return a shuffled copy of symbols for randomized scheduling."""
+def _items_in_random_order(items: list[str]) -> list[str]:
+    """Return a shuffled copy of input items for randomized scheduling."""
 
-    randomized = list(symbols)
-    random.shuffle(randomized)
-    return randomized
+    if len(items) <= 1:
+        return list(items)
+    return random.SystemRandom().sample(items, k=len(items))
 
 
 def _validate_loader_timeframe_input(raw_timeframe: str) -> None:
@@ -323,9 +323,10 @@ async def _fetch_funding_tasks_parallel(
 
 
 async def _fetch_all_task_groups(
-    tasks: list[tuple[Exchange, Market, str, str]],
+    tasks_by_market: dict[Market, list[tuple[Exchange, Market, str, str]]],
     oi_tasks: list[tuple[Exchange, str, str]],
     funding_tasks: list[tuple[Exchange, str, str]],
+    data_type_order: list[DataType],
     lake_root: str,
     candle_concurrency: int,
     oi_concurrency: int,
@@ -339,33 +340,52 @@ async def _fetch_all_task_groups(
     dict[tuple[Exchange, str, str], list[FundingPoint]],
     dict[tuple[Exchange, str, str], str],
 ]:
-    """Fetch OHLCV, OI, and funding task groups sequentially."""
+    """Fetch task groups in the requested data-type order."""
 
-    task_results, task_errors = await _fetch_candle_tasks_parallel(
-        tasks=tasks,
-        lake_root=lake_root,
-        concurrency=candle_concurrency,
-        logger=logger,
-    )
-    if oi_tasks:
-        oi_results, oi_errors = await _fetch_open_interest_tasks_parallel(
-            oi_tasks=oi_tasks,
-            lake_root=lake_root,
-            concurrency=oi_concurrency,
-            logger=logger,
-        )
-    else:
-        oi_results, oi_errors = {}, {}
+    task_results: dict[tuple[Exchange, Market, str, str], list[SpotCandle]] = {}
+    task_errors: dict[tuple[Exchange, Market, str, str], str] = {}
+    oi_results: dict[tuple[Exchange, str, str], list[OpenInterestPoint]] = {}
+    oi_errors: dict[tuple[Exchange, str, str], str] = {}
+    funding_results: dict[tuple[Exchange, str, str], list[FundingPoint]] = {}
+    funding_errors: dict[tuple[Exchange, str, str], str] = {}
 
-    if funding_tasks:
-        funding_results, funding_errors = await _fetch_funding_tasks_parallel(
-            funding_tasks=funding_tasks,
-            lake_root=lake_root,
-            concurrency=funding_concurrency,
-            logger=logger,
-        )
-    else:
-        funding_results, funding_errors = {}, {}
+    for data_type in data_type_order:
+        if data_type in {"spot", "perp"}:
+            market_tasks = tasks_by_market.get(cast(Market, data_type), [])
+            if not market_tasks:
+                continue
+            rows, errors = await _fetch_candle_tasks_parallel(
+                tasks=market_tasks,
+                lake_root=lake_root,
+                concurrency=candle_concurrency,
+                logger=logger,
+            )
+            task_results.update(rows)
+            task_errors.update(errors)
+            continue
+        if data_type == "oi":
+            if not oi_tasks:
+                continue
+            rows, errors = await _fetch_open_interest_tasks_parallel(
+                oi_tasks=oi_tasks,
+                lake_root=lake_root,
+                concurrency=oi_concurrency,
+                logger=logger,
+            )
+            oi_results.update(rows)
+            oi_errors.update(errors)
+            continue
+        if data_type == "funding":
+            if not funding_tasks:
+                continue
+            rows, errors = await _fetch_funding_tasks_parallel(
+                funding_tasks=funding_tasks,
+                lake_root=lake_root,
+                concurrency=funding_concurrency,
+                logger=logger,
+            )
+            funding_results.update(rows)
+            funding_errors.update(errors)
 
     return task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors
 
@@ -397,8 +417,9 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
     try:
         with SingleInstanceLock(".run/crypto-market-loader.lock"):
             exchanges = cast(list[Exchange], args.exchanges if args.exchanges else [args.exchange])
-            data_types = cast(list[DataType], args.market)
-            ohlcv_markets = [item for item in data_types if item in {"spot", "perp"}]
+            randomized_data_types = cast(list[DataType], _items_in_random_order(cast(list[str], args.market)))
+            ohlcv_markets = [item for item in randomized_data_types if item in {"spot", "perp"}]
+            data_types = randomized_data_types
             oi_requested = "oi" in data_types
             funding_requested = "funding" in data_types
             multi_market = len(data_types) > 1
@@ -409,9 +430,11 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
             open_interest_for_storage: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = {}
             funding_for_storage: dict[Market, dict[str, dict[str, list[FundingPoint]]]] = {}
             tasks: list[tuple[Exchange, Market, str, str]] = []
+            tasks_by_market: dict[Market, list[tuple[Exchange, Market, str, str]]] = {"spot": [], "perp": []}
             oi_tasks: list[tuple[Exchange, str, str]] = []
             funding_tasks: list[tuple[Exchange, str, str]] = []
-            randomized_symbols = _symbols_in_random_order(cast(list[str], args.symbols))
+            randomized_symbols = _items_in_random_order(cast(list[str], args.symbols))
+            logger.info("Randomized schedule markets=%s symbols=%s", data_types, randomized_symbols)
 
             for exchange in exchanges:
                 exchange_output: dict[str, object] = {}
@@ -433,7 +456,9 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                 for market in cast(list[Market], ohlcv_markets):
                     for timeframe in normalized_timeframes:
                         for symbol in randomized_symbols:
-                            tasks.append((exchange, market, symbol, timeframe))
+                            task = (exchange, market, symbol, timeframe)
+                            tasks.append(task)
+                            tasks_by_market[market].append(task)
                 if oi_requested:
                     for timeframe in normalized_timeframes:
                         for symbol in randomized_symbols:
@@ -449,9 +474,10 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
             logger.info("Sequential fetch mode enabled for spot/perp, oi, and funding")
             task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors = asyncio.run(
                 _fetch_all_task_groups(
-                    tasks=tasks,
+                    tasks_by_market=tasks_by_market,
                     oi_tasks=oi_tasks,
                     funding_tasks=funding_tasks,
+                    data_type_order=data_types,
                     lake_root=cast(str, args.lake_root),
                     candle_concurrency=candle_concurrency,
                     oi_concurrency=oi_concurrency,
