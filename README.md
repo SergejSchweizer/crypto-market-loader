@@ -57,23 +57,37 @@ CLI command
 - Stored cadence: `1m`
 - Parquet dataset: `dataset_type=spot`
 - Timescale table: `spot`
-- Core fields: `open, high, low, close, volume, quote_volume, trade_count`
+- Timeframe handling: fixed `1m` cadence (no variable timeframe key in core contract)
+- Core fields:
+  - `open`, `high`, `low`, `close`: OHLC Preise pro 1m-Intervall
+  - `volume`: gehandelte Basis-Menge im Intervall
+  - `quote_volume`: gehandeltes Notional in Quote-Währung
+  - `trade_count`: Anzahl Trades im Intervall
 
 ### 4.2 `perp`
 - Source endpoint: `public/get_tradingview_chart_data`
 - Stored cadence: `1m`
 - Parquet dataset: `dataset_type=perp`
 - Timescale table: `perp`
-- Core fields: `open, high, low, close, volume, quote_volume, trade_count`
+- Timeframe handling: fixed `1m` cadence (no variable timeframe key in core contract)
+- Core fields:
+  - `open`, `high`, `low`, `close`: OHLC Preise pro 1m-Intervall (Perpetual)
+  - `volume`: gehandelte Kontrakt-/Basis-Menge im Intervall
+  - `quote_volume`: gehandeltes Notional in Quote-Währung
+  - `trade_count`: Anzahl Trades im Intervall
 
 ### 4.3 `oi_m1_feature`
 - Source endpoint: `public/get_last_settlements_by_instrument`
 - Stored cadence: `1m` feature grid
 - Parquet dataset: `dataset_type=oi_m1_feature`
 - Timescale table: `open_interest`
+- Timeframe handling: fixed `1m` feature grid (no variable timeframe key in core contract)
 - Core fields:
-  - `open_interest`, `open_interest_value`
-  - `oi_ffill`, `oi_is_observed`, `minutes_since_oi_observation`
+  - `open_interest`: beobachteter Open-Interest-Wert des Quellpunkts
+  - `open_interest_value`: Wertmaß von Open Interest laut Quelle (falls vorhanden)
+  - `oi_ffill`: auf 1m-Grid vorwärtsgefüllter OI-Wert
+  - `oi_is_observed`: `true` bei Originalpunkt, `false` bei synthetischer Fill-Row
+  - `minutes_since_oi_observation`: Minuten seit letztem beobachteten OI-Punkt
 - Semantics:
   - observed OI minute: `oi_is_observed=true`, `minutes_since_oi_observation=0`
   - synthetic minute: forward-filled value, `oi_is_observed=false`, counter increments
@@ -84,7 +98,11 @@ CLI command
 - Stored cadence: native `8h` (not transformed to `1m`)
 - Parquet dataset: `dataset_type=funding`
 - Timescale table: `funding`
-- Core fields: `funding_rate`, `index_price`, `mark_price`
+- Timeframe handling: fixed native `8h` cadence (no variable timeframe key in core contract)
+- Core fields:
+  - `funding_rate`: Funding-Rate des nativen 8h-Fensters
+  - `index_price`: Referenz-/Indexpreis zum Funding-Zeitpunkt
+  - `mark_price`: Mark-Preis zum Funding-Zeitpunkt
 
 ## 5. Repository Architecture
 
@@ -142,29 +160,29 @@ If repository path changes, recreate `.venv` so entrypoint shebangs stay valid.
 Spot:
 
 ```bash
-python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL --timeframe 1m
+python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL
 ```
 
 All datatypes:
 
 ```bash
-python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --timeframe 1m --save-parquet-lake --lake-root lake/bronze
+python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --save-parquet-lake --lake-root lake/bronze
 ```
 
 All datatypes + Timescale:
 
 ```bash
-python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --timeframe 1m --save-timescaledb --timescaledb-schema market_data
+python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --save-timescaledb --timescaledb-schema market_data
 ```
 
 With plots:
 
 ```bash
-python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --timeframe 1m --save-parquet-lake --plot
+python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --save-parquet-lake --plot
 ```
 
 ### 7.2 Ingestion Policy
-- Input timeframe must be `1m`/`M1`
+- Loader CLI has no timeframe parameter; cadence is fixed by datatype:
 - Effective persisted cadence:
   - `spot`, `perp`, `oi_m1_feature`: `1m`
   - `funding`: `8h`

@@ -152,8 +152,6 @@ def test_main_loader_command_still_uses_single_instance_lock(
             "spot",
             "--symbols",
             "BTCUSDT",
-            "--timeframe",
-            "1m",
             "--no-json-output",
         ],
     )
@@ -209,8 +207,6 @@ def test_main_loader_saves_timescaledb_when_enabled(monkeypatch: pytest.MonkeyPa
             "spot",
             "--symbols",
             "BTCUSDT",
-            "--timeframe",
-            "1m",
             "--save-timescaledb",
             "--timescaledb-schema",
             "crypto_market",
@@ -265,8 +261,6 @@ def test_main_loader_randomizes_symbol_schedule(monkeypatch: pytest.MonkeyPatch)
             "BTCUSDT",
             "ETHUSDT",
             "SOLUSDT",
-            "--timeframe",
-            "1m",
             "--no-json-output",
         ],
     )
@@ -315,8 +309,6 @@ def test_main_loader_randomizes_market_schedule(monkeypatch: pytest.MonkeyPatch)
             "perp",
             "--symbols",
             "BTCUSDT",
-            "--timeframe",
-            "1m",
             "--no-json-output",
         ],
     )
@@ -378,8 +370,6 @@ def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.Mon
             "funding",
             "--symbols",
             "BTCUSDT",
-            "--timeframe",
-            "1m",
             "--no-json-output",
         ],
     )
@@ -464,7 +454,7 @@ def test_export_descriptive_stats_writes_csv(monkeypatch: pytest.MonkeyPatch, tm
     assert set(written["Variable"]) == {"open", "high", "low", "close", "volume"}
 
 
-def test_loader_rejects_non_1m_timeframe(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_loader_rejects_removed_timeframe_argument(monkeypatch: pytest.MonkeyPatch) -> None:
     class _NoopLock:
         def __init__(self, lock_path: str) -> None:
             del lock_path
@@ -493,7 +483,7 @@ def test_loader_rejects_non_1m_timeframe(monkeypatch: pytest.MonkeyPatch) -> Non
             "--no-json-output",
         ],
     )
-    with pytest.raises(ValueError, match="Only 1m timeframe is supported"):
+    with pytest.raises(SystemExit):
         cli.main()
 
 

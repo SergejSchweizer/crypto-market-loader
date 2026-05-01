@@ -68,9 +68,9 @@ from ingestion.spot import (
 )
 
 DataType = Literal["spot", "perp", "oi", "funding"]
-_ALLOWED_TIMEFRAME_VALUES = {"1m", "m1"}
 _TAIL_DELTA_ONLY = True
 OI_DATASET_TYPE = dataset_contract("oi").dataset_type
+LOADER_FIXED_TIMEFRAME = "1m"
 
 
 def _items_in_random_order(items: list[str]) -> list[str]:
@@ -79,13 +79,6 @@ def _items_in_random_order(items: list[str]) -> list[str]:
     if len(items) <= 1:
         return list(items)
     return random.SystemRandom().sample(items, k=len(items))
-
-
-def _validate_loader_timeframe_input(raw_timeframe: str) -> None:
-    """Enforce loader timeframe policy to 1m-only values."""
-
-    if raw_timeframe.strip().lower() not in _ALLOWED_TIMEFRAME_VALUES:
-        raise ValueError("Only 1m timeframe is supported for loader runs.")
 
 
 def add_loader_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -113,18 +106,6 @@ def add_loader_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         help="Symbols or instrument aliases (exchange specific)",
     )
     parser.set_defaults(tail_delta_only=True)
-    parser.add_argument(
-        "--timeframe",
-        "--interval",
-        dest="timeframe",
-        default="1m",
-        help="Loader timeframe (1m-only). Accepted values: 1m, M1.",
-    )
-    parser.add_argument(
-        "--timeframes",
-        nargs="+",
-        help="Optional list of timeframes (1m/M1 only). When set, fetch runs sequentially.",
-    )
     parser.add_argument("--plot", action="store_true", help="Create and save price/volume plots")
     parser.add_argument(
         "--plot-price",
@@ -423,8 +404,7 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
             oi_requested = "oi" in data_types
             funding_requested = "funding" in data_types
             multi_market = len(data_types) > 1
-            requested_timeframes = cast(list[str], args.timeframes if args.timeframes else [args.timeframe])
-            multi_timeframe = len(requested_timeframes) > 1
+            multi_timeframe = False
             output: dict[str, object] = {}
             candles_for_storage: dict[Market, dict[str, dict[str, list[SpotCandle]]]] = {}
             open_interest_for_storage: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = {}
@@ -439,34 +419,18 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
             for exchange in exchanges:
                 exchange_output: dict[str, object] = {}
                 output[exchange] = exchange_output
-                normalized_timeframes: list[str] = []
-                for timeframe_value in requested_timeframes:
-                    _validate_loader_timeframe_input(raw_timeframe=timeframe_value)
-                    try:
-                        normalized_timeframes.append(normalize_timeframe(exchange=exchange, value=timeframe_value))
-                    except Exception as exc:  # noqa: BLE001
-                        exchange_output[f"_timeframe_error_{timeframe_value}"] = str(exc)
-                        logger.exception(
-                            "Failed to normalize timeframe exchange=%s timeframe=%s",
-                            exchange,
-                            timeframe_value,
-                        )
-                if not normalized_timeframes:
-                    continue
+                normalized_timeframe = normalize_timeframe(exchange=exchange, value=LOADER_FIXED_TIMEFRAME)
                 for market in cast(list[Market], ohlcv_markets):
-                    for timeframe in normalized_timeframes:
-                        for symbol in randomized_symbols:
-                            task = (exchange, market, symbol, timeframe)
-                            tasks.append(task)
-                            tasks_by_market[market].append(task)
+                    for symbol in randomized_symbols:
+                        task = (exchange, market, symbol, normalized_timeframe)
+                        tasks.append(task)
+                        tasks_by_market[market].append(task)
                 if oi_requested:
-                    for timeframe in normalized_timeframes:
-                        for symbol in randomized_symbols:
-                            oi_tasks.append((exchange, symbol, timeframe))
+                    for symbol in randomized_symbols:
+                        oi_tasks.append((exchange, symbol, normalized_timeframe))
                 if funding_requested:
-                    for timeframe in normalized_timeframes:
-                        for symbol in randomized_symbols:
-                            funding_tasks.append((exchange, symbol, timeframe))
+                    for symbol in randomized_symbols:
+                        funding_tasks.append((exchange, symbol, normalized_timeframe))
 
             candle_concurrency = 1
             oi_concurrency = 1
