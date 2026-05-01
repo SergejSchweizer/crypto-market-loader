@@ -110,7 +110,7 @@ def open_interest_record(
 
     return {
         "schema_version": "v1",
-        "dataset_type": "oi",
+        "dataset_type": "oi_m1_feature",
         "exchange": item.exchange,
         "symbol": item.symbol,
         "instrument_type": market,
@@ -465,7 +465,7 @@ def load_open_interest_from_lake(
 
     partition_root = (
         Path(lake_root)
-        / "dataset_type=oi"
+        / "dataset_type=oi_m1_feature"
         / f"exchange={exchange}"
         / f"instrument_type={market}"
         / f"symbol={symbol}"
@@ -491,6 +491,13 @@ def load_open_interest_from_lake(
                     close_time=close_time,
                     open_interest=float(row.get("open_interest", 0.0)),
                     open_interest_value=float(row.get("open_interest_value", 0.0)),
+                    oi_ffill=(
+                        float(row["oi_ffill"])
+                        if row.get("oi_ffill") is not None
+                        else float(row.get("open_interest", 0.0))
+                    ),
+                    oi_is_observed=bool(row.get("oi_is_observed", True)),
+                    minutes_since_oi_observation=int(row.get("minutes_since_oi_observation", 0)),
                 )
     return [items_by_open_time[key] for key in sorted(items_by_open_time)]
 
@@ -596,7 +603,7 @@ def save_open_interest_parquet_lake(
 
     run_id = utc_run_id()
     ingested_at = datetime.now(UTC)
-    dataset_type = "oi"
+    dataset_type = "oi_m1_feature"
 
     grouped: defaultdict[PartitionKey, list[dict[str, object]]] = defaultdict(list)
     for symbol_map in open_interest_by_exchange.values():
@@ -683,7 +690,6 @@ def load_combined_dataframe_from_lake(
         [
             *Path(lake_root).glob("dataset_type=spot/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"),
             *Path(lake_root).glob("dataset_type=perp/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"),
-            *Path(lake_root).glob("dataset_type=ohlcv/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"),
         ]
     )
 
@@ -754,7 +760,7 @@ def load_combined_dataframe_from_lake(
     if include_open_interest:
         oi_files = sorted(
             Path(lake_root).glob(
-                "dataset_type=oi/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"
+                "dataset_type=oi_m1_feature/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"
             )
         )
         oi_frames: list[Any] = []

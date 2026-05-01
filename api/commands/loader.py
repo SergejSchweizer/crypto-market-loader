@@ -684,7 +684,7 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                         normalized_oi_timeframe = normalize_open_interest_timeframe(exchange=exchange, value=timeframe)
                         stored_oi_times = open_times_in_lake_by_dataset(
                             lake_root=args.lake_root,
-                            dataset_type="oi",
+                            dataset_type="oi_m1_feature",
                             market="perp",
                             exchange=exchange,
                             symbol=storage_symbol,

@@ -172,7 +172,7 @@ def fetch_symbol_open_interest(
             raise ValueError("latest_open_time_reader is required when tail_delta_only is enabled")
         latest_open_time = latest_reader(
             lake_root=lake_root,
-            dataset_type="oi",
+            dataset_type="oi_m1_feature",
             market=market,
             exchange=exchange,
             symbol=storage_symbol,
@@ -201,7 +201,7 @@ def fetch_symbol_open_interest(
 
     stored_open_times = open_times_reader(
         lake_root=lake_root,
-        dataset_type="oi",
+        dataset_type="oi_m1_feature",
         market=market,
         exchange=exchange,
         symbol=storage_symbol,

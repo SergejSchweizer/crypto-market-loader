@@ -8,12 +8,15 @@ from pathlib import Path
 from ingestion.lake import (
     candle_partition_key,
     candle_record,
+    load_open_interest_from_lake,
     load_spot_candles_from_lake,
     merge_and_deduplicate_rows,
     open_times_in_lake,
     partition_path,
+    save_open_interest_parquet_lake,
     save_spot_candles_parquet_lake,
 )
+from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import SpotCandle
 
 
@@ -205,3 +208,51 @@ def test_load_spot_candles_from_lake_reads_full_partition_history(tmp_path: Path
     )
 
     assert [item.open_time for item in values] == [candle_apr.open_time, candle_may.open_time]
+
+
+def test_load_open_interest_from_lake_preserves_feature_flags(tmp_path: Path) -> None:
+    observed = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 12, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 12, 0, 59, 999000, tzinfo=UTC),
+        open_interest=100000.0,
+        open_interest_value=0.0,
+    )
+    later = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 12, 8, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 12, 8, 59, 999000, tzinfo=UTC),
+        open_interest=101500.0,
+        open_interest_value=0.0,
+    )
+
+    save_open_interest_parquet_lake(
+        {"deribit": {"BTCUSDT": [observed, later]}},
+        market="perp",
+        lake_root=str(tmp_path),
+    )
+
+    values = load_open_interest_from_lake(
+        lake_root=str(tmp_path),
+        market="perp",
+        exchange="deribit",
+        symbol="BTCUSDT",
+        timeframe="1m",
+    )
+
+    assert len(values) == 9
+    assert values[0].oi_is_observed is True
+    assert values[0].minutes_since_oi_observation == 0
+    assert values[0].oi_ffill == 100000.0
+
+    assert values[1].oi_is_observed is False
+    assert values[1].minutes_since_oi_observation == 1
+    assert values[1].oi_ffill == 100000.0
+
+    assert values[8].oi_is_observed is True
+    assert values[8].minutes_since_oi_observation == 0
+    assert values[8].oi_ffill == 101500.0

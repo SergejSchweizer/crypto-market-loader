@@ -87,7 +87,7 @@ Use these names consistently in code, CLI usage, and documentation:
 
 Naming rules:
 - Use `spot`, `perp`, `oi`, and `funding` as the user-facing data-type names.
-- `dataset_type=oi` is the storage-layer parquet label for `oi`.
+- `dataset_type=oi_m1_feature` is the storage-layer parquet label for `oi`.
 - `dataset_type=funding` is the storage-layer parquet label for `funding`.
 
 Market ownership by datatype:
@@ -179,7 +179,7 @@ Loaded candle variables (`SpotCandle`):
 - Exchange-specific details:
   - Deribit perp: TradingView chart endpoint with computed `close_time` and fallback fields identical to Deribit spot behavior.
 
-#### `oi` dataset (`dataset_type=oi`, `instrument_type=perp`)
+#### `oi` dataset (`dataset_type=oi_m1_feature`, `instrument_type=perp`)
 - Meaning:
   Time-bucketed open interest for perpetual instruments; reflects outstanding open positions rather than executed candle flow.
 - Availability rule:
@@ -347,7 +347,7 @@ dataset_type=perp/
   date=<YYYY-MM>/
     data.parquet
 
-dataset_type=oi/
+dataset_type=oi_m1_feature/
   exchange=<exchange>/
   instrument_type=<perp>/
   symbol=<symbol>/
@@ -394,10 +394,9 @@ python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL --
 
 Note:
 - Loader network fetch tasks run sequentially to reduce exchange-side blocking/rate-limit pressure.
-- Parallel fetch orchestration is implemented in `application/services/fetch_service.py`; `api/cli.py` delegates to this service.
+- Fetch orchestration is implemented in `application/services/fetch_service.py`; `api/cli.py` delegates to this service.
 - Parquet partition writes are parallelized.
-- Global concurrent exchange queries are capped by `LOADER_GLOBAL_QUERY_CONCURRENCY` (default: `2`).
-- Per-stream caps (`spot/perp`, `oi`, `funding`) are also bounded and cannot exceed the global cap.
+- In current sequential mode, exchange query concurrency is effectively `1` even if compatibility concurrency env vars are set.
 
 Run silently without JSON output:
 
@@ -467,7 +466,7 @@ Example:
 
 ### 7.3 Open Interest (OI)
 Description:
-Open-interest rows are stored under `dataset_type=oi` and sampled per run when `--market oi` is used.
+Open-interest rows are stored under `dataset_type=oi_m1_feature` and sampled per run when `--market oi` is used.
 
 CSV sample:
 `samples/oi_<market>_<exchange>_<symbol>_<timeframe>_sample_10_rows.csv` (10 sampled rows).
@@ -490,6 +489,27 @@ Plot:
 
 Example:
 `samples/funding_perp_deribit_BTCUSDT_8h_sample_10_rows.png`
+
+### 7.5 Sampling And Plot Nuances
+- Sample CSVs are random row samples from the full loaded series for the specific `(dataset, exchange, symbol, timeframe)`.
+- Sampling uses deterministic seed `42` for reproducibility.
+- If a series has fewer than 10 rows, sampling uses replacement, so duplicate timestamps can appear in the sample CSV.
+- Plots are generated only when `--plot` is passed.
+- Plot series use the merged full period available for that run context (current fetch + parquet-lake history when readable).
+- Plot values are capped to max `1000` points via full-span downsampling, so first/last timestamps remain represented.
+
+### 7.6 OI Forward-Fill Nuances
+- OI rows are stored on `1m` grid for `oi` dataset.
+- Raw observed OI rows are preserved with `oi_is_observed=true` and `minutes_since_oi_observation=0`.
+- Missing minutes between observed OI rows are synthesized using forward fill:
+  - `oi_ffill` and `open_interest` carry the latest observed OI value.
+  - `oi_is_observed=false`.
+  - `minutes_since_oi_observation` increments by 1 per minute.
+- No backward fill is created before the first observed OI row in a series.
+
+### 7.7 Funding Nuances
+- Funding is always stored at native Deribit cadence (`8h`) even when loader is invoked with `--timeframe 1m`.
+- Funding sample and plot filenames therefore use `..._8h_...` timeframe segment.
 
 ## 8. Testing Instructions
 

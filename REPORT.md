@@ -3,7 +3,7 @@
 ## Abstract
 This report presents a production-oriented baseline for cryptocurrency market-data ingestion designed to support downstream quantitative research. The problem addressed is the lack of reproducible, maintainable ingestion layers in early-stage quant projects, where exchange-specific scripts and schema drift frequently undermine empirical validity. We implement a typed, modular ingestion pipeline with adapter abstractions for Deribit, command-line interfaces for deterministic execution, and partitioned parquet-lake storage. Data are sourced from public exchange REST endpoints and normalized into canonical OHLCV, open-interest, and funding schemas with metadata fields for run traceability. The main finding is engineering-focused: the system provides deterministic normalization, supports backward pagination and gap-fill synchronization for historical series, enforces 1-minute ingestion policy, and preserves idempotent persistence via natural-key partition merges plus Timescale watermark-based delta ingest. The contribution is a maintainable ingestion foundation suitable for subsequent market microstructure, regime, and forecasting studies, with explicit reproducibility controls (strict typing, tests, linting, config-driven runs, and stable execution commands).
 
-Canonical data-type naming in this project is fixed as `spot`, `perp`, `oi`, and `funding` across CLI, code, and documentation (with parquet storage label `dataset_type=oi` representing `oi`). OHLCV/OI scope is `1m` / `M1`, while funding is stored in native Deribit `8h` cadence.
+Canonical data-type naming in this project is fixed as `spot`, `perp`, `oi`, and `funding` across CLI and code. The parquet storage label for OI feature-grid rows is `dataset_type=oi_m1_feature`. OHLCV/OI scope is `1m` / `M1`, while funding is stored in native Deribit `8h` cadence.
 
 ## Introduction
 Reliable market-data ingestion is a prerequisite for valid quantitative inference in crypto research.
@@ -165,7 +165,7 @@ No predictive or regime models are trained in this stage.
 | Loader sample artifacts | Per market/exchange/symbol/timeframe CSV + full-history plot | Passed with deterministic naming |
 | Chunked Timescale ingest | Streaming parquet read + bounded DB upsert batches | Passed with stable memory profile |
 | Timescale delta ingest | Per-series watermark state (`ingest_watermarks`) + newer-than-watermark row filter | Passed and idempotent across reruns |
-| OI integration | Deribit perp dataset_type=oi | Passed for all-history and gap-fill paths |
+| OI integration | Deribit perp dataset_type=oi_m1_feature | Passed for all-history and gap-fill paths |
 
 ### Figures
 Figure 1. OHLCV Spot series (Deribit BTCUSDT 1m).

@@ -212,8 +212,11 @@ def _build_open_interest_db_row(row: dict[str, object]) -> dict[str, object]:
         "close_time": row.get("close_time"),
         "open_interest": row.get("open_interest"),
         "open_interest_value": row.get("open_interest_value", 0.0),
+        "oi_ffill": row.get("oi_ffill", row.get("open_interest")),
+        "oi_is_observed": row.get("oi_is_observed", True),
+        "minutes_since_oi_observation": row.get("minutes_since_oi_observation", 0),
         "schema_version": row.get("schema_version", "v1"),
-        "dataset_type": row.get("dataset_type", "oi"),
+        "dataset_type": row.get("dataset_type", "oi_m1_feature"),
         "event_time": row.get("event_time", row.get("open_time")),
         "ingested_at": row.get("ingested_at"),
         "run_id": row.get("run_id", "unknown"),
@@ -402,6 +405,9 @@ def _create_schema_and_tables(conn: Any, schema: str) -> None:
                 close_time TIMESTAMPTZ NOT NULL,
                 open_interest DOUBLE PRECISION NOT NULL,
                 open_interest_value DOUBLE PRECISION NOT NULL,
+                oi_ffill DOUBLE PRECISION NOT NULL,
+                oi_is_observed BOOLEAN NOT NULL,
+                minutes_since_oi_observation BIGINT NOT NULL,
                 schema_version TEXT NOT NULL,
                 dataset_type TEXT NOT NULL,
                 event_time TIMESTAMPTZ NOT NULL,
@@ -410,6 +416,24 @@ def _create_schema_and_tables(conn: Any, schema: str) -> None:
                 source_endpoint TEXT NOT NULL,
                 PRIMARY KEY (exchange, instrument_type, symbol, timeframe, open_time)
             );
+            """
+        )
+        cur.execute(
+            f"""
+            ALTER TABLE {safe_schema}.{OpenInterestTableName}
+            ADD COLUMN IF NOT EXISTS oi_ffill DOUBLE PRECISION NOT NULL DEFAULT 0.0;
+            """
+        )
+        cur.execute(
+            f"""
+            ALTER TABLE {safe_schema}.{OpenInterestTableName}
+            ADD COLUMN IF NOT EXISTS oi_is_observed BOOLEAN NOT NULL DEFAULT TRUE;
+            """
+        )
+        cur.execute(
+            f"""
+            ALTER TABLE {safe_schema}.{OpenInterestTableName}
+            ADD COLUMN IF NOT EXISTS minutes_since_oi_observation BIGINT NOT NULL DEFAULT 0;
             """
         )
         cur.execute(
@@ -607,11 +631,12 @@ def _upsert_open_interest(conn: Any, schema: str, rows: list[dict[str, object]])
     sql = f"""
         INSERT INTO {safe_schema}.{OpenInterestTableName} (
             exchange, symbol, instrument_type, timeframe, open_time, close_time,
-            open_interest, open_interest_value,
+            open_interest, open_interest_value, oi_ffill, oi_is_observed, minutes_since_oi_observation,
             schema_version, dataset_type, event_time, ingested_at, run_id, source_endpoint
         ) VALUES (
             %(exchange)s, %(symbol)s, %(instrument_type)s, %(timeframe)s, %(open_time)s, %(close_time)s,
-            %(open_interest)s, %(open_interest_value)s,
+            %(open_interest)s, %(open_interest_value)s, %(oi_ffill)s, %(oi_is_observed)s,
+            %(minutes_since_oi_observation)s,
             %(schema_version)s, %(dataset_type)s, %(event_time)s, %(ingested_at)s, %(run_id)s, %(source_endpoint)s
         )
         ON CONFLICT (exchange, instrument_type, symbol, timeframe, open_time)
@@ -619,6 +644,9 @@ def _upsert_open_interest(conn: Any, schema: str, rows: list[dict[str, object]])
             close_time = EXCLUDED.close_time,
             open_interest = EXCLUDED.open_interest,
             open_interest_value = EXCLUDED.open_interest_value,
+            oi_ffill = EXCLUDED.oi_ffill,
+            oi_is_observed = EXCLUDED.oi_is_observed,
+            minutes_since_oi_observation = EXCLUDED.minutes_since_oi_observation,
             schema_version = EXCLUDED.schema_version,
             dataset_type = EXCLUDED.dataset_type,
             event_time = EXCLUDED.event_time,
@@ -791,16 +819,11 @@ def save_parquet_lake_to_timescaledb(
                 glob_pattern="dataset_type=perp/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
                 allow_partition=_allow,
             ),
-            *_iter_matching_parquet_files(
-                lake_root=lake_root,
-                glob_pattern="dataset_type=ohlcv/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
-                allow_partition=_allow,
-            ),
         ]
     )
     all_oi_files = _iter_matching_parquet_files(
         lake_root=lake_root,
-        glob_pattern="dataset_type=oi/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
+        glob_pattern="dataset_type=oi_m1_feature/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
         allow_partition=_allow,
     )
     all_funding_files = _iter_matching_parquet_files(
@@ -816,16 +839,10 @@ def save_parquet_lake_to_timescaledb(
                 _create_schema_and_tables(conn=conn, schema=safe_schema)
             spot_latest_by_key = _load_latest_open_time_by_key(conn=conn, schema=safe_schema, dataset_type="spot")
             perp_latest_by_key = _load_latest_open_time_by_key(conn=conn, schema=safe_schema, dataset_type="perp")
-            legacy_ohlcv_latest_by_key = _load_latest_open_time_by_key(
-                conn=conn,
-                schema=safe_schema,
-                dataset_type="ohlcv",
-            )
             ohlcv_latest_by_key: dict[SeriesKey, datetime] = {}
             for series_key, value in {
                 **spot_latest_by_key,
                 **perp_latest_by_key,
-                **legacy_ohlcv_latest_by_key,
             }.items():
                 previous = ohlcv_latest_by_key.get(series_key)
                 if previous is None or value > previous:
@@ -833,7 +850,7 @@ def save_parquet_lake_to_timescaledb(
             oi_latest_by_key = _load_latest_open_time_by_key(
                 conn=conn,
                 schema=safe_schema,
-                dataset_type="oi",
+                dataset_type="oi_m1_feature",
             )
             funding_latest_by_key = _load_latest_open_time_by_key(
                 conn=conn,
@@ -926,12 +943,6 @@ def save_parquet_lake_to_timescaledb(
             _upsert_ingest_watermarks(
                 conn=conn,
                 schema=safe_schema,
-                dataset_type="ohlcv",
-                watermark_by_series=ohlcv_watermarks,
-            )
-            _upsert_ingest_watermarks(
-                conn=conn,
-                schema=safe_schema,
                 dataset_type="spot",
                 watermark_by_series=ohlcv_watermarks,
             )
@@ -944,7 +955,7 @@ def save_parquet_lake_to_timescaledb(
             _upsert_ingest_watermarks(
                 conn=conn,
                 schema=safe_schema,
-                dataset_type="oi",
+                dataset_type="oi_m1_feature",
                 watermark_by_series=oi_watermarks,
             )
             _upsert_ingest_watermarks(

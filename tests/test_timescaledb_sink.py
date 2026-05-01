@@ -307,7 +307,7 @@ def test_save_parquet_lake_to_timescaledb_reports_ingest_progress(
 
     assert progress_events
     assert any(event.get("dataset") in {"spot", "perp"} for event in progress_events)
-    assert any(event.get("dataset") == "oi" for event in progress_events)
+    assert any(event.get("dataset") == "oi_m1_feature" for event in progress_events)
     assert any(event.get("symbol") == "BTCUSDT" for event in progress_events)
     assert all(event.get("time_range") for event in progress_events)
 
@@ -362,7 +362,7 @@ def test_save_parquet_lake_to_timescaledb_ingests_only_delta(
 
     def _latest_by_key(conn: object, schema: str, dataset_type: str) -> dict[tuple[str, str, str, str], datetime]:
         del conn, schema
-        if dataset_type in {"ohlcv", "spot"}:
+        if dataset_type == "spot":
             return {("deribit", "spot", "BTCUSDT", "1m"): last_open_time}
         return {}
 
