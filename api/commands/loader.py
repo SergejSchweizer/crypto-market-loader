@@ -101,17 +101,18 @@ def add_loader_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         default=["BTCUSDT", "ETHUSDT"],
         help="Symbols or instrument aliases (exchange specific)",
     )
+    parser.set_defaults(tail_delta_only=True)
     parser.add_argument(
         "--timeframe",
         "--interval",
         dest="timeframe",
         default="1m",
-        help="Candle timeframe, e.g. M1, M5, H1, D1, 1m, 1h, 1d",
+        help="Loader timeframe (1m-only). Accepted values: 1m, M1.",
     )
     parser.add_argument(
         "--timeframes",
         nargs="+",
-        help="Optional list of timeframes. When set, fetch runs for each timeframe sequentially.",
+        help="Optional list of timeframes (1m/M1 only). When set, fetch runs sequentially.",
     )
     parser.add_argument("--plot", action="store_true", help="Create and save price/volume plots")
     parser.add_argument(
@@ -151,16 +152,10 @@ def add_loader_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         help="Suppress JSON output from loader command",
     )
     parser.add_argument(
-        "--tail-delta-only",
-        action="store_true",
-        default=True,
-        help="Skip historical internal gap checks and fetch only from latest stored candle forward (default).",
-    )
-    parser.add_argument(
         "--full-gap-fill",
         dest="tail_delta_only",
         action="store_false",
-        help="Disable tail-delta-only mode and run full internal gap-fill checks.",
+        help="Run full historical internal gap checks instead of default tail-only delta mode.",
     )
 
 
