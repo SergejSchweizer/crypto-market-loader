@@ -18,6 +18,16 @@ PartitionKey = tuple[str, str, str, str, str]
 NaturalKey = tuple[str, str, str, str, datetime]
 
 
+def ohlcv_dataset_type_for_market(market: str) -> str:
+    """Return dataset_type label used for OHLCV parquet storage by market."""
+
+    if market == "spot":
+        return "spot"
+    if market == "perp":
+        return "perp"
+    raise ValueError(f"Unsupported OHLCV market '{market}'")
+
+
 def utc_run_id() -> str:
     """Create a UTC run identifier for lake writes."""
 
@@ -56,7 +66,7 @@ def candle_record(candle: SpotCandle, market: str, run_id: str, ingested_at: dat
 
     return {
         "schema_version": "v1",
-        "dataset_type": "ohlcv",
+        "dataset_type": ohlcv_dataset_type_for_market(market),
         "exchange": candle.exchange,
         "symbol": candle.symbol,
         "instrument_type": market,
@@ -223,6 +233,79 @@ def merge_and_deduplicate_rows(
     return rows
 
 
+def _require_pyarrow() -> tuple[Any, Any]:
+    """Load pyarrow modules required for parquet read/write operations."""
+
+    try:
+        import pyarrow as pa
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise RuntimeError("pyarrow is required for parquet lake output. Install project dependencies.") from exc
+    return pa, pq
+
+
+def _write_partition_file(
+    *,
+    pa: Any,
+    pq: Any,
+    lake_root: str,
+    dataset_type: str,
+    run_id: str,
+    key: PartitionKey,
+    rows: list[dict[str, object]],
+) -> str:
+    """Write one partition file via staging replace after merge/dedup."""
+
+    part_dir = partition_path(lake_root=lake_root, dataset_type=dataset_type, key=key)
+    part_dir.mkdir(parents=True, exist_ok=True)
+    file_path = part_dir / "data.parquet"
+    staging_path = part_dir / f".staging-{run_id}.parquet"
+
+    existing_rows: list[dict[str, object]] = []
+    if file_path.exists():
+        existing_table = pq.ParquetFile(file_path).read()
+        existing_rows = existing_table.to_pylist()
+
+    merged_rows = merge_and_deduplicate_rows(existing=existing_rows, new=rows)
+    table = pa.Table.from_pylist(merged_rows)
+    pq.write_table(table, staging_path)
+    staging_path.replace(file_path)
+    return str(file_path.resolve())
+
+
+def _write_grouped_rows(
+    *,
+    pa: Any,
+    pq: Any,
+    lake_root: str,
+    dataset_type: str,
+    run_id: str,
+    grouped: dict[PartitionKey, list[dict[str, object]]],
+) -> list[str]:
+    """Write grouped partition rows concurrently and return written file paths."""
+
+    written_files: list[str] = []
+    if grouped:
+        max_workers = min(4, len(grouped))
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = [
+                executor.submit(
+                    _write_partition_file,
+                    pa=pa,
+                    pq=pq,
+                    lake_root=lake_root,
+                    dataset_type=dataset_type,
+                    run_id=run_id,
+                    key=key,
+                    rows=rows,
+                )
+                for key, rows in grouped.items()
+            ]
+            for future in concurrent.futures.as_completed(futures):
+                written_files.append(future.result())
+    return sorted(written_files)
+
+
 def open_times_in_lake(
     lake_root: str,
     market: str,
@@ -237,7 +320,7 @@ def open_times_in_lake(
 
     return open_times_in_lake_by_dataset(
         lake_root=lake_root,
-        dataset_type="ohlcv",
+        dataset_type=ohlcv_dataset_type_for_market(market),
         market=market,
         exchange=exchange,
         symbol=symbol,
@@ -300,7 +383,7 @@ def latest_open_time_in_lake(
 
     return latest_open_time_in_lake_by_dataset(
         lake_root=lake_root,
-        dataset_type="ohlcv",
+        dataset_type=ohlcv_dataset_type_for_market(market),
         market=market,
         exchange=exchange,
         symbol=symbol,
@@ -327,7 +410,7 @@ def load_spot_candles_from_lake(
 
     partition_root = (
         Path(lake_root)
-        / "dataset_type=ohlcv"
+        / f"dataset_type={ohlcv_dataset_type_for_market(market)}"
         / f"exchange={exchange}"
         / f"instrument_type={market}"
         / f"symbol={symbol}"
@@ -474,15 +557,11 @@ def save_spot_candles_parquet_lake(
         RuntimeError: If ``pyarrow`` is unavailable.
     """
 
-    try:
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-    except ImportError as exc:
-        raise RuntimeError("pyarrow is required for parquet lake output. Install project dependencies.") from exc
+    pa, pq = _require_pyarrow()
 
     run_id = utc_run_id()
     ingested_at = datetime.now(UTC)
-    dataset_type = "ohlcv"
+    dataset_type = ohlcv_dataset_type_for_market(market)
 
     grouped: defaultdict[PartitionKey, list[dict[str, object]]] = defaultdict(list)
 
@@ -492,32 +571,14 @@ def save_spot_candles_parquet_lake(
                 key = candle_partition_key(candle=candle, market=market)
                 grouped[key].append(candle_record(candle=candle, market=market, run_id=run_id, ingested_at=ingested_at))
 
-    def _write_one_partition(key: PartitionKey, rows: list[dict[str, object]]) -> str:
-        part_dir = partition_path(lake_root=lake_root, dataset_type=dataset_type, key=key)
-        part_dir.mkdir(parents=True, exist_ok=True)
-        file_path = part_dir / "data.parquet"
-        staging_path = part_dir / f".staging-{run_id}.parquet"
-
-        existing_rows: list[dict[str, object]] = []
-        if file_path.exists():
-            existing_table = pq.ParquetFile(file_path).read()  # type: ignore[no-untyped-call]
-            existing_rows = existing_table.to_pylist()
-
-        merged_rows = merge_and_deduplicate_rows(existing=existing_rows, new=rows)
-        table = pa.Table.from_pylist(merged_rows)
-        pq.write_table(table, staging_path)  # type: ignore[no-untyped-call]
-        staging_path.replace(file_path)
-        return str(file_path.resolve())
-
-    written_files: list[str] = []
-    if grouped:
-        max_workers = min(4, len(grouped))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_write_one_partition, key, rows) for key, rows in grouped.items()]
-            for future in concurrent.futures.as_completed(futures):
-                written_files.append(future.result())
-
-    return sorted(written_files)
+    return _write_grouped_rows(
+        pa=pa,
+        pq=pq,
+        lake_root=lake_root,
+        dataset_type=dataset_type,
+        run_id=run_id,
+        grouped=grouped,
+    )
 
 
 def save_open_interest_parquet_lake(
@@ -527,11 +588,7 @@ def save_open_interest_parquet_lake(
 ) -> list[str]:
     """Save fetched open-interest data to parquet lake partitions."""
 
-    try:
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-    except ImportError as exc:
-        raise RuntimeError("pyarrow is required for parquet lake output. Install project dependencies.") from exc
+    pa, pq = _require_pyarrow()
 
     run_id = utc_run_id()
     ingested_at = datetime.now(UTC)
@@ -546,32 +603,14 @@ def save_open_interest_parquet_lake(
                     open_interest_record(item=item, market=market, run_id=run_id, ingested_at=ingested_at)
                 )
 
-    def _write_one_partition(key: PartitionKey, rows: list[dict[str, object]]) -> str:
-        part_dir = partition_path(lake_root=lake_root, dataset_type=dataset_type, key=key)
-        part_dir.mkdir(parents=True, exist_ok=True)
-        file_path = part_dir / "data.parquet"
-        staging_path = part_dir / f".staging-{run_id}.parquet"
-
-        existing_rows: list[dict[str, object]] = []
-        if file_path.exists():
-            existing_table = pq.ParquetFile(file_path).read()  # type: ignore[no-untyped-call]
-            existing_rows = existing_table.to_pylist()
-
-        merged_rows = merge_and_deduplicate_rows(existing=existing_rows, new=rows)
-        table = pa.Table.from_pylist(merged_rows)
-        pq.write_table(table, staging_path)  # type: ignore[no-untyped-call]
-        staging_path.replace(file_path)
-        return str(file_path.resolve())
-
-    written_files: list[str] = []
-    if grouped:
-        max_workers = min(4, len(grouped))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_write_one_partition, key, rows) for key, rows in grouped.items()]
-            for future in concurrent.futures.as_completed(futures):
-                written_files.append(future.result())
-
-    return sorted(written_files)
+    return _write_grouped_rows(
+        pa=pa,
+        pq=pq,
+        lake_root=lake_root,
+        dataset_type=dataset_type,
+        run_id=run_id,
+        grouped=grouped,
+    )
 
 
 def save_funding_parquet_lake(
@@ -581,11 +620,7 @@ def save_funding_parquet_lake(
 ) -> list[str]:
     """Save fetched funding rows to parquet lake partitions."""
 
-    try:
-        import pyarrow as pa
-        import pyarrow.parquet as pq
-    except ImportError as exc:
-        raise RuntimeError("pyarrow is required for parquet lake output. Install project dependencies.") from exc
+    pa, pq = _require_pyarrow()
 
     run_id = utc_run_id()
     ingested_at = datetime.now(UTC)
@@ -598,32 +633,14 @@ def save_funding_parquet_lake(
                 key = funding_partition_key(item=item, market=market)
                 grouped[key].append(funding_record(item=item, market=market, run_id=run_id, ingested_at=ingested_at))
 
-    def _write_one_partition(key: PartitionKey, rows: list[dict[str, object]]) -> str:
-        part_dir = partition_path(lake_root=lake_root, dataset_type=dataset_type, key=key)
-        part_dir.mkdir(parents=True, exist_ok=True)
-        file_path = part_dir / "data.parquet"
-        staging_path = part_dir / f".staging-{run_id}.parquet"
-
-        existing_rows: list[dict[str, object]] = []
-        if file_path.exists():
-            existing_table = pq.ParquetFile(file_path).read()  # type: ignore[no-untyped-call]
-            existing_rows = existing_table.to_pylist()
-
-        merged_rows = merge_and_deduplicate_rows(existing=existing_rows, new=rows)
-        table = pa.Table.from_pylist(merged_rows)
-        pq.write_table(table, staging_path)  # type: ignore[no-untyped-call]
-        staging_path.replace(file_path)
-        return str(file_path.resolve())
-
-    written_files: list[str] = []
-    if grouped:
-        max_workers = min(4, len(grouped))
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            futures = [executor.submit(_write_one_partition, key, rows) for key, rows in grouped.items()]
-            for future in concurrent.futures.as_completed(futures):
-                written_files.append(future.result())
-
-    return sorted(written_files)
+    return _write_grouped_rows(
+        pa=pa,
+        pq=pq,
+        lake_root=lake_root,
+        dataset_type=dataset_type,
+        run_id=run_id,
+        grouped=grouped,
+    )
 
 
 def load_combined_dataframe_from_lake(
@@ -658,9 +675,11 @@ def load_combined_dataframe_from_lake(
     instrument_filter = {item.lower() for item in instrument_types} if instrument_types else None
 
     data_files = sorted(
-        Path(lake_root).glob(
-            "dataset_type=ohlcv/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"
-        )
+        [
+            *Path(lake_root).glob("dataset_type=spot/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"),
+            *Path(lake_root).glob("dataset_type=perp/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"),
+            *Path(lake_root).glob("dataset_type=ohlcv/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"),
+        ]
     )
 
     frames: list[Any] = []

@@ -11,10 +11,10 @@ def test_dataset_contract_maps_spot_perp_oi() -> None:
     oi = dataset_contract("oi")
     funding = dataset_contract("funding")
 
-    assert spot.dataset_type == "ohlcv"
+    assert spot.dataset_type == "spot"
     assert spot.instrument_type == "spot"
 
-    assert perp.dataset_type == "ohlcv"
+    assert perp.dataset_type == "perp"
     assert perp.instrument_type == "perp"
 
     assert oi.dataset_type == "open_interest"

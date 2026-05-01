@@ -779,10 +779,24 @@ def save_parquet_lake_to_timescaledb(
             return False
         return True
 
-    all_ohlcv_files = _iter_matching_parquet_files(
-        lake_root=lake_root,
-        glob_pattern="dataset_type=ohlcv/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
-        allow_partition=_allow,
+    all_ohlcv_files = sorted(
+        [
+            *_iter_matching_parquet_files(
+                lake_root=lake_root,
+                glob_pattern="dataset_type=spot/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
+                allow_partition=_allow,
+            ),
+            *_iter_matching_parquet_files(
+                lake_root=lake_root,
+                glob_pattern="dataset_type=perp/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
+                allow_partition=_allow,
+            ),
+            *_iter_matching_parquet_files(
+                lake_root=lake_root,
+                glob_pattern="dataset_type=ohlcv/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
+                allow_partition=_allow,
+            ),
+        ]
     )
     all_oi_files = _iter_matching_parquet_files(
         lake_root=lake_root,
@@ -800,11 +814,22 @@ def save_parquet_lake_to_timescaledb(
         with conn.transaction():
             if create_schema:
                 _create_schema_and_tables(conn=conn, schema=safe_schema)
-            ohlcv_latest_by_key = _load_latest_open_time_by_key(
+            spot_latest_by_key = _load_latest_open_time_by_key(conn=conn, schema=safe_schema, dataset_type="spot")
+            perp_latest_by_key = _load_latest_open_time_by_key(conn=conn, schema=safe_schema, dataset_type="perp")
+            legacy_ohlcv_latest_by_key = _load_latest_open_time_by_key(
                 conn=conn,
                 schema=safe_schema,
                 dataset_type="ohlcv",
             )
+            ohlcv_latest_by_key: dict[SeriesKey, datetime] = {}
+            for series_key, value in {
+                **spot_latest_by_key,
+                **perp_latest_by_key,
+                **legacy_ohlcv_latest_by_key,
+            }.items():
+                previous = ohlcv_latest_by_key.get(series_key)
+                if previous is None or value > previous:
+                    ohlcv_latest_by_key[series_key] = value
             oi_latest_by_key = _load_latest_open_time_by_key(
                 conn=conn,
                 schema=safe_schema,
@@ -902,6 +927,18 @@ def save_parquet_lake_to_timescaledb(
                 conn=conn,
                 schema=safe_schema,
                 dataset_type="ohlcv",
+                watermark_by_series=ohlcv_watermarks,
+            )
+            _upsert_ingest_watermarks(
+                conn=conn,
+                schema=safe_schema,
+                dataset_type="spot",
+                watermark_by_series=ohlcv_watermarks,
+            )
+            _upsert_ingest_watermarks(
+                conn=conn,
+                schema=safe_schema,
+                dataset_type="perp",
                 watermark_by_series=ohlcv_watermarks,
             )
             _upsert_ingest_watermarks(

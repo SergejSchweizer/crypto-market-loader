@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 CliDataType = Literal["spot", "perp", "oi", "funding"]
-DatasetType = Literal["ohlcv", "open_interest", "funding", "l2_orderbook"]
+DatasetType = Literal["spot", "perp", "open_interest", "funding", "ohlcv", "l2_orderbook"]
 InstrumentType = Literal["spot", "perp"]
 
 
@@ -20,8 +20,8 @@ class DatasetContract:
 
 
 _CONTRACTS: dict[CliDataType, DatasetContract] = {
-    "spot": DatasetContract(cli_data_type="spot", dataset_type="ohlcv", instrument_type="spot"),
-    "perp": DatasetContract(cli_data_type="perp", dataset_type="ohlcv", instrument_type="perp"),
+    "spot": DatasetContract(cli_data_type="spot", dataset_type="spot", instrument_type="spot"),
+    "perp": DatasetContract(cli_data_type="perp", dataset_type="perp", instrument_type="perp"),
     "oi": DatasetContract(cli_data_type="oi", dataset_type="open_interest", instrument_type="perp"),
     "funding": DatasetContract(cli_data_type="funding", dataset_type="funding", instrument_type="perp"),
 }

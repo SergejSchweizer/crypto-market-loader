@@ -306,7 +306,7 @@ def test_save_parquet_lake_to_timescaledb_reports_ingest_progress(
     )
 
     assert progress_events
-    assert any(event.get("dataset") == "ohlcv" for event in progress_events)
+    assert any(event.get("dataset") in {"spot", "perp", "ohlcv"} for event in progress_events)
     assert any(event.get("dataset") == "open_interest" for event in progress_events)
     assert any(event.get("symbol") == "BTCUSDT" for event in progress_events)
     assert all(event.get("time_range") for event in progress_events)
@@ -362,7 +362,7 @@ def test_save_parquet_lake_to_timescaledb_ingests_only_delta(
 
     def _latest_by_key(conn: object, schema: str, dataset_type: str) -> dict[tuple[str, str, str, str], datetime]:
         del conn, schema
-        if dataset_type == "ohlcv":
+        if dataset_type in {"ohlcv", "spot"}:
             return {("deribit", "spot", "BTCUSDT", "1m"): last_open_time}
         return {}
 
@@ -381,7 +381,7 @@ def test_save_parquet_lake_to_timescaledb_ingests_only_delta(
 def test_filter_files_by_watermark_month_skips_older_partitions(tmp_path: Path) -> None:
     older = (
         tmp_path
-        / "dataset_type=ohlcv"
+        / "dataset_type=spot"
         / "exchange=deribit"
         / "instrument_type=spot"
         / "symbol=BTCUSDT"
@@ -391,7 +391,7 @@ def test_filter_files_by_watermark_month_skips_older_partitions(tmp_path: Path) 
     )
     newer = (
         tmp_path
-        / "dataset_type=ohlcv"
+        / "dataset_type=spot"
         / "exchange=deribit"
         / "instrument_type=spot"
         / "symbol=BTCUSDT"

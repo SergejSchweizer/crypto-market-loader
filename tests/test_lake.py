@@ -39,9 +39,9 @@ def test_partition_key_and_path() -> None:
     key = candle_partition_key(candle=candle, market="spot")
     assert key == ("deribit", "spot", "BTCUSDT", "1m", "2026-04")
 
-    result = partition_path("lake/bronze", "ohlcv", key)
+    result = partition_path("lake/bronze", "spot", key)
     assert str(result).endswith(
-        "dataset_type=ohlcv/exchange=deribit/instrument_type=spot/symbol=BTCUSDT/timeframe=1m/date=2026-04"
+        "dataset_type=spot/exchange=deribit/instrument_type=spot/symbol=BTCUSDT/timeframe=1m/date=2026-04"
     )
 
 
@@ -50,7 +50,7 @@ def test_candle_record_contains_core_fields() -> None:
     ingested_at = datetime(2026, 4, 27, 12, 0, tzinfo=UTC)
     record = candle_record(candle=candle, market="spot", run_id="run-1", ingested_at=ingested_at)
 
-    assert record["dataset_type"] == "ohlcv"
+    assert record["dataset_type"] == "spot"
     assert record["instrument_type"] == "spot"
     assert record["run_id"] == "run-1"
     assert record["open"] == 100.0
