@@ -476,16 +476,20 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
             candle_concurrency = 1
             oi_concurrency = 1
             funding_concurrency = 1
-            incremental_parquet_on_fetch = bool(args.save_parquet_lake) and not bool(args.tail_delta_only)
+            incremental_parquet_on_fetch = bool(args.save_parquet_lake)
             incremental_parquet_files: list[str] = []
             streamed_candle_tasks: set[tuple[Exchange, Market, str, str]] = set()
             streamed_oi_tasks: set[tuple[Exchange, str, str]] = set()
             streamed_funding_tasks: set[tuple[Exchange, str, str]] = set()
             logger.info("Sequential fetch mode enabled for spot/perp, oi, and funding")
             if incremental_parquet_on_fetch:
-                logger.info("Incremental parquet flush enabled for full-gap-fill runs")
+                logger.info("Incremental parquet flush enabled during fetch execution")
 
-            def _persist_candle_task(task: CandleFetchTaskDTO, rows: list[SpotCandle]) -> None:
+            def _persist_candle_task(
+                task: CandleFetchTaskDTO,
+                rows: list[SpotCandle],
+                phase: Literal["chunk", "complete"] = "complete",
+            ) -> None:
                 if not rows:
                     return
                 storage_result = persist_loader_outputs_dto(
@@ -510,7 +514,9 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                     }
                 )
                 logger.info(
-                    "Incremental parquet flush complete type=ohlcv exchange=%s market=%s symbol=%s timeframe=%s rows=%s files=%s months=%s",
+                    "Incremental parquet flush phase=%s type=ohlcv exchange=%s market=%s "
+                    "symbol=%s timeframe=%s rows=%s files=%s months=%s",
+                    phase,
                     task.exchange,
                     task.market,
                     task.symbol,
@@ -520,7 +526,11 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                     ",".join(months) if months else "unknown",
                 )
 
-            def _persist_oi_task(task: OpenInterestFetchTaskDTO, rows: list[OpenInterestPoint]) -> None:
+            def _persist_oi_task(
+                task: OpenInterestFetchTaskDTO,
+                rows: list[OpenInterestPoint],
+                phase: Literal["chunk", "complete"] = "complete",
+            ) -> None:
                 if not rows:
                     return
                 storage_result = persist_loader_outputs_dto(
@@ -545,7 +555,9 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                     }
                 )
                 logger.info(
-                    "Incremental parquet flush complete type=oi exchange=%s symbol=%s timeframe=%s rows=%s files=%s months=%s",
+                    "Incremental parquet flush phase=%s type=oi exchange=%s symbol=%s "
+                    "timeframe=%s rows=%s files=%s months=%s",
+                    phase,
                     task.exchange,
                     task.symbol,
                     task.timeframe,
@@ -554,7 +566,11 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                     ",".join(months) if months else "unknown",
                 )
 
-            def _persist_funding_task(task: FundingFetchTaskDTO, rows: list[FundingPoint]) -> None:
+            def _persist_funding_task(
+                task: FundingFetchTaskDTO,
+                rows: list[FundingPoint],
+                phase: Literal["chunk", "complete"] = "complete",
+            ) -> None:
                 if not rows:
                     return
                 storage_result = persist_loader_outputs_dto(
@@ -579,7 +595,9 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                     }
                 )
                 logger.info(
-                    "Incremental parquet flush complete type=funding exchange=%s symbol=%s timeframe=%s rows=%s files=%s months=%s",
+                    "Incremental parquet flush phase=%s type=funding exchange=%s symbol=%s "
+                    "timeframe=%s rows=%s files=%s months=%s",
+                    phase,
                     task.exchange,
                     task.symbol,
                     task.timeframe,
@@ -592,19 +610,19 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                 if not rows:
                     return
                 streamed_candle_tasks.add((task.exchange, task.market, task.symbol, task.timeframe))
-                _persist_candle_task(task, rows)
+                _persist_candle_task(task, rows, phase="chunk")
 
             def _persist_oi_chunk(task: OpenInterestFetchTaskDTO, rows: list[OpenInterestPoint]) -> None:
                 if not rows:
                     return
                 streamed_oi_tasks.add((task.exchange, task.symbol, task.timeframe))
-                _persist_oi_task(task, rows)
+                _persist_oi_task(task, rows, phase="chunk")
 
             def _persist_funding_chunk(task: FundingFetchTaskDTO, rows: list[FundingPoint]) -> None:
                 if not rows:
                     return
                 streamed_funding_tasks.add((task.exchange, task.symbol, task.timeframe))
-                _persist_funding_task(task, rows)
+                _persist_funding_task(task, rows, phase="chunk")
 
             task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors = asyncio.run(
                 _fetch_all_task_groups(

@@ -7,6 +7,8 @@ import logging
 from datetime import UTC, datetime
 from typing import Any, cast
 
+import pytest
+
 from application.dto import CandleFetchTaskDTO, OpenInterestFetchTaskDTO
 from application.services.fetch_service import (
     fetch_candle_tasks_parallel,
@@ -124,3 +126,56 @@ def test_fetch_symbol_candles_tail_delta_only_uses_latest_open_time() -> None:
     assert candles == []
     expected_start_ms = int(datetime(2026, 4, 27, 10, 4, tzinfo=UTC).timestamp() * 1000)
     assert calls == [(expected_start_ms, end_open_ms)]
+
+
+def test_fetch_symbol_candles_tail_delta_only_passes_history_chunk_callback() -> None:
+    captured: dict[str, object] = {}
+
+    def _history_fetcher(**kwargs: object) -> list[SpotCandle]:
+        captured.update(kwargs)
+        return []
+
+    candles = fetch_symbol_candles(
+        exchange="deribit",
+        market="perp",
+        symbol="ETH",
+        timeframe="1m",
+        lake_root="lake/bronze",
+        symbol_normalizer=lambda **kwargs: "ETH-PERPETUAL",
+        interval_ms_resolver=lambda **kwargs: 60_000,
+        now_open_resolver=lambda **kwargs: int(datetime(2026, 4, 27, 10, 5, tzinfo=UTC).timestamp() * 1000),
+        history_fetcher=_history_fetcher,
+        range_fetcher=lambda **kwargs: [],
+        latest_open_time_reader=lambda **kwargs: None,
+        tail_delta_only=True,
+        on_history_chunk=lambda rows: None,
+    )
+
+    assert candles == []
+    assert "on_history_chunk" in captured
+    assert callable(captured["on_history_chunk"])
+
+
+def test_fetch_candle_tasks_parallel_applies_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    task = CandleFetchTaskDTO(exchange="deribit", market="spot", symbol="BTCUSDT", timeframe="1m")
+    monkeypatch.setenv("DEPTH_FETCH_TASK_TIMEOUT_S", "0.01")
+
+    def _slow_fetcher(exchange: str, market: str, symbol: str, timeframe: str, lake_root: str) -> list[SpotCandle]:
+        del exchange, market, symbol, timeframe, lake_root
+        import time
+
+        time.sleep(0.05)
+        return []
+
+    result = asyncio.run(
+        fetch_candle_tasks_parallel(
+            tasks=[task],
+            lake_root="lake/bronze",
+            concurrency=1,
+            logger=logging.getLogger("test"),
+            symbol_fetcher=_slow_fetcher,
+        )
+    )
+
+    key = (task.exchange, task.market, task.symbol, task.timeframe)
+    assert key in result.errors

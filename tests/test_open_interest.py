@@ -97,6 +97,64 @@ def test_fetch_open_interest_all_maps_sol_to_usdc_perpetual(monkeypatch: pytest.
     assert captured == ["SOL_USDC-PERPETUAL"]
 
 
+def test_fetch_open_interest_all_stops_when_continuation_is_none_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str | None] = []
+
+    def _fake_get_json(url: str, params: dict[str, object] | None = None, **kwargs: object) -> object:
+        del url, kwargs
+        assert params is not None
+        continuation = params.get("continuation")
+        calls.append(str(continuation) if continuation is not None else None)
+        if continuation is None:
+            return {
+                "result": {
+                    "settlements": [
+                        {"timestamp": 2, "position": 200.0},
+                        {"timestamp": 1, "position": 100.0},
+                    ],
+                    "continuation": "none",
+                }
+            }
+        raise AssertionError("Expected loop to stop before requesting continuation='none'")
+
+    monkeypatch.setattr(deribit_open_interest, "get_json", _fake_get_json)
+
+    rows = deribit_open_interest.fetch_open_interest_all(symbol="BTC-PERPETUAL", period="1m")
+    assert calls == [None]
+    assert [row["timestamp"] for row in rows] == [1, 2]
+
+
+def test_fetch_open_interest_all_breaks_on_repeated_continuation(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str | None] = []
+
+    def _fake_get_json(url: str, params: dict[str, object] | None = None, **kwargs: object) -> object:
+        del url, kwargs
+        assert params is not None
+        continuation = params.get("continuation")
+        calls.append(str(continuation) if continuation is not None else None)
+        if continuation is None:
+            return {
+                "result": {
+                    "settlements": [{"timestamp": 3, "position": 300.0}],
+                    "continuation": "repeat-token",
+                }
+            }
+        if continuation == "repeat-token":
+            return {
+                "result": {
+                    "settlements": [{"timestamp": 2, "position": 200.0}],
+                    "continuation": "repeat-token",
+                }
+            }
+        raise AssertionError(f"Unexpected continuation: {continuation}")
+
+    monkeypatch.setattr(deribit_open_interest, "get_json", _fake_get_json)
+
+    rows = deribit_open_interest.fetch_open_interest_all(symbol="BTC-PERPETUAL", period="1m")
+    assert calls == [None, "repeat-token"]
+    assert [row["timestamp"] for row in rows] == [2, 3]
+
+
 def test_expand_open_interest_to_interval_grid_forward_fills() -> None:
     first = oi.OpenInterestPoint(
         exchange="deribit",

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from collections.abc import Callable
 from datetime import datetime
 
@@ -43,6 +44,21 @@ from ingestion.spot import (
 )
 
 OI_DATASET_TYPE = dataset_contract("oi").dataset_type
+
+
+def _task_timeout_seconds() -> float | None:
+    """Return optional per-task timeout in seconds from environment."""
+
+    raw = os.getenv("DEPTH_FETCH_TASK_TIMEOUT_S")
+    if raw is None:
+        return None
+    try:
+        value = float(raw)
+    except ValueError:
+        return None
+    if value <= 0:
+        return None
+    return value
 
 
 def fetch_symbol_candles(
@@ -85,6 +101,7 @@ def fetch_symbol_candles(
                 symbol=symbol,
                 market=market,
                 interval=timeframe,
+                on_history_chunk=on_history_chunk,
             )
         start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
         if start_open_ms > end_open_ms:
@@ -190,6 +207,7 @@ def fetch_symbol_open_interest(
                 symbol=symbol,
                 interval=normalized_interval,
                 market=market,
+                on_history_chunk=on_history_chunk,
             )
         start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
         if start_open_ms > end_open_ms:
@@ -296,6 +314,7 @@ def fetch_symbol_funding(
                 symbol=symbol,
                 interval=normalized_interval,
                 market=market,
+                on_history_chunk=on_history_chunk,
             )
         start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
         if start_open_ms > end_open_ms:
@@ -370,6 +389,7 @@ async def fetch_candle_tasks_parallel(
 
     del concurrency, shared_semaphore
     total_tasks = len(tasks)
+    task_timeout_s = _task_timeout_seconds()
     task_results: dict[tuple[Exchange, Market, str, str], list[SpotCandle]] = {}
     task_errors: dict[tuple[Exchange, Market, str, str], str] = {}
     for idx, task in enumerate(tasks, start=1):
@@ -386,25 +406,37 @@ async def fetch_candle_tasks_parallel(
         key = (task.exchange, task.market, task.symbol, task.timeframe)
         try:
             try:
-                candles = await asyncio.to_thread(
+                fetch_call = asyncio.to_thread(
                     symbol_fetcher,
                     task.exchange,
                     task.market,
                     task.symbol,
                     task.timeframe,
                     lake_root,
-                    on_history_chunk=(lambda rows: on_task_chunk(task, rows)) if on_task_chunk is not None else None,
+                    on_history_chunk=(lambda rows, _task=task: on_task_chunk(_task, rows))
+                    if on_task_chunk is not None
+                    else None,
+                )
+                candles = (
+                    await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
+                    if task_timeout_s is not None
+                    else await fetch_call
                 )
             except TypeError as exc:
                 if "on_history_chunk" not in str(exc):
                     raise
-                candles = await asyncio.to_thread(
+                fetch_call = asyncio.to_thread(
                     symbol_fetcher,
                     task.exchange,
                     task.market,
                     task.symbol,
                     task.timeframe,
                     lake_root,
+                )
+                candles = (
+                    await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
+                    if task_timeout_s is not None
+                    else await fetch_call
                 )
             logger.info(
                 "Fetch complete [%s/%s] exchange=%s market=%s symbol=%s timeframe=%s candles=%s",
@@ -445,6 +477,7 @@ async def fetch_open_interest_tasks_parallel(
 
     del concurrency, shared_semaphore
     total_tasks = len(tasks)
+    task_timeout_s = _task_timeout_seconds()
     task_results: dict[tuple[Exchange, str, str], list[OpenInterestPoint]] = {}
     task_errors: dict[tuple[Exchange, str, str], str] = {}
     for idx, task in enumerate(tasks, start=1):
@@ -460,25 +493,37 @@ async def fetch_open_interest_tasks_parallel(
         key = (task.exchange, task.symbol, task.timeframe)
         try:
             try:
-                rows = await asyncio.to_thread(
+                fetch_call = asyncio.to_thread(
                     symbol_fetcher,
                     task.exchange,
                     "perp",
                     task.symbol,
                     task.timeframe,
                     lake_root,
-                    on_history_chunk=(lambda values: on_task_chunk(task, values)) if on_task_chunk is not None else None,
+                    on_history_chunk=(lambda values, _task=task: on_task_chunk(_task, values))
+                    if on_task_chunk is not None
+                    else None,
+                )
+                rows = (
+                    await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
+                    if task_timeout_s is not None
+                    else await fetch_call
                 )
             except TypeError as exc:
                 if "on_history_chunk" not in str(exc):
                     raise
-                rows = await asyncio.to_thread(
+                fetch_call = asyncio.to_thread(
                     symbol_fetcher,
                     task.exchange,
                     "perp",
                     task.symbol,
                     task.timeframe,
                     lake_root,
+                )
+                rows = (
+                    await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
+                    if task_timeout_s is not None
+                    else await fetch_call
                 )
             logger.info(
                 "OI fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",
@@ -517,6 +562,7 @@ async def fetch_funding_tasks_parallel(
 
     del concurrency, shared_semaphore
     total_tasks = len(tasks)
+    task_timeout_s = _task_timeout_seconds()
     task_results: dict[tuple[Exchange, str, str], list[FundingPoint]] = {}
     task_errors: dict[tuple[Exchange, str, str], str] = {}
     for idx, task in enumerate(tasks, start=1):
@@ -532,25 +578,37 @@ async def fetch_funding_tasks_parallel(
         key = (task.exchange, task.symbol, task.timeframe)
         try:
             try:
-                rows = await asyncio.to_thread(
+                fetch_call = asyncio.to_thread(
                     symbol_fetcher,
                     task.exchange,
                     "perp",
                     task.symbol,
                     task.timeframe,
                     lake_root,
-                    on_history_chunk=(lambda values: on_task_chunk(task, values)) if on_task_chunk is not None else None,
+                    on_history_chunk=(lambda values, _task=task: on_task_chunk(_task, values))
+                    if on_task_chunk is not None
+                    else None,
+                )
+                rows = (
+                    await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
+                    if task_timeout_s is not None
+                    else await fetch_call
                 )
             except TypeError as exc:
                 if "on_history_chunk" not in str(exc):
                     raise
-                rows = await asyncio.to_thread(
+                fetch_call = asyncio.to_thread(
                     symbol_fetcher,
                     task.exchange,
                     "perp",
                     task.symbol,
                     task.timeframe,
                     lake_root,
+                )
+                rows = (
+                    await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
+                    if task_timeout_s is not None
+                    else await fetch_call
                 )
             logger.info(
                 "Funding fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",

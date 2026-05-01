@@ -12,6 +12,17 @@ DERIBIT_LAST_SETTLEMENTS_URL = "https://www.deribit.com/api/v2/public/get_last_s
 DERIBIT_MAX_POINTS_PER_REQUEST = 1000
 
 
+def _normalize_continuation_token(value: object) -> str | None:
+    """Normalize Deribit continuation token, including string sentinels."""
+
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized or normalized.lower() == "none":
+        return None
+    return normalized
+
+
 def _normalize_open_interest_instrument(symbol: str) -> str:
     """Map normalized perp symbols to Deribit OI endpoint instrument names."""
 
@@ -31,6 +42,7 @@ def fetch_open_interest_all(
     instrument_name = _normalize_open_interest_instrument(symbol)
     continuation: str | None = None
     pages: list[list[dict[str, object]]] = []
+    seen_continuations: set[str] = set()
 
     while True:
         page, next_continuation = _fetch_open_interest_page(symbol=instrument_name, continuation=continuation)
@@ -41,6 +53,9 @@ def fetch_open_interest_all(
             on_page(page)
         if next_continuation is None:
             break
+        if next_continuation in seen_continuations:
+            break
+        seen_continuations.add(next_continuation)
         continuation = next_continuation
 
     rows = [row for page in reversed(pages) for row in page]
@@ -65,6 +80,7 @@ def fetch_open_interest_range(
     instrument_name = _normalize_open_interest_instrument(symbol)
     continuation: str | None = None
     rows: list[dict[str, object]] = []
+    seen_continuations: set[str] = set()
     while True:
         page, next_continuation = _fetch_open_interest_page(symbol=instrument_name, continuation=continuation)
         if not page:
@@ -79,6 +95,9 @@ def fetch_open_interest_range(
         min_ts = min(int(cast(Any, item["timestamp"])) for item in page)
         if min_ts < start_open_ms or next_continuation is None:
             break
+        if next_continuation in seen_continuations:
+            break
+        seen_continuations.add(next_continuation)
         continuation = next_continuation
 
     dedup: dict[int, dict[str, object]] = {}
@@ -145,7 +164,7 @@ def _fetch_open_interest_page(symbol: str, continuation: str | None) -> tuple[li
     if not isinstance(settlements, list):
         return [], None
     next_continuation = result.get("continuation")
-    continuation_token = str(next_continuation) if isinstance(next_continuation, str) and next_continuation else None
+    continuation_token = _normalize_continuation_token(next_continuation)
 
     rows: list[dict[str, object]] = []
     for item in settlements:
