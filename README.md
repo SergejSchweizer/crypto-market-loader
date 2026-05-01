@@ -149,7 +149,7 @@ Loaded candle variables (`SpotCandle`):
 | `low_price` | `float` | Minimum traded price observed in the candle interval. |
 | `close_price` | `float` | Last traded price observed in the candle interval. |
 | `volume` | `float` | Base-asset traded volume during the interval. |
-| `quote_volume` | `float` | Quote-asset traded volume during the interval (or exchange-equivalent field). |
+| `quote_volume` | `float \| null` | Quote-asset traded volume during the interval when provided by exchange; otherwise `null`. |
 | `trade_count` | `int` | Number of trades aggregated into the candle (exchange dependent). |
 
 ### 5.1.1 Dataset Semantics And Variable Computation
@@ -167,7 +167,7 @@ Loaded candle variables (`SpotCandle`):
   - `quote_volume = float(row[7])` when provided by endpoint.
   - `trade_count = int(row[8])` when provided by endpoint, else `0` on adapters without trade-count payloads.
 - Exchange-specific details:
-  - Deribit spot: built from `ticks/open/high/low/close/volume`; `close_time = open_time + timeframe_ms - 1`, `quote_volume = volume` fallback, `trade_count = 0`.
+  - Deribit spot: built from `ticks/open/high/low/close/volume`; `close_time = open_time + timeframe_ms - 1`, `quote_volume = null` when exchange quote turnover is unavailable, `trade_count = 0`.
 
 #### `perp` dataset (`dataset_type=perp`, `instrument_type=perp`)
 - Meaning:
@@ -211,7 +211,7 @@ Loaded candle variables (`SpotCandle`):
   - `funding_rate` is taken from exchange funding-rate field for the interval.
   - `index_price` and `mark_price` are propagated from exchange payload when available.
 - Exchange-specific funding mapping:
-  - Deribit (`/api/v2/public/get_funding_rate_history`): records are parsed and bucketed to the requested timeframe, then stored as normalized funding rows.
+  - Deribit (`/api/v2/public/get_funding_rate_history`): records are stored in native exchange cadence (`8h`) to preserve original funding granularity.
 
 Parquet row metadata fields:
 
@@ -264,7 +264,7 @@ Deribit perp (`/api/v2/public/get_tradingview_chart_data`) mapping:
 | `result.low[i]` | `low` |
 | `result.close[i]` | `close` |
 | `result.volume[i]` | `volume` |
-| `result.volume[i]` (fallback proxy) | `quote_volume` |
+| not provided by endpoint | `quote_volume = null` |
 | not provided by endpoint | `trade_count = 0` |
 
 ### 5.4 Perpetual Symbol Naming by Exchange
@@ -371,14 +371,14 @@ The loader is delta-first by default on every run:
 
 ### 6.8 Dataset Time Ranges
 
-All ingestion runs are `1m` timeframe only. Effective time-range coverage by dataset:
+OHLCV/OI ingestion runs use `1m` timeframe. Funding is stored in native Deribit cadence (`8h`). Effective time-range coverage by dataset:
 
 | Dataset | Exchange Endpoint | Historical Start | Historical End | Notes |
 |---|---|---|---|---|
 | `spot` | `public/get_tradingview_chart_data` | Earliest data available from Deribit for instrument | Latest closed candle at run time | First run bootstraps full history; later runs fetch tail delta by default. |
 | `perp` | `public/get_tradingview_chart_data` | Earliest data available from Deribit for instrument | Latest closed candle at run time | Same bootstrap/delta behavior as `spot`. |
 | `oi` | `public/get_last_settlements_by_instrument` | Earliest settlement/OI records available from Deribit for instrument | Latest available settlement/OI record at run time | SOL OI uses `SOL_USDC-PERPETUAL` mapping on this endpoint. |
-| `funding` | `public/get_funding_rate_history` | **2019-01-01 00:00:00 UTC** (hardcoded lower bound) | Current run time | Range is explicitly bounded in code from 2019-01-01 to now. |
+| `funding` | `public/get_funding_rate_history` | **2019-01-01 00:00:00 UTC** (hardcoded lower bound) | Current run time | Stored with native `8h` timeframe regardless of loader `--timeframe` input. |
 
 Practical note:
 - The exact stored range in your lake depends on what has already been ingested for each `(exchange, symbol, dataset, timeframe)` series.
@@ -486,7 +486,7 @@ Plot:
 `samples/funding_<market>_<exchange>_<symbol>_<timeframe>_sample_10_rows.png` (full-history funding-rate time-series line chart for that group).
 
 Example:
-`samples/funding_perp_deribit_BTCUSDT_1m_sample_10_rows.png`
+`samples/funding_perp_deribit_BTCUSDT_8h_sample_10_rows.png`
 
 ## 8. Testing Instructions
 

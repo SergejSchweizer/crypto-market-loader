@@ -428,6 +428,7 @@ def load_spot_candles_from_lake(
                 close_time = row.get("close_time")
                 if not isinstance(open_time, datetime) or not isinstance(close_time, datetime):
                     continue
+                quote_volume_raw = row.get("quote_volume")
                 candles_by_open_time[open_time] = SpotCandle(
                     exchange=str(row.get("exchange", exchange)),
                     symbol=str(row.get("symbol", symbol)),
@@ -439,7 +440,7 @@ def load_spot_candles_from_lake(
                     low_price=float(row.get("low", 0.0)),
                     close_price=float(row.get("close", 0.0)),
                     volume=float(row.get("volume", 0.0)),
-                    quote_volume=float(row.get("quote_volume", 0.0)),
+                    quote_volume=None if quote_volume_raw is None else float(quote_volume_raw),
                     trade_count=int(row.get("trade_count", 0)),
                 )
     return [candles_by_open_time[key] for key in sorted(candles_by_open_time)]

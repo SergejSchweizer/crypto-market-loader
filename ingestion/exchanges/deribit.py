@@ -310,7 +310,7 @@ def _fetch_chart_page(
                 str(close_price),
                 str(volume),
                 close_ts,
-                str(volume),
+                None,
                 0,
                 "0",
                 "0",

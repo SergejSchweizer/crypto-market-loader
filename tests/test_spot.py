@@ -26,6 +26,7 @@ def test_parse_deribit_kline_maps_fields() -> None:
     assert candle.open_time.tzinfo == UTC
     assert candle.close_price == pytest.approx(64100.0)
     assert candle.volume == pytest.approx(120.5)
+    assert candle.quote_volume == pytest.approx(7720000.0)
     assert candle.trade_count == 2300
 
 
@@ -78,6 +79,7 @@ def test_fetch_deribit_candles_respects_limit(monkeypatch: pytest.MonkeyPatch) -
     candles = fetch_candles(exchange="deribit", market="perp", symbol="BTC", interval="1m", limit=3)
     assert len(candles) == 3
     assert [int(item.open_time.timestamp()) for item in candles] == [2, 3, 4]
+    assert all(item.quote_volume is None for item in candles)
 
 
 @pytest.mark.parametrize(

@@ -362,7 +362,7 @@ def _create_schema_and_tables(conn: Any, schema: str) -> None:
                 low DOUBLE PRECISION NOT NULL,
                 close DOUBLE PRECISION NOT NULL,
                 volume DOUBLE PRECISION NOT NULL,
-                quote_volume DOUBLE PRECISION NOT NULL,
+                quote_volume DOUBLE PRECISION,
                 trade_count BIGINT NOT NULL,
                 schema_version TEXT NOT NULL,
                 dataset_type TEXT NOT NULL,

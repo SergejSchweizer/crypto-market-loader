@@ -48,7 +48,7 @@ class SpotCandle:
     low_price: float
     close_price: float
     volume: float
-    quote_volume: float
+    quote_volume: float | None
     trade_count: int
 
 
@@ -61,6 +61,9 @@ def _ms_to_utc(ts_ms: int) -> datetime:
 def parse_kline(exchange: Exchange, symbol: str, interval: str, row: list[Any]) -> SpotCandle:
     """Parse a common kline row into a typed candle object."""
 
+    quote_volume_raw = row[7]
+    quote_volume = None if quote_volume_raw is None else float(quote_volume_raw)
+
     return SpotCandle(
         exchange=exchange,
         symbol=symbol,
@@ -72,7 +75,7 @@ def parse_kline(exchange: Exchange, symbol: str, interval: str, row: list[Any]) 
         low_price=float(row[3]),
         close_price=float(row[4]),
         volume=float(row[5]),
-        quote_volume=float(row[7]),
+        quote_volume=quote_volume,
         trade_count=int(row[8]),
     )
 
