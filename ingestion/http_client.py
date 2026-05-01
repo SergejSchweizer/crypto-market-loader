@@ -78,9 +78,9 @@ def get_json(
 
     query = urlencode(params or {})
     request_url = f"{url}?{query}" if query else url
-    timeout_value = timeout_s if timeout_s is not None else _env_float("DEPTH_HTTP_TIMEOUT_S", 15.0)
-    retries = max_retries if max_retries is not None else _env_int("DEPTH_HTTP_MAX_RETRIES", 3)
-    backoff = retry_backoff_s if retry_backoff_s is not None else _env_float("DEPTH_HTTP_RETRY_BACKOFF_S", 1.0)
+    timeout_value = timeout_s if timeout_s is not None else _env_float("DEPTH_HTTP_TIMEOUT_S", 8.0)
+    retries = max_retries if max_retries is not None else _env_int("DEPTH_HTTP_MAX_RETRIES", 2)
+    backoff = retry_backoff_s if retry_backoff_s is not None else _env_float("DEPTH_HTTP_RETRY_BACKOFF_S", 0.5)
 
     for attempt in range(retries + 1):
         try:

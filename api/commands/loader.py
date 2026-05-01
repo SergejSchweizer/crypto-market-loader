@@ -40,6 +40,8 @@ from ingestion.funding import (
     normalize_funding_timeframe,
 )
 from ingestion.lake import (
+    latest_open_time_in_lake,
+    latest_open_time_in_lake_by_dataset,
     load_funding_from_lake,
     load_open_interest_from_lake,
     load_spot_candles_from_lake,
@@ -65,6 +67,9 @@ from ingestion.spot import (
 )
 
 DataType = Literal["spot", "perp", "oi", "funding"]
+MAX_LOADER_TASK_CONCURRENCY = 2
+_ALLOWED_TIMEFRAME_VALUES = {"1m", "m1"}
+_TAIL_DELTA_ONLY = True
 
 
 def _env_concurrency(name: str, default: int) -> int:
@@ -72,12 +77,19 @@ def _env_concurrency(name: str, default: int) -> int:
 
     raw = os.getenv(name)
     if raw is None:
-        return max(1, default)
+        return min(MAX_LOADER_TASK_CONCURRENCY, max(1, default))
     try:
         value = int(raw)
     except ValueError:
-        return max(1, default)
-    return max(1, value)
+        return min(MAX_LOADER_TASK_CONCURRENCY, max(1, default))
+    return min(MAX_LOADER_TASK_CONCURRENCY, max(1, value))
+
+
+def _validate_loader_timeframe_input(raw_timeframe: str) -> None:
+    """Enforce loader timeframe policy to 1m-only values."""
+
+    if raw_timeframe.strip().lower() not in _ALLOWED_TIMEFRAME_VALUES:
+        raise ValueError("Only 1m timeframe is supported for loader runs.")
 
 
 def add_loader_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -108,7 +120,7 @@ def add_loader_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         "--timeframe",
         "--interval",
         dest="timeframe",
-        default="1h",
+        default="1m",
         help="Candle timeframe, e.g. M1, M5, H1, D1, 1m, 1h, 1d",
     )
     parser.add_argument(
@@ -153,6 +165,18 @@ def add_loader_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPa
         action="store_true",
         help="Suppress JSON output from loader command",
     )
+    parser.add_argument(
+        "--tail-delta-only",
+        action="store_true",
+        default=True,
+        help="Skip historical internal gap checks and fetch only from latest stored candle forward (default).",
+    )
+    parser.add_argument(
+        "--full-gap-fill",
+        dest="tail_delta_only",
+        action="store_false",
+        help="Disable tail-delta-only mode and run full internal gap-fill checks.",
+    )
 
 
 def _serialize_candle(candle: SpotCandle) -> dict[str, object]:
@@ -184,6 +208,8 @@ def _fetch_symbol_candles(
         ranges_builder=_missing_ranges_ms,
         history_fetcher=fetch_candles_all_history,
         range_fetcher=fetch_candles_range,
+        latest_open_time_reader=latest_open_time_in_lake,
+        tail_delta_only=_TAIL_DELTA_ONLY,
     )
 
 
@@ -208,6 +234,8 @@ def _fetch_symbol_open_interest(
         ranges_builder=_missing_ranges_ms,
         history_fetcher=fetch_open_interest_all_history,
         range_fetcher=fetch_open_interest_range,
+        latest_open_time_reader=latest_open_time_in_lake_by_dataset,
+        tail_delta_only=_TAIL_DELTA_ONLY,
     )
 
 
@@ -232,6 +260,8 @@ def _fetch_symbol_funding(
         ranges_builder=_missing_ranges_ms,
         history_fetcher=fetch_funding_all_history,
         range_fetcher=fetch_funding_range,
+        latest_open_time_reader=latest_open_time_in_lake_by_dataset,
+        tail_delta_only=_TAIL_DELTA_ONLY,
     )
 
 
@@ -360,6 +390,9 @@ def _write_loader_samples(
 def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run loader command."""
 
+    global _TAIL_DELTA_ONLY
+    _TAIL_DELTA_ONLY = bool(args.tail_delta_only)
+
     try:
         with SingleInstanceLock(".run/crypto-market-loader.lock"):
             exchanges = cast(list[Exchange], args.exchanges if args.exchanges else [args.exchange])
@@ -383,6 +416,7 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                 output[exchange] = exchange_output
                 normalized_timeframes: list[str] = []
                 for timeframe_value in requested_timeframes:
+                    _validate_loader_timeframe_input(raw_timeframe=timeframe_value)
                     try:
                         normalized_timeframes.append(normalize_timeframe(exchange=exchange, value=timeframe_value))
                     except Exception as exc:  # noqa: BLE001

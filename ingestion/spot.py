@@ -120,7 +120,7 @@ def normalize_storage_symbol(exchange: Exchange, symbol: str, market: Market) ->
 def fetch_candles(
     exchange: Exchange,
     symbol: str,
-    interval: str = "1h",
+    interval: str = "1m",
     limit: int = 100,
     market: Market = "spot",
 ) -> list[SpotCandle]:
@@ -146,7 +146,7 @@ def fetch_candles(
 def fetch_candles_all_history(
     exchange: Exchange,
     symbol: str,
-    interval: str = "1h",
+    interval: str = "1m",
     market: Market = "spot",
 ) -> list[SpotCandle]:
     """Fetch all available candles from exchange history."""

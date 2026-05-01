@@ -5,7 +5,7 @@
 This repository provides a modular framework for ingesting crypto market data with emphasis on reproducibility and production quality.
 
 Current implemented scope (Step 1):
-- Pull BTC/ETH data from Deribit public APIs for `spot`, `perp`, `oi`, and `funding`.
+- Pull BTC/ETH/SOL data from Deribit public APIs for `spot`, `perp`, `oi`, and `funding`.
 - Expose a CLI command for repeatable loader runs.
 
 Scope note:
@@ -273,47 +273,46 @@ Perpetual symbol normalization (Deribit):
 
 | Exchange | Canonical Perp Symbols | Accepted Input Aliases | Normalized Output |
 |---|---|---|---|
-| Deribit | `BTC-PERPETUAL`, `ETH-PERPETUAL` | `BTC`, `BTCUSDT`, `BTCUSD`, `BTC-PERPETUAL`; `ETH`, `ETHUSDT`, `ETHUSD`, `ETH-PERPETUAL` | `BTC-PERPETUAL`, `ETH-PERPETUAL` |
+| Deribit | `BTC-PERPETUAL`, `ETH-PERPETUAL`, `SOL-PERPETUAL` | `BTC`, `BTCUSDT`, `BTCUSD`, `BTC-PERPETUAL`; `ETH`, `ETHUSDT`, `ETHUSD`, `ETH-PERPETUAL`; `SOL`, `SOLUSDT`, `SOLUSD`, `SOL-PERPETUAL` | `BTC-PERPETUAL`, `ETH-PERPETUAL`, `SOL-PERPETUAL` |
 
 CLI recommendation:
-- Use `BTC` / `ETH`; Deribit adapters normalize to canonical Deribit symbols.
+- Use `BTC` / `ETH` / `SOL`; Deribit adapters normalize to canonical Deribit symbols.
 
 ## 6. Execution Workflow
 
 Load BTC/ETH spot candles:
 
 ```bash
-python3 main.py loader --exchange deribit --market spot --symbols BTC ETH --timeframe H1
+python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL --timeframe M1
 ```
 
 Load spot and perp in one run:
 
 ```bash
-python3 main.py loader --exchange deribit --market spot perp --symbols BTC ETH --timeframe M1
+python3 main.py loader --exchange deribit --market spot perp --symbols BTC ETH SOL --timeframe M1
 ```
 
-Load multiple timeframes in one run:
-
-```bash
-python3 main.py loader --exchange deribit --market spot --symbols BTC ETH --timeframes M1 M5 H1 --no-json-output
-```
+Timeframe policy:
+- Ingestion is restricted to `1m` only (`1m` / `M1`).
+- Non-`1m` loader and `ingest-timescaledb` runs are rejected.
+- Default timeframe is `1m` when no timeframe is explicitly provided.
 
 Load and generate plots (price + volume) under `samples/`:
 
 ```bash
-python3 main.py loader --exchange deribit --market spot --symbols BTC ETH --timeframe M5 --plot --plot-price close
+python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL --timeframe M1 --plot --plot-price close
 ```
 
 Save loaded data to parquet lake format:
 
 ```bash
-python3 main.py loader --exchange deribit --market spot --symbols BTC ETH --timeframe H1 --save-parquet-lake --lake-root lake/bronze
+python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL --timeframe M1 --save-parquet-lake --lake-root lake/bronze
 ```
 
 Save loaded data to TimescaleDB:
 
 ```bash
-python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH --timeframe 1m --save-timescaledb --timescaledb-schema market_data
+python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --timeframe 1m --save-timescaledb --timescaledb-schema market_data
 ```
 
 TimescaleDB bootstrap options:
@@ -323,7 +322,7 @@ TimescaleDB bootstrap options:
 Fetch OHLCV (spot+perp), open interest, and funding in one run:
 
 ```bash
-python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH --timeframe 5m --save-parquet-lake --lake-root lake/bronze
+python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --timeframe 1m --save-parquet-lake --lake-root lake/bronze
 ```
 
 Parquet lake write mode uses a stable file per partition (`data.parquet`) with staged merge+rewrite on each run to keep file counts bounded. Partition schema:
@@ -360,11 +359,13 @@ Loader mode is automatic:
   2. `fill gaps` when parquet data exists (internal gaps + tail to latest closed candle).
 - If no parquet data exists for a symbol/timeframe, it fetches full available exchange history.
 - If parquet data exists, it performs gap-fill (internal gaps + tail to latest closed candle).
+- Default fast delta mode: loader runs with tail-delta-only behavior and skips historical internal gap checks, fetching only from the latest stored open_time forward.
+- Use `--full-gap-fill` to disable tail-delta-only and run full internal gap checks.
 
 Example full-history bootstrap (first run can be long-running):
 
 ```bash
-python3 main.py loader --exchange deribit --market spot --symbols BTC ETH --timeframe M1 --save-parquet-lake --lake-root lake/bronze --no-json-output
+python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL --timeframe M1 --save-parquet-lake --lake-root lake/bronze --no-json-output
 ```
 
 Note:
@@ -400,7 +401,7 @@ python3 main.py export-descriptive-stats --lake-root lake/bronze --output-csv do
 Load Deribit perpetual candles (portable perp inputs):
 
 ```bash
-python3 main.py loader --exchange deribit --market perp --symbols BTC ETH --timeframe M5
+python3 main.py loader --exchange deribit --market perp --symbols BTC ETH SOL --timeframe M1
 ```
 
 List all currently supported spot timeframes:
@@ -450,7 +451,7 @@ Plot:
 `samples/oi_<market>_<exchange>_<symbol>_<timeframe>_sample_10_rows.png` (full-history OI time-series line chart for that group).
 
 Example:
-`samples/oi_perp_deribit_BTCUSDT_5m_sample_10_rows.png`
+`samples/oi_perp_deribit_BTCUSDT_1m_sample_10_rows.png`
 
 ### 7.4 Funding
 Description:
@@ -463,7 +464,7 @@ Plot:
 `samples/funding_<market>_<exchange>_<symbol>_<timeframe>_sample_10_rows.png` (full-history funding-rate time-series line chart for that group).
 
 Example:
-`samples/funding_perp_deribit_BTCUSDT_5m_sample_10_rows.png`
+`samples/funding_perp_deribit_BTCUSDT_1m_sample_10_rows.png`
 
 ## 8. Testing Instructions
 
@@ -510,11 +511,13 @@ Current coverage includes:
 - Logs rotate every 7 days and rotated files are date-suffixed (for example `loader.log.2026-04-27`) and retained in the same directory.
 - Local `.env` is loaded automatically when present and is excluded from git tracking.
 - Optional override: set `DEPTH_SYNC_LOG_DIR` to change the log directory.
-- Optional override: set `DEPTH_FETCH_CONCURRENCY` to control loader fetch parallelism (minimum `1`, default `2`).
-- Optional override: set `LOADER_OHLCV_CONCURRENCY` to control OHLCV task parallelism (minimum `1`, default falls back to `DEPTH_FETCH_CONCURRENCY`).
-- Optional override: set `LOADER_OI_CONCURRENCY` to control OI task parallelism (minimum `1`, default falls back to `DEPTH_FETCH_CONCURRENCY`).
-- Optional override: set `LOADER_FUNDING_CONCURRENCY` to control funding task parallelism (minimum `1`, default falls back to `DEPTH_FETCH_CONCURRENCY`).
+- Optional override: set `DEPTH_FETCH_CONCURRENCY` to control loader fetch parallelism in range `1..2` (default `2`).
+- Optional override: set `LOADER_OHLCV_CONCURRENCY` to control OHLCV task parallelism in range `1..2` (default falls back to `DEPTH_FETCH_CONCURRENCY`).
+- Optional override: set `LOADER_OI_CONCURRENCY` to control OI task parallelism in range `1..2` (default falls back to `DEPTH_FETCH_CONCURRENCY`).
+- Optional override: set `LOADER_FUNDING_CONCURRENCY` to control funding task parallelism in range `1..2` (default falls back to `DEPTH_FETCH_CONCURRENCY`).
+- Optional override: set `DEPTH_HTTP_TIMEOUT_S`, `DEPTH_HTTP_MAX_RETRIES`, and `DEPTH_HTTP_RETRY_BACKOFF_S` (defaults: `8`, `2`, `0.5`) for unstable network behavior tuning.
 - Optional override: set `TIMESCALE_INGEST_WORKERS` to parallelize `ingest-timescaledb` across dataset types (`ohlcv`, `open_interest`, `funding`); default `1` (sequential), practical max `3`.
+- `ingest-timescaledb` persists per-series watermarks and ingests only rows newer than the recorded watermark.
 - TimescaleDB sink env vars: `TIMESCALEDB_HOST`, `TIMESCALEDB_PORT`, `TIMESCALEDB_USER`, `TIMESCALEDB_PASSWORD`, `TIMESCALEDB_DB`, `PGSSLMODE`.
 - `TIMESCALEDB_PASSWORD` is required at runtime (no insecure default fallback).
 - Run quality gates via module form (`python -m pytest`, `python -m mypy`, `python -m ruff`) to avoid local venv entrypoint shebang drift when directories move.

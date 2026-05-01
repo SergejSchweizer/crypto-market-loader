@@ -55,10 +55,47 @@ def fetch_symbol_candles(
     ranges_builder: Callable[..., list[tuple[int, int]]] = _missing_ranges_ms,
     history_fetcher: Callable[..., list[SpotCandle]] = fetch_candles_all_history,
     range_fetcher: Callable[..., list[SpotCandle]] = fetch_candles_range,
+    latest_open_time_reader: Callable[..., datetime | None] | None = None,
+    tail_delta_only: bool = False,
 ) -> list[SpotCandle]:
     """Fetch candles for one symbol with auto bootstrap/gap-fill behavior."""
 
     storage_symbol = symbol_normalizer(exchange=exchange, symbol=symbol, market=market)
+    interval_ms = interval_ms_resolver(exchange=exchange, interval=timeframe)
+    end_open_ms = now_open_resolver(interval_ms=interval_ms)
+
+    if tail_delta_only:
+        latest_reader = latest_open_time_reader
+        if latest_reader is None:
+            raise ValueError("latest_open_time_reader is required when tail_delta_only is enabled")
+        latest_open_time = latest_reader(
+            lake_root=lake_root,
+            market=market,
+            exchange=exchange,
+            symbol=storage_symbol,
+            timeframe=timeframe,
+        )
+        if latest_open_time is None:
+            return history_fetcher(
+                exchange=exchange,
+                symbol=symbol,
+                market=market,
+                interval=timeframe,
+            )
+        start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
+        if start_open_ms > end_open_ms:
+            return []
+        fetched_rows = range_fetcher(
+            exchange=exchange,
+            symbol=symbol,
+            interval=timeframe,
+            start_open_ms=start_open_ms,
+            end_open_ms=end_open_ms,
+            market=market,
+        )
+        unique_by_open_time = {item.open_time: item for item in fetched_rows}
+        return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
+
     stored_open_times = open_times_reader(
         lake_root=lake_root,
         market=market,
@@ -67,8 +104,6 @@ def fetch_symbol_candles(
         timeframe=timeframe,
     )
 
-    interval_ms = interval_ms_resolver(exchange=exchange, interval=timeframe)
-    end_open_ms = now_open_resolver(interval_ms=interval_ms)
     if not stored_open_times:
         return history_fetcher(
             exchange=exchange,
@@ -118,6 +153,8 @@ def fetch_symbol_open_interest(
     ranges_builder: Callable[..., list[tuple[int, int]]] = _missing_ranges_ms,
     history_fetcher: Callable[..., list[OpenInterestPoint]] = fetch_open_interest_all_history,
     range_fetcher: Callable[..., list[OpenInterestPoint]] = fetch_open_interest_range,
+    latest_open_time_reader: Callable[..., datetime | None] | None = None,
+    tail_delta_only: bool = False,
 ) -> list[OpenInterestPoint]:
     """Fetch open-interest for one symbol with auto bootstrap/gap-fill behavior."""
 
@@ -126,6 +163,42 @@ def fetch_symbol_open_interest(
 
     normalized_interval = timeframe_normalizer(exchange=exchange, value=timeframe)
     storage_symbol = symbol_normalizer(exchange=exchange, symbol=symbol, market=market)
+    interval_ms = interval_ms_resolver(exchange=exchange, interval=normalized_interval)
+    end_open_ms = now_open_resolver(interval_ms=interval_ms)
+
+    if tail_delta_only:
+        latest_reader = latest_open_time_reader
+        if latest_reader is None:
+            raise ValueError("latest_open_time_reader is required when tail_delta_only is enabled")
+        latest_open_time = latest_reader(
+            lake_root=lake_root,
+            dataset_type="open_interest",
+            market=market,
+            exchange=exchange,
+            symbol=storage_symbol,
+            timeframe=normalized_interval,
+        )
+        if latest_open_time is None:
+            return history_fetcher(
+                exchange=exchange,
+                symbol=symbol,
+                interval=normalized_interval,
+                market=market,
+            )
+        start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
+        if start_open_ms > end_open_ms:
+            return []
+        fetched_rows = range_fetcher(
+            exchange=exchange,
+            symbol=symbol,
+            interval=normalized_interval,
+            start_open_ms=start_open_ms,
+            end_open_ms=end_open_ms,
+            market=market,
+        )
+        unique_by_open_time = {item.open_time: item for item in fetched_rows}
+        return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
+
     stored_open_times = open_times_reader(
         lake_root=lake_root,
         dataset_type="open_interest",
@@ -135,8 +208,6 @@ def fetch_symbol_open_interest(
         timeframe=normalized_interval,
     )
 
-    interval_ms = interval_ms_resolver(exchange=exchange, interval=normalized_interval)
-    end_open_ms = now_open_resolver(interval_ms=interval_ms)
     if not stored_open_times:
         return history_fetcher(
             exchange=exchange,
@@ -186,6 +257,8 @@ def fetch_symbol_funding(
     ranges_builder: Callable[..., list[tuple[int, int]]] = _missing_ranges_ms,
     history_fetcher: Callable[..., list[FundingPoint]] = fetch_funding_all_history,
     range_fetcher: Callable[..., list[FundingPoint]] = fetch_funding_range,
+    latest_open_time_reader: Callable[..., datetime | None] | None = None,
+    tail_delta_only: bool = False,
 ) -> list[FundingPoint]:
     """Fetch funding for one symbol with auto bootstrap/gap-fill behavior."""
 
@@ -194,6 +267,42 @@ def fetch_symbol_funding(
 
     normalized_interval = timeframe_normalizer(exchange=exchange, value=timeframe)
     storage_symbol = symbol_normalizer(exchange=exchange, symbol=symbol, market=market)
+    interval_ms = interval_ms_resolver(exchange=exchange, interval=normalized_interval)
+    end_open_ms = now_open_resolver(interval_ms=interval_ms)
+
+    if tail_delta_only:
+        latest_reader = latest_open_time_reader
+        if latest_reader is None:
+            raise ValueError("latest_open_time_reader is required when tail_delta_only is enabled")
+        latest_open_time = latest_reader(
+            lake_root=lake_root,
+            dataset_type="funding",
+            market=market,
+            exchange=exchange,
+            symbol=storage_symbol,
+            timeframe=normalized_interval,
+        )
+        if latest_open_time is None:
+            return history_fetcher(
+                exchange=exchange,
+                symbol=symbol,
+                interval=normalized_interval,
+                market=market,
+            )
+        start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
+        if start_open_ms > end_open_ms:
+            return []
+        fetched_rows = range_fetcher(
+            exchange=exchange,
+            symbol=symbol,
+            interval=normalized_interval,
+            start_open_ms=start_open_ms,
+            end_open_ms=end_open_ms,
+            market=market,
+        )
+        unique_by_open_time = {item.open_time: item for item in fetched_rows}
+        return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
+
     stored_open_times = open_times_reader(
         lake_root=lake_root,
         dataset_type="funding",
@@ -203,8 +312,6 @@ def fetch_symbol_funding(
         timeframe=normalized_interval,
     )
 
-    interval_ms = interval_ms_resolver(exchange=exchange, interval=normalized_interval)
-    end_open_ms = now_open_resolver(interval_ms=interval_ms)
     if not stored_open_times:
         return history_fetcher(
             exchange=exchange,

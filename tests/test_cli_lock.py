@@ -65,6 +65,8 @@ def test_auto_mode_fetches_all_history_when_no_lake_data(monkeypatch: pytest.Mon
     )
 
     monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
+    monkeypatch.setattr(cli, "latest_open_time_in_lake", lambda **kwargs: None)
+    monkeypatch.setattr(cli, "_TAIL_DELTA_ONLY", True)
     calls: list[dict[str, object]] = []
 
     def fake_fetch_candles_all_history(**kwargs: object) -> list[SpotCandle]:
@@ -101,6 +103,7 @@ def test_gap_fill_fetches_internal_and_tail_gaps(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(cli, "normalize_storage_symbol", lambda **kwargs: "BTCUSDT")
     monkeypatch.setattr(cli, "interval_to_milliseconds", lambda **kwargs: interval_ms)
     monkeypatch.setattr(cli, "_last_closed_open_ms", lambda **kwargs: end_open_ms)
+    monkeypatch.setattr(cli, "_TAIL_DELTA_ONLY", False)
 
     def fake_fetch_candles_range(**kwargs: object) -> list[SpotCandle]:
         start_open_ms = cast(int, kwargs["start_open_ms"])
@@ -229,9 +232,9 @@ def test_write_loader_samples_writes_grouped_dataframes_and_matching_plot_names(
     candle = SpotCandle(
         exchange="deribit",
         symbol="BTCUSDT",
-        interval="5m",
+        interval="1m",
         open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
-        close_time=datetime(2026, 4, 27, 10, 4, 59, 999000, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
         open_price=100.0,
         high_price=101.0,
         low_price=99.0,
@@ -243,9 +246,9 @@ def test_write_loader_samples_writes_grouped_dataframes_and_matching_plot_names(
     oi_point = OpenInterestPoint(
         exchange="deribit",
         symbol="BTCUSDT",
-        interval="5m",
+        interval="1m",
         open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
-        close_time=datetime(2026, 4, 27, 10, 4, 59, 999000, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
         open_interest=123.0,
         open_interest_value=456.0,
     )
@@ -257,10 +260,10 @@ def test_write_loader_samples_writes_grouped_dataframes_and_matching_plot_names(
     )
 
     sample_files = {path.name for path in (tmp_path / "samples").glob("*")}
-    assert "spot_deribit_BTCUSDT_5m_sample_10_rows.csv" in sample_files
-    assert "spot_deribit_BTCUSDT_5m_sample_10_rows.png" in sample_files
-    assert "oi_perp_deribit_BTCUSDT_5m_sample_10_rows.csv" in sample_files
-    assert "oi_perp_deribit_BTCUSDT_5m_sample_10_rows.png" in sample_files
+    assert "spot_deribit_BTCUSDT_1m_sample_10_rows.csv" in sample_files
+    assert "spot_deribit_BTCUSDT_1m_sample_10_rows.png" in sample_files
+    assert "oi_perp_deribit_BTCUSDT_1m_sample_10_rows.csv" in sample_files
+    assert "oi_perp_deribit_BTCUSDT_1m_sample_10_rows.png" in sample_files
     assert not any(path.suffix == ".parquet" for path in (tmp_path / "samples").glob("*"))
 
 
@@ -294,3 +297,54 @@ def test_export_descriptive_stats_writes_csv(monkeypatch: pytest.MonkeyPatch, tm
     written = pd.read_csv(output_csv)
     assert list(written.columns) == ["Variable", "Mean", "Std", "Min", "Max"]
     assert set(written["Variable"]) == {"open", "high", "low", "close", "volume"}
+
+
+def test_loader_rejects_non_1m_timeframe(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _NoopLock:
+        def __init__(self, lock_path: str) -> None:
+            del lock_path
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+    monkeypatch.setattr(cli, "SingleInstanceLock", _NoopLock)
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "loader",
+            "--exchange",
+            "deribit",
+            "--market",
+            "spot",
+            "--symbols",
+            "BTCUSDT",
+            "--timeframe",
+            "5m",
+            "--no-json-output",
+        ],
+    )
+    with pytest.raises(ValueError, match="Only 1m timeframe is supported"):
+        cli.main()
+
+
+def test_ingest_timescaledb_rejects_non_1m_timeframe(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "main.py",
+            "ingest-timescaledb",
+            "--lake-root",
+            "lake/bronze",
+            "--timeframes",
+            "5m",
+            "--no-json-output",
+        ],
+    )
+    with pytest.raises(ValueError, match="supports only 1m timeframe"):
+        cli.main()

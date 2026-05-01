@@ -22,9 +22,9 @@ class FundingPoint:
         point = FundingPoint(
             exchange="deribit",
             symbol="ETH-PERPETUAL",
-            interval="1h",
+            interval="1m",
             open_time=datetime(2026, 1, 1, 0, 0, tzinfo=UTC),
-            close_time=datetime(2026, 1, 1, 0, 59, 59, 999000, tzinfo=UTC),
+            close_time=datetime(2026, 1, 1, 0, 0, 59, 999000, tzinfo=UTC),
             funding_rate=0.0001,
             index_price=3200.0,
             mark_price=3205.0,

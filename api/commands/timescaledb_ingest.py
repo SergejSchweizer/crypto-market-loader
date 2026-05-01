@@ -9,6 +9,8 @@ from typing import cast
 
 from infra.timescaledb import save_parquet_lake_to_timescaledb
 
+_ALLOWED_TIMEFRAME_VALUES = {"1m", "m1"}
+
 
 def add_ingest_timescaledb_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """Register ``ingest-timescaledb`` parser."""
@@ -26,7 +28,7 @@ def add_ingest_timescaledb_parser(subparsers: argparse._SubParsersAction[argpars
     )
     parser.add_argument("--exchanges", nargs="+", choices=["deribit"])
     parser.add_argument("--symbols", nargs="+", help="Optional symbol filter")
-    parser.add_argument("--timeframes", nargs="+", help="Optional timeframe filter")
+    parser.add_argument("--timeframes", nargs="+", default=["1m"], help="Timeframe filter (default: 1m)")
     parser.add_argument(
         "--instrument-types",
         nargs="+",
@@ -38,6 +40,16 @@ def add_ingest_timescaledb_parser(subparsers: argparse._SubParsersAction[argpars
 
 def run_ingest_timescaledb(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run ``ingest-timescaledb`` command."""
+
+    requested_timeframes = cast(list[str] | None, args.timeframes)
+    if requested_timeframes:
+        invalid_values = [
+            value for value in requested_timeframes if value.strip().lower() not in _ALLOWED_TIMEFRAME_VALUES
+        ]
+        if invalid_values:
+            raise ValueError(
+                "ingest-timescaledb supports only 1m timeframe. Invalid values: " + ", ".join(invalid_values)
+            )
 
     def _progress(info: dict[str, str]) -> None:
         logger.info(
@@ -63,7 +75,19 @@ def run_ingest_timescaledb(args: argparse.Namespace, logger: logging.Logger) -> 
     if not bool(args.no_json_output):
         print(json.dumps(summary, indent=2))
     logger.info(
-        "Command complete: ingest-timescaledb ohlcv_rows=%s open_interest_rows=%s",
+        (
+            "Command complete: ingest-timescaledb "
+            "ohlcv_rows=%s open_interest_rows=%s funding_rows=%s "
+            "ohlcv_files=%s open_interest_files=%s funding_files=%s "
+            "ohlcv_skipped_rows=%s open_interest_skipped_rows=%s funding_skipped_rows=%s"
+        ),
         summary["ohlcv_rows"],
         summary["open_interest_rows"],
+        summary["funding_rows"],
+        summary.get("ohlcv_files", 0),
+        summary.get("open_interest_files", 0),
+        summary.get("funding_files", 0),
+        summary.get("ohlcv_skipped_rows", 0),
+        summary.get("open_interest_skipped_rows", 0),
+        summary.get("funding_skipped_rows", 0),
     )

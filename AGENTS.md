@@ -52,6 +52,35 @@ Rules:
 - Code must be structured according to optimal software design patterns for the use case (for example clear layering, separation of concerns, dependency inversion where appropriate, and composable modules).
 - Design choices must prioritize long-term maintainability over short-term convenience.
 
+## Scalability-First Decision Policy
+
+All technical decisions must explicitly account for future data growth, including:
+
+- more dataset types
+- more symbols
+- more exchanges
+- higher ingestion frequency and larger historical backfills
+
+Required engineering implications:
+
+- Prefer incremental/delta processing over repeated full rescans.
+- Keep processing partition-aware and idempotent.
+- Use bounded, configurable concurrency (avoid unbounded fan-out).
+- Ensure schema evolution is backward compatible and versioned.
+- Keep exchange/dataset integrations modular through explicit adapter interfaces.
+- Preserve observability for scale operations (progress, throughput, error isolation).
+- Favor storage and indexing strategies that remain efficient as volume grows.
+
+## Timeframe Scope Policy (MANDATORY)
+
+The ingestion scope is restricted to **1m timeframe only**.
+
+Rules:
+
+- Agents must configure and run ingestion commands using only `1m`/`M1`.
+- Agents must not introduce or persist `5m`, `15m`, `1h`, or other non-`1m` ingestion flows unless the user explicitly changes this policy.
+- When updating docs, examples, cronjobs, or operational scripts, default and recommended ingest timeframe must remain `1m`.
+
 ---
 
 # Code Quality Rules

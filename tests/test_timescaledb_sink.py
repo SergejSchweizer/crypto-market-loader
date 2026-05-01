@@ -92,9 +92,9 @@ def _sample_candle() -> SpotCandle:
     return SpotCandle(
         exchange="deribit",
         symbol="BTCUSDT",
-        interval="5m",
+        interval="1m",
         open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
-        close_time=datetime(2026, 4, 27, 10, 4, 59, 999000, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
         open_price=100.0,
         high_price=101.0,
         low_price=99.0,
@@ -109,9 +109,9 @@ def _sample_oi() -> OpenInterestPoint:
     return OpenInterestPoint(
         exchange="deribit",
         symbol="BTCUSDT",
-        interval="5m",
+        interval="1m",
         open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
-        close_time=datetime(2026, 4, 27, 10, 4, 59, 999000, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
         open_interest=123.0,
         open_interest_value=456.0,
     )
@@ -210,7 +210,7 @@ def test_loader_parquet_then_ingest_timescaledb_end_to_end(
             "--symbols",
             "BTCUSDT",
                 "--timeframe",
-                "5m",
+                "1m",
             "--save-parquet-lake",
             "--lake-root",
             str(tmp_path),
@@ -249,7 +249,7 @@ def test_save_parquet_lake_to_timescaledb_parallel_workers(
         create_schema=True,
     )
 
-    assert cast(int, state.get("connect_calls", 0)) == 4
+    assert cast(int, state.get("connect_calls", 0)) == 5
 
 
 def test_save_parquet_lake_to_timescaledb_reports_ingest_progress(
@@ -286,7 +286,7 @@ def test_save_parquet_lake_to_timescaledb_reports_ingest_progress(
             "--symbols",
             "BTCUSDT",
             "--timeframe",
-            "5m",
+            "1m",
             "--save-parquet-lake",
             "--lake-root",
             str(tmp_path),
@@ -346,7 +346,7 @@ def test_save_parquet_lake_to_timescaledb_ingests_only_delta(
             "--symbols",
             "BTCUSDT",
             "--timeframe",
-            "5m",
+            "1m",
             "--save-parquet-lake",
             "--lake-root",
             str(tmp_path),
@@ -360,10 +360,10 @@ def test_save_parquet_lake_to_timescaledb_ingests_only_delta(
 
     last_open_time = datetime(2026, 4, 27, 10, 0, tzinfo=UTC)
 
-    def _latest_by_key(conn: object, schema: str, table_name: str) -> dict[tuple[str, str, str, str], datetime]:
+    def _latest_by_key(conn: object, schema: str, dataset_type: str) -> dict[tuple[str, str, str, str], datetime]:
         del conn, schema
-        if table_name == sink.OhlcvTableName:
-            return {("deribit", "spot", "BTCUSDT", "5m"): last_open_time}
+        if dataset_type == "ohlcv":
+            return {("deribit", "spot", "BTCUSDT", "1m"): last_open_time}
         return {}
 
     monkeypatch.setattr(sink, "_load_latest_open_time_by_key", _latest_by_key)
@@ -376,3 +376,32 @@ def test_save_parquet_lake_to_timescaledb_ingests_only_delta(
 
     assert summary["ohlcv_rows"] == 0
     assert summary["open_interest_rows"] == 1
+
+
+def test_filter_files_by_watermark_month_skips_older_partitions(tmp_path: Path) -> None:
+    older = (
+        tmp_path
+        / "dataset_type=ohlcv"
+        / "exchange=deribit"
+        / "instrument_type=spot"
+        / "symbol=BTCUSDT"
+        / "timeframe=1m"
+        / "date=2026-03"
+        / "data.parquet"
+    )
+    newer = (
+        tmp_path
+        / "dataset_type=ohlcv"
+        / "exchange=deribit"
+        / "instrument_type=spot"
+        / "symbol=BTCUSDT"
+        / "timeframe=1m"
+        / "date=2026-04"
+        / "data.parquet"
+    )
+
+    watermark = {("deribit", "spot", "BTCUSDT", "1m"): datetime(2026, 4, 27, 10, 0, tzinfo=UTC)}
+    kept = sink._filter_files_by_watermark_month([older, newer], watermark)
+
+    assert newer in kept
+    assert older not in kept

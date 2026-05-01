@@ -27,6 +27,8 @@ from ingestion.funding import (
     normalize_funding_timeframe,
 )
 from ingestion.lake import (
+    latest_open_time_in_lake,
+    latest_open_time_in_lake_by_dataset,
     load_combined_dataframe_from_lake,  # noqa: F401 - backward-compatible test monkeypatch surface
     open_times_in_lake,
     open_times_in_lake_by_dataset,
@@ -48,6 +50,7 @@ from ingestion.spot import (
 )
 
 __all__ = ["SingleInstanceError", "SingleInstanceLock", "build_parser", "main"]
+_TAIL_DELTA_ONLY = True
 
 
 # Backward-compatible wrappers used by tests.
@@ -83,6 +86,9 @@ def _sync_loader_runtime_overrides() -> None:
     loader_any._missing_ranges_ms = _missing_ranges_ms
     loader_any.open_times_in_lake = open_times_in_lake
     loader_any.open_times_in_lake_by_dataset = open_times_in_lake_by_dataset
+    loader_any.latest_open_time_in_lake = latest_open_time_in_lake
+    loader_any.latest_open_time_in_lake_by_dataset = latest_open_time_in_lake_by_dataset
+    loader_any._TAIL_DELTA_ONLY = _TAIL_DELTA_ONLY
     loader_any.normalize_storage_symbol = normalize_storage_symbol
     loader_any.interval_to_milliseconds = interval_to_milliseconds
     loader_any.open_interest_interval_to_milliseconds = open_interest_interval_to_milliseconds

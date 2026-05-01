@@ -19,10 +19,10 @@ from ingestion.spot import (
 def test_parse_deribit_kline_maps_fields() -> None:
     row = [1714478400000, "64000.0", "64200.0", "63850.0", "64100.0", "120.5", 1714481999999, "7720000.0", 2300]
 
-    candle = parse_kline("deribit", "BTC-PERPETUAL", "1h", row)
+    candle = parse_kline("deribit", "BTC-PERPETUAL", "1m", row)
 
     assert candle.symbol == "BTC-PERPETUAL"
-    assert candle.interval == "1h"
+    assert candle.interval == "1m"
     assert candle.open_time.tzinfo == UTC
     assert candle.close_price == pytest.approx(64100.0)
     assert candle.volume == pytest.approx(120.5)
@@ -33,19 +33,23 @@ def test_parse_deribit_kline_maps_fields() -> None:
     ("value", "expected"),
     [
         ("M1", "1m"),
-        ("M5", "5m"),
-        ("H1", "1h"),
-        ("H6", "6h"),
-        ("D1", "1d"),
+        ("1m", "1m"),
     ],
 )
 def test_normalize_deribit_timeframe_aliases(value: str, expected: str) -> None:
     assert normalize_timeframe("deribit", value) == expected
 
 
+@pytest.mark.parametrize("value", ["M5", "H1", "H6", "D1", "5m", "1h", "1d"])
+def test_normalize_deribit_timeframe_rejects_non_1m(value: str) -> None:
+    with pytest.raises(ValueError, match="Unsupported timeframe"):
+        normalize_timeframe("deribit", value)
+
+
 def test_deribit_symbol_normalization_perp_aliases() -> None:
     assert deribit.normalize_symbol("BTC", "perp") == "BTC-PERPETUAL"
     assert deribit.normalize_symbol("ETHUSDT", "perp") == "ETH-PERPETUAL"
+    assert deribit.normalize_symbol("SOL", "perp") == "SOL-PERPETUAL"
 
 
 def test_fetch_deribit_candles_respects_limit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -81,6 +85,8 @@ def test_fetch_deribit_candles_respects_limit(monkeypatch: pytest.MonkeyPatch) -
     [
         ("spot", "BTCUSDT", "BTC_USDC", "BTC_USDC"),
         ("perp", "BTC", "BTC-PERPETUAL", "BTC-PERPETUAL"),
+        ("spot", "SOL", "SOL_USDC", "SOL_USDC"),
+        ("perp", "SOL", "SOL-PERPETUAL", "SOL-PERPETUAL"),
     ],
 )
 def test_fetch_deribit_routes_spot_and_perp_symbols(

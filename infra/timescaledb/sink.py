@@ -18,6 +18,7 @@ from ingestion.spot import Market, SpotCandle
 OhlcvTableName = "ohlcv"
 OpenInterestTableName = "open_interest"
 FundingTableName = "funding"
+WatermarkTableName = "ingest_watermarks"
 _SQL_IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 DEFAULT_PARQUET_BATCH_SIZE = 10_000
 DEFAULT_DB_WRITE_BATCH_SIZE = 5_000
@@ -124,6 +125,54 @@ def _iter_matching_parquet_files(
     return matching_files
 
 
+def _parse_month_partition(value: str) -> tuple[int, int] | None:
+    """Parse ``YYYY-MM`` partition value into ``(year, month)`` tuple."""
+
+    parts = value.split("-")
+    if len(parts) != 2:
+        return None
+    year_raw, month_raw = parts
+    if not (year_raw.isdigit() and month_raw.isdigit()):
+        return None
+    year = int(year_raw)
+    month = int(month_raw)
+    if month < 1 or month > 12:
+        return None
+    return year, month
+
+
+def _filter_files_by_watermark_month(
+    files: list[Path],
+    watermark_by_series: dict[SeriesKey, datetime],
+) -> list[Path]:
+    """Drop parquet partitions strictly older than per-series watermark month."""
+
+    filtered: list[Path] = []
+    for data_file in files:
+        partition = _partition_from_path(data_file)
+        series_key: SeriesKey = (
+            partition.get("exchange", ""),
+            partition.get("instrument_type", ""),
+            partition.get("symbol", ""),
+            partition.get("timeframe", ""),
+        )
+        watermark = watermark_by_series.get(series_key)
+        if watermark is None:
+            filtered.append(data_file)
+            continue
+
+        partition_month = _parse_month_partition(partition.get("date", ""))
+        if partition_month is None:
+            filtered.append(data_file)
+            continue
+
+        watermark_month = (watermark.year, watermark.month)
+        if partition_month < watermark_month:
+            continue
+        filtered.append(data_file)
+    return filtered
+
+
 def _build_ohlcv_db_row(row: dict[str, object]) -> dict[str, object]:
     """Map one parquet OHLCV row into DB upsert payload format."""
 
@@ -226,7 +275,7 @@ def _upsert_rows_from_parquet_files(
     upsert_fn: Callable[[Any, str, list[dict[str, object]]], int],
     max_open_time_by_series: dict[SeriesKey, datetime],
     progress_callback: IngestProgressCallback | None = None,
-) -> int:
+) -> tuple[int, int, int, dict[SeriesKey, datetime]]:
     """Read parquet files and upsert rows in bounded batches using one DB connection."""
 
     try:
@@ -238,7 +287,12 @@ def _upsert_rows_from_parquet_files(
     except ImportError as exc:
         raise RuntimeError("pyarrow is required for parquet ingestion. Install project dependencies.") from exc
 
+    scanned_rows = 0
+    skipped_rows = 0
+    latest_open_time_by_series: dict[SeriesKey, datetime] = {}
+
     def _row_iter() -> Iterator[dict[str, object]]:
+        nonlocal scanned_rows, skipped_rows
         for data_file in parquet_files:
             partition = _partition_from_path(data_file)
             if progress_callback is not None:
@@ -255,6 +309,7 @@ def _upsert_rows_from_parquet_files(
             parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
             for arrow_batch in parquet_file.iter_batches(batch_size=batch_size):  # type: ignore[no-untyped-call]
                 for row in arrow_batch.to_pylist():
+                    scanned_rows += 1
                     db_row = row_builder(row)
                     series_key = (
                         str(db_row.get("exchange", "")),
@@ -265,18 +320,24 @@ def _upsert_rows_from_parquet_files(
                     last_open_time = max_open_time_by_series.get(series_key)
                     open_time = db_row.get("open_time")
                     if isinstance(open_time, datetime) and last_open_time is not None and open_time <= last_open_time:
+                        skipped_rows += 1
                         continue
+                    if isinstance(open_time, datetime):
+                        previous = latest_open_time_by_series.get(series_key)
+                        if previous is None or open_time > previous:
+                            latest_open_time_by_series[series_key] = open_time
                     yield db_row
 
     with psycopg.connect(**settings) as conn:
         with conn.transaction():
-            return _upsert_rows_in_batches(
+            ingested_rows = _upsert_rows_in_batches(
                 row_iter=_row_iter(),
                 write_batch_size=write_batch_size,
                 upsert_fn=upsert_fn,
                 conn=conn,
                 schema=schema,
             )
+    return ingested_rows, scanned_rows, skipped_rows, latest_open_time_by_series
 
 
 def _create_schema_and_tables(conn: Any, schema: str) -> None:
@@ -403,21 +464,38 @@ def _create_schema_and_tables(conn: Any, schema: str) -> None:
             ON {safe_schema}.{FundingTableName} (exchange, symbol, timeframe, open_time DESC);
             """
         )
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {safe_schema}.{WatermarkTableName} (
+                dataset_type TEXT NOT NULL,
+                exchange TEXT NOT NULL,
+                instrument_type TEXT NOT NULL,
+                symbol TEXT NOT NULL,
+                timeframe TEXT NOT NULL,
+                last_open_time TIMESTAMPTZ NOT NULL,
+                updated_at TIMESTAMPTZ NOT NULL,
+                PRIMARY KEY (dataset_type, exchange, instrument_type, symbol, timeframe)
+            );
+            """
+        )
 
 
-def _load_latest_open_time_by_key(conn: Any, schema: str, table_name: str) -> dict[SeriesKey, datetime]:
-    """Load latest ingested open_time per exchange/instrument/symbol/timeframe series."""
+def _load_latest_open_time_by_key(conn: Any, schema: str, dataset_type: str) -> dict[SeriesKey, datetime]:
+    """Load latest ingested open_time from watermark table by dataset/series."""
 
     safe_schema = _validate_sql_identifier(value=schema, kind="schema")
-    safe_table_name = _validate_sql_identifier(value=table_name, kind="table")
+    safe_table_name = _validate_sql_identifier(value=WatermarkTableName, kind="table")
     sql = f"""
-        SELECT exchange, instrument_type, symbol, timeframe, MAX(open_time) AS max_open_time
+        SELECT exchange, instrument_type, symbol, timeframe, last_open_time AS max_open_time
         FROM {safe_schema}.{safe_table_name}
-        GROUP BY exchange, instrument_type, symbol, timeframe
+        WHERE dataset_type = '{dataset_type}'
     """
-    with conn.cursor() as cur:
-        cur.execute(sql)
-        rows = cur.fetchall()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+    except Exception:  # noqa: BLE001
+        return {}
 
     result: dict[SeriesKey, datetime] = {}
     for row in rows:
@@ -428,6 +506,47 @@ def _load_latest_open_time_by_key(conn: Any, schema: str, table_name: str) -> di
             continue
         result[(str(exchange), str(instrument_type), str(symbol), str(timeframe))] = max_open_time
     return result
+
+
+def _upsert_ingest_watermarks(
+    conn: Any,
+    schema: str,
+    dataset_type: str,
+    watermark_by_series: dict[SeriesKey, datetime],
+) -> None:
+    """Persist watermark state for a dataset."""
+
+    if not watermark_by_series:
+        return
+    safe_schema = _validate_sql_identifier(value=schema, kind="schema")
+    safe_table_name = _validate_sql_identifier(value=WatermarkTableName, kind="table")
+    sql = f"""
+        INSERT INTO {safe_schema}.{safe_table_name} (
+            dataset_type, exchange, instrument_type, symbol, timeframe, last_open_time, updated_at
+        ) VALUES (
+            %(dataset_type)s, %(exchange)s, %(instrument_type)s, %(symbol)s, %(timeframe)s,
+            %(last_open_time)s, %(updated_at)s
+        )
+        ON CONFLICT (dataset_type, exchange, instrument_type, symbol, timeframe)
+        DO UPDATE SET
+            last_open_time = EXCLUDED.last_open_time,
+            updated_at = EXCLUDED.updated_at;
+    """
+    updated_at = datetime.now(UTC)
+    payload = [
+        {
+            "dataset_type": dataset_type,
+            "exchange": exchange,
+            "instrument_type": instrument_type,
+            "symbol": symbol,
+            "timeframe": timeframe,
+            "last_open_time": last_open_time,
+            "updated_at": updated_at,
+        }
+        for (exchange, instrument_type, symbol, timeframe), last_open_time in watermark_by_series.items()
+    ]
+    with conn.cursor() as cur:
+        cur.executemany(sql, payload)
 
 
 def _upsert_ohlcv(conn: Any, schema: str, rows: list[dict[str, object]]) -> int:
@@ -660,17 +779,17 @@ def save_parquet_lake_to_timescaledb(
             return False
         return True
 
-    ohlcv_files = _iter_matching_parquet_files(
+    all_ohlcv_files = _iter_matching_parquet_files(
         lake_root=lake_root,
         glob_pattern="dataset_type=ohlcv/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
         allow_partition=_allow,
     )
-    oi_files = _iter_matching_parquet_files(
+    all_oi_files = _iter_matching_parquet_files(
         lake_root=lake_root,
         glob_pattern="dataset_type=open_interest/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
         allow_partition=_allow,
     )
-    funding_files = _iter_matching_parquet_files(
+    all_funding_files = _iter_matching_parquet_files(
         lake_root=lake_root,
         glob_pattern="dataset_type=funding/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
         allow_partition=_allow,
@@ -684,21 +803,25 @@ def save_parquet_lake_to_timescaledb(
             ohlcv_latest_by_key = _load_latest_open_time_by_key(
                 conn=conn,
                 schema=safe_schema,
-                table_name=OhlcvTableName,
+                dataset_type="ohlcv",
             )
             oi_latest_by_key = _load_latest_open_time_by_key(
                 conn=conn,
                 schema=safe_schema,
-                table_name=OpenInterestTableName,
+                dataset_type="open_interest",
             )
             funding_latest_by_key = _load_latest_open_time_by_key(
                 conn=conn,
                 schema=safe_schema,
-                table_name=FundingTableName,
+                dataset_type="funding",
             )
 
+    ohlcv_files = _filter_files_by_watermark_month(all_ohlcv_files, ohlcv_latest_by_key)
+    oi_files = _filter_files_by_watermark_month(all_oi_files, oi_latest_by_key)
+    funding_files = _filter_files_by_watermark_month(all_funding_files, funding_latest_by_key)
+
     if ingest_workers <= 1:
-        ohlcv_count = _upsert_rows_from_parquet_files(
+        ohlcv_count, ohlcv_scanned, ohlcv_skipped, ohlcv_watermarks = _upsert_rows_from_parquet_files(
             settings=settings,
             schema=safe_schema,
             parquet_files=ohlcv_files,
@@ -709,7 +832,7 @@ def save_parquet_lake_to_timescaledb(
             max_open_time_by_series=ohlcv_latest_by_key,
             progress_callback=progress_callback,
         )
-        oi_count = _upsert_rows_from_parquet_files(
+        oi_count, oi_scanned, oi_skipped, oi_watermarks = _upsert_rows_from_parquet_files(
             settings=settings,
             schema=safe_schema,
             parquet_files=oi_files,
@@ -720,7 +843,7 @@ def save_parquet_lake_to_timescaledb(
             max_open_time_by_series=oi_latest_by_key,
             progress_callback=progress_callback,
         )
-        funding_count = _upsert_rows_from_parquet_files(
+        funding_count, funding_scanned, funding_skipped, funding_watermarks = _upsert_rows_from_parquet_files(
             settings=settings,
             schema=safe_schema,
             parquet_files=funding_files,
@@ -769,13 +892,43 @@ def save_parquet_lake_to_timescaledb(
                 max_open_time_by_series=funding_latest_by_key,
                 progress_callback=progress_callback,
             )
-            ohlcv_count = ohlcv_future.result()
-            oi_count = oi_future.result()
-            funding_count = funding_future.result()
+            ohlcv_count, ohlcv_scanned, ohlcv_skipped, ohlcv_watermarks = ohlcv_future.result()
+            oi_count, oi_scanned, oi_skipped, oi_watermarks = oi_future.result()
+            funding_count, funding_scanned, funding_skipped, funding_watermarks = funding_future.result()
+
+    with psycopg.connect(**settings) as conn:
+        with conn.transaction():
+            _upsert_ingest_watermarks(
+                conn=conn,
+                schema=safe_schema,
+                dataset_type="ohlcv",
+                watermark_by_series=ohlcv_watermarks,
+            )
+            _upsert_ingest_watermarks(
+                conn=conn,
+                schema=safe_schema,
+                dataset_type="open_interest",
+                watermark_by_series=oi_watermarks,
+            )
+            _upsert_ingest_watermarks(
+                conn=conn,
+                schema=safe_schema,
+                dataset_type="funding",
+                watermark_by_series=funding_watermarks,
+            )
 
     return {
         "schema": safe_schema,
         "ohlcv_rows": ohlcv_count,
         "open_interest_rows": oi_count,
         "funding_rows": funding_count,
+        "ohlcv_files": len(ohlcv_files),
+        "open_interest_files": len(oi_files),
+        "funding_files": len(funding_files),
+        "ohlcv_scanned_rows": ohlcv_scanned,
+        "open_interest_scanned_rows": oi_scanned,
+        "funding_scanned_rows": funding_scanned,
+        "ohlcv_skipped_rows": ohlcv_skipped,
+        "open_interest_skipped_rows": oi_skipped,
+        "funding_skipped_rows": funding_skipped,
     }

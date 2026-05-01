@@ -11,6 +11,7 @@ from pathlib import Path
 LOGGER_NAME = "crypto_market_loader"
 DEFAULT_LOG_DIR = "/volume1/Temp/logs"
 DEFAULT_FETCH_CONCURRENCY = 2
+MAX_FETCH_CONCURRENCY = 2
 
 
 def load_env_file(path: str = ".env") -> None:
@@ -171,4 +172,4 @@ def fetch_concurrency() -> int:
         value = int(raw)
     except ValueError:
         return DEFAULT_FETCH_CONCURRENCY
-    return max(1, value)
+    return min(MAX_FETCH_CONCURRENCY, max(1, value))

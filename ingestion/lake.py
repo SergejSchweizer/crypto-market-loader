@@ -245,6 +245,69 @@ def open_times_in_lake(
     )
 
 
+def latest_open_time_in_lake_by_dataset(
+    lake_root: str,
+    dataset_type: str,
+    market: str,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+) -> datetime | None:
+    """Return latest stored open_time for one dataset/instrument/timeframe.
+
+    This intentionally reads only the most recent month partition to avoid
+    full-history scans during tail-only delta ingestion.
+    """
+
+    try:
+        import pyarrow.parquet as pq
+    except ImportError as exc:
+        raise RuntimeError("pyarrow is required for parquet lake output. Install project dependencies.") from exc
+
+    partition_root = (
+        Path(lake_root)
+        / f"dataset_type={dataset_type}"
+        / f"exchange={exchange}"
+        / f"instrument_type={market}"
+        / f"symbol={symbol}"
+        / f"timeframe={timeframe}"
+    )
+    if not partition_root.exists():
+        return None
+
+    data_files = sorted(partition_root.glob("date=*/data.parquet"))
+    if not data_files:
+        return None
+    latest_file = data_files[-1]
+    latest_open_time: datetime | None = None
+    parquet_file = pq.ParquetFile(latest_file)  # type: ignore[no-untyped-call]
+    for batch in parquet_file.iter_batches(columns=["open_time"], batch_size=10_000):  # type: ignore[no-untyped-call]
+        for row in batch.to_pylist():
+            value = row.get("open_time")
+            if isinstance(value, datetime) and (latest_open_time is None or value > latest_open_time):
+                latest_open_time = value
+    return latest_open_time
+
+
+def latest_open_time_in_lake(
+    lake_root: str,
+    market: str,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+) -> datetime | None:
+    """Return latest stored OHLCV open_time for one series."""
+
+    return latest_open_time_in_lake_by_dataset(
+        lake_root=lake_root,
+        dataset_type="ohlcv",
+        market=market,
+        exchange=exchange,
+        symbol=symbol,
+        timeframe=timeframe,
+    )
+
+
 def load_spot_candles_from_lake(
     lake_root: str,
     market: str,

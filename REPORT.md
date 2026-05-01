@@ -1,9 +1,9 @@
 # Deribit Market Data Ingestion Baseline for Crypto Research Pipelines
 
 ## Abstract
-This report presents a production-oriented baseline for cryptocurrency market-data ingestion designed to support downstream quantitative research. The problem addressed is the lack of reproducible, maintainable ingestion layers in early-stage quant projects, where exchange-specific scripts and schema drift frequently undermine empirical validity. We implement a typed, modular ingestion pipeline with adapter abstractions for Deribit, command-line interfaces for deterministic execution, and partitioned parquet-lake storage. Data are sourced from public exchange REST endpoints and normalized into canonical OHLCV, open-interest, and funding schemas with metadata fields for run traceability. The main finding is engineering-focused: the system provides deterministic normalization, supports backward pagination and gap-fill synchronization for historical series, and preserves idempotent persistence via natural-key partition merges. The contribution is a maintainable ingestion foundation suitable for subsequent market microstructure, regime, and forecasting studies, with explicit reproducibility controls (strict typing, tests, linting, config-driven runs, and stable execution commands).
+This report presents a production-oriented baseline for cryptocurrency market-data ingestion designed to support downstream quantitative research. The problem addressed is the lack of reproducible, maintainable ingestion layers in early-stage quant projects, where exchange-specific scripts and schema drift frequently undermine empirical validity. We implement a typed, modular ingestion pipeline with adapter abstractions for Deribit, command-line interfaces for deterministic execution, and partitioned parquet-lake storage. Data are sourced from public exchange REST endpoints and normalized into canonical OHLCV, open-interest, and funding schemas with metadata fields for run traceability. The main finding is engineering-focused: the system provides deterministic normalization, supports backward pagination and gap-fill synchronization for historical series, enforces 1-minute ingestion policy, and preserves idempotent persistence via natural-key partition merges plus Timescale watermark-based delta ingest. The contribution is a maintainable ingestion foundation suitable for subsequent market microstructure, regime, and forecasting studies, with explicit reproducibility controls (strict typing, tests, linting, config-driven runs, and stable execution commands).
 
-Canonical data-type naming in this project is fixed as `spot`, `perp`, `oi`, and `funding` across CLI, code, and documentation (with parquet storage label `dataset_type=open_interest` representing `oi`).
+Canonical data-type naming in this project is fixed as `spot`, `perp`, `oi`, and `funding` across CLI, code, and documentation (with parquet storage label `dataset_type=open_interest` representing `oi`). Ingestion timeframe scope is restricted to `1m` / `M1`.
 
 ## Introduction
 Reliable market-data ingestion is a prerequisite for valid quantitative inference in crypto research.
@@ -12,17 +12,17 @@ Many practical pipelines fail due to exchange-specific one-off scripts, inconsis
 
 This project proposes a modular ingestion architecture with typed interfaces, explicit normalization, and reproducible command-line workflows focused on Deribit as the current production exchange.
 
-The contributions of this stage are: (1) Deribit OHLCV, open-interest, and funding normalization, (2) parquet-lake persistence paths, (3) tested operational workflows for repeatable data acquisition.
+The contributions of this stage are: (1) Deribit OHLCV, open-interest, and funding normalization for BTC/ETH/SOL, (2) parquet-lake persistence paths, (3) tested operational workflows for repeatable data acquisition.
 
 ## Literature Review
 Volatility clustering and regime dependence motivate robust historical market-data pipelines. ARCH/GARCH foundations establish heteroskedastic behavior in financial time series, requiring high-integrity timestamped observations (Engle, 1982; Bollerslev, 1986). Regime-switching frameworks further highlight sensitivity to data quality and temporal consistency (Hamilton, 1989). Later work on high-frequency econometrics and realized-volatility estimation reinforces the need for reliable, granular data ingestion and synchronization processes (Andersen et al., 2001; Barndorff-Nielsen and Shephard, 2002).
 Market microstructure and stylized-facts literature also emphasizes heavy tails, volatility clustering, and serial dependence in returns, which makes interval alignment and timestamp integrity central to defensible inference (Cont, 2001).
 
-Within crypto-specific empirical work, market microstructure studies and liquidity fragmentation analyses depend on exchange-consistent symbol and timeframe normalization. This baseline does not yet estimate econometric models, but it is intentionally built to satisfy upstream data-quality assumptions for such methods.
+Within crypto-specific empirical work, market microstructure studies and liquidity fragmentation analyses depend on exchange-consistent symbol and timeframe normalization. This baseline currently covers BTC/ETH/SOL symbol normalization on Deribit and does not yet estimate econometric models, but it is intentionally built to satisfy upstream data-quality assumptions for such methods.
 
 ## Dataset
 - Source: Deribit `/api/v2/public/get_tradingview_chart_data`, `/api/v2/public/get_last_settlements_by_instrument`, `/api/v2/public/get_funding_rate_history`.
-- Sample period: user-configurable runtime period determined by symbols, markets, timeframes, and existing parquet coverage.
+- Sample period: user-configurable runtime period determined by symbols, markets, and existing parquet coverage; ingestion timeframe is fixed to `1m`.
 - Number of observations: runtime-dependent on symbol/timeframe scope and auto bootstrap vs gap-fill behavior.
 - Variables: `open_time`, `close_time`, `open`, `high`, `low`, `close`, `volume`, `quote_volume`, `trade_count` plus provenance metadata.
 - Additional perp feature set: `open_interest`, `open_interest_value`, and funding-rate fields.
@@ -117,13 +117,13 @@ Upsert policy enforces idempotency:
 - Loader operates in exactly two modes:
   1. `fetch all history` for symbol/timeframe partitions that do not yet exist in parquet.
   2. `fill gaps` for existing partitions by recovering missing internal intervals and tail intervals.
-- Bounded HTTP retries with exponential backoff for transient failures.
+- Bounded HTTP retries with exponential backoff for transient failures (default runtime profile: timeout `8s`, retries `2`, backoff `0.5s`).
 - Pagination for exchange request limits.
 - Gap-fill computes missing intervals from stored open-time sets.
-- Fetch execution is parallelized with bounded concurrency controls.
+- Fetch execution is parallelized with bounded concurrency controls (hard-capped at `2` concurrent tasks).
 - Fetch orchestration and task error isolation are handled in a dedicated service layer (`application/services/fetch_service.py`) rather than directly in CLI command code.
 - Parquet reads/writes process data in batches to bound memory usage.
-- Timescale ingestion from parquet uses streaming row iteration with bounded DB upsert batches.
+- Timescale ingestion from parquet uses streaming row iteration with bounded DB upsert batches and per-series watermark state for delta-only ingest.
 
 ## Results
 All figures in this report are generated from repository pipeline outputs (agent-generated plot artifacts), not notebook exports.
@@ -161,6 +161,7 @@ No predictive or regime models are trained in this stage.
 | Canonical schema contract tests | CLI datatype to storage contract mapping | Passed (`tests/test_schema_contract.py`) |
 | Loader sample artifacts | Per market/exchange/symbol/timeframe CSV + full-history plot | Passed with deterministic naming |
 | Chunked Timescale ingest | Streaming parquet read + bounded DB upsert batches | Passed with stable memory profile |
+| Timescale delta ingest | Per-series watermark state (`ingest_watermarks`) + newer-than-watermark row filter | Passed and idempotent across reruns |
 | Open-interest integration | Deribit perp dataset_type=open_interest | Passed for all-history and gap-fill paths |
 
 ### Figures
