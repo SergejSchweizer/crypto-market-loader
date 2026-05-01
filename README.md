@@ -54,7 +54,7 @@ Tooling and test purpose:
 - `application/dto.py`: shared DTO definitions for fetch/storage/artifact service boundaries.
 - `application/schema.py`: canonical contract mapping for CLI data types to storage `dataset_type` + `instrument_type`.
 - `application/services/gapfill_service.py`: pure time/gap range helpers used by loader synchronization logic.
-- `application/services/fetch_service.py`: fetch orchestration service (task DTOs + parallel execution + symbol-level bootstrap/gap-fill fetch).
+- `application/services/fetch_service.py`: fetch orchestration service (task DTOs + sequential execution + symbol-level bootstrap/gap-fill fetch).
 - `application/services/storage_service.py`: orchestration for parquet-lake and TimescaleDB persistence side effects.
 - `application/services/artifact_service.py`: sample CSV/plot artifact generation service.
 
@@ -393,7 +393,7 @@ python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL --
 ```
 
 Note:
-- Loader network fetch tasks run in parallel via `asyncio` with bounded concurrency.
+- Loader network fetch tasks run sequentially to reduce exchange-side blocking/rate-limit pressure.
 - Parallel fetch orchestration is implemented in `application/services/fetch_service.py`; `api/cli.py` delegates to this service.
 - Parquet partition writes are parallelized.
 - Global concurrent exchange queries are capped by `LOADER_GLOBAL_QUERY_CONCURRENCY` (default: `2`).
@@ -522,7 +522,7 @@ Current coverage includes:
 - Exchange adapter normalization/routing and pagination behavior.
 - Gap-fill utility logic (`application/services/gapfill_service.py`).
 - Datatype-separated artifact tests for `spot`, `oi`, and `funding` plot downsampling/coverage behavior.
-- Fetch orchestration success/error split for parallel task runners (`application/services/fetch_service.py`).
+- Fetch orchestration success/error split for sequential task runners (`application/services/fetch_service.py`).
 - Storage orchestration behavior for parquet+Timescale side effects (`application/services/storage_service.py`).
 - Canonical dataset contract mapping (`application/schema.py`).
 - CLI locking, parquet lake persistence, plotting, and TimescaleDB sink behavior.
@@ -537,10 +537,8 @@ Current coverage includes:
 - Logs rotate every 7 days and rotated files are date-suffixed (for example `loader.log.2026-04-27`) and retained in the same directory.
 - Local `.env` is loaded automatically when present and is excluded from git tracking.
 - Optional override: set `DEPTH_SYNC_LOG_DIR` to change the log directory.
-- Optional override: set `DEPTH_FETCH_CONCURRENCY` to control loader fetch parallelism in range `1..2` (default `2`).
-- Optional override: set `LOADER_OHLCV_CONCURRENCY` to control OHLCV task parallelism in range `1..2` (default falls back to `DEPTH_FETCH_CONCURRENCY`).
-- Optional override: set `LOADER_OI_CONCURRENCY` to control OI task parallelism in range `1..2` (default falls back to `DEPTH_FETCH_CONCURRENCY`).
-- Optional override: set `LOADER_FUNDING_CONCURRENCY` to control funding task parallelism in range `1..2` (default falls back to `DEPTH_FETCH_CONCURRENCY`).
+- Optional override: set `DEPTH_FETCH_CONCURRENCY` to control loader fetch fan-out. Current runtime fetch mode is sequential, so this does not increase concurrent exchange requests.
+- Optional override: `LOADER_OHLCV_CONCURRENCY`, `LOADER_OI_CONCURRENCY`, and `LOADER_FUNDING_CONCURRENCY` are kept for compatibility but do not increase concurrency in sequential fetch mode.
 - Optional override: set `DEPTH_HTTP_TIMEOUT_S`, `DEPTH_HTTP_MAX_RETRIES`, and `DEPTH_HTTP_RETRY_BACKOFF_S` (defaults: `8`, `2`, `0.5`) for unstable network behavior tuning.
 - Optional override: set `TIMESCALE_INGEST_WORKERS` to parallelize `ingest-timescaledb` across dataset types (`spot/perp`, `oi`, `funding`); default `1` (sequential), practical max `3`.
 - `ingest-timescaledb` persists per-series watermarks and ingests only rows newer than the recorded watermark.

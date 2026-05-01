@@ -71,13 +71,16 @@ Within crypto-specific empirical work, market microstructure studies and liquidi
 
 #### `oi` (perpetual open interest)
 - Constructed fields:
-  `open_time`, `close_time`, `open_interest`, `open_interest_value`.
+  `open_time`, `close_time`, `open_interest`, `open_interest_value`, `oi_ffill`, `oi_is_observed`, `minutes_since_oi_observation`.
 - Field construction logic:
   - OI ingestion is gated to `perp` context; non-perp requests return empty results by design.
   - `open_time` derives from exchange timestamp and is UTC-normalized.
   - `close_time` is computed as `open_time + timeframe_ms - 1`.
   - `open_interest` is mapped from exchange OI position-size field.
   - `open_interest_value` is populated when the source returns a notional/value metric; else `0.0`.
+  - Missing 1m slots between observed OI points are forward-filled into `oi_ffill`.
+  - `oi_is_observed` marks whether a row is a raw observation (`true`) or synthesized fill row (`false`).
+  - `minutes_since_oi_observation` tracks distance (in minutes) from the latest observed OI row.
 - Exchange-specific mapping:
   - Deribit: settlement `timestamp` is bucketed to the requested timeframe prior to interval construction; `open_interest <- position`, `open_interest_value <- 0.0`.
 
@@ -120,7 +123,7 @@ Upsert policy enforces idempotency:
 - Bounded HTTP retries with exponential backoff for transient failures (default runtime profile: timeout `8s`, retries `2`, backoff `0.5s`).
 - Pagination for exchange request limits.
 - Gap-fill computes missing intervals from stored open-time sets.
-- Fetch execution is parallelized with bounded concurrency controls (hard-capped at `2` concurrent tasks).
+- Fetch execution is sequential to reduce exchange-side blocking/rate-limit pressure.
 - Fetch orchestration and task error isolation are handled in a dedicated service layer (`application/services/fetch_service.py`) rather than directly in CLI command code.
 - Parquet reads/writes process data in batches to bound memory usage.
 - Timescale ingestion from parquet uses streaming row iteration with bounded DB upsert batches and per-series watermark state for delta-only ingest.
@@ -155,7 +158,7 @@ No predictive or regime models are trained in this stage.
 | Exchange fetch | Deribit (spot/perp/oi/funding) | Passed via typed adapter dispatch |
 | Gap-fill mode | Missing internal/tail intervals | Passed via open-time range recovery |
 | Incremental parquet persistence | Partition merge + natural-key dedup | Passed with idempotent key policy |
-| Service-layer fetch orchestration tests | Parallel success/error isolation | Passed (`tests/test_fetch_service.py`) |
+| Service-layer fetch orchestration tests | Sequential success/error isolation | Passed (`tests/test_fetch_service.py`) |
 | Service-layer gap-fill utility tests | Closed-candle timestamp and missing-range logic | Passed (`tests/test_gapfill_service.py`) |
 | Service-layer storage orchestration tests | Parquet + Timescale side-effect routing | Passed (`tests/test_storage_service.py`) |
 | Canonical schema contract tests | CLI datatype to storage contract mapping | Passed (`tests/test_schema_contract.py`) |
