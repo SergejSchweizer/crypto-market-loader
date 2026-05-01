@@ -12,7 +12,6 @@ from dataclasses import asdict
 from datetime import datetime
 from typing import Literal, cast
 
-from application.schema import dataset_contract
 from application.dto import (
     ArtifactOptionsDTO,
     CandleFetchTaskDTO,
@@ -21,6 +20,7 @@ from application.dto import (
     OpenInterestFetchTaskDTO,
     PersistOptionsDTO,
 )
+from application.schema import dataset_contract
 from application.services.artifact_service import write_loader_samples_dto
 from application.services.fetch_service import (
     fetch_candle_tasks_parallel,
@@ -478,6 +478,7 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
             funding_concurrency = 1
             incremental_parquet_on_fetch = bool(args.save_parquet_lake)
             incremental_parquet_files: list[str] = []
+            logged_monthly_partitions: set[tuple[str, str, str, str, str, str]] = set()
             streamed_candle_tasks: set[tuple[Exchange, Market, str, str]] = set()
             streamed_oi_tasks: set[tuple[Exchange, str, str]] = set()
             streamed_funding_tasks: set[tuple[Exchange, str, str]] = set()
@@ -485,11 +486,42 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
             if incremental_parquet_on_fetch:
                 logger.info("Incremental parquet flush enabled during fetch execution")
 
-            def _persist_candle_task(
-                task: CandleFetchTaskDTO,
-                rows: list[SpotCandle],
-                phase: Literal["chunk", "complete"] = "complete",
+            def _log_new_monthly_partitions(
+                *,
+                data_type: str,
+                exchange: str,
+                market: str,
+                symbol: str,
+                timeframe: str,
+                parquet_files: list[str],
             ) -> None:
+                months = sorted(
+                    {
+                        month
+                        for month in (_extract_date_partition(path) for path in parquet_files)
+                        if month is not None
+                    }
+                )
+                new_months = [
+                    month
+                    for month in months
+                    if (data_type, exchange, market, symbol.upper(), timeframe, month) not in logged_monthly_partitions
+                ]
+                if not new_months:
+                    return
+                for month in new_months:
+                    logged_monthly_partitions.add((data_type, exchange, market, symbol.upper(), timeframe, month))
+                logger.info(
+                    "Parquet monthly file saved type=%s exchange=%s market=%s symbol=%s timeframe=%s months=%s",
+                    data_type,
+                    exchange,
+                    market,
+                    symbol.upper(),
+                    timeframe,
+                    ",".join(new_months),
+                )
+
+            def _persist_candle_task(task: CandleFetchTaskDTO, rows: list[SpotCandle]) -> None:
                 if not rows:
                     return
                 storage_result = persist_loader_outputs_dto(
@@ -506,31 +538,16 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                     save_tsdb_fn=save_market_data_to_timescaledb,
                 )
                 incremental_parquet_files.extend(storage_result.parquet_files)
-                months = sorted(
-                    {
-                        month
-                        for month in (_extract_date_partition(path) for path in storage_result.parquet_files)
-                        if month is not None
-                    }
-                )
-                logger.info(
-                    "Incremental parquet flush phase=%s type=ohlcv exchange=%s market=%s "
-                    "symbol=%s timeframe=%s rows=%s files=%s months=%s",
-                    phase,
-                    task.exchange,
-                    task.market,
-                    task.symbol,
-                    task.timeframe,
-                    len(rows),
-                    len(storage_result.parquet_files),
-                    ",".join(months) if months else "unknown",
+                _log_new_monthly_partitions(
+                    data_type="ohlcv",
+                    exchange=task.exchange,
+                    market=task.market,
+                    symbol=task.symbol,
+                    timeframe=task.timeframe,
+                    parquet_files=storage_result.parquet_files,
                 )
 
-            def _persist_oi_task(
-                task: OpenInterestFetchTaskDTO,
-                rows: list[OpenInterestPoint],
-                phase: Literal["chunk", "complete"] = "complete",
-            ) -> None:
+            def _persist_oi_task(task: OpenInterestFetchTaskDTO, rows: list[OpenInterestPoint]) -> None:
                 if not rows:
                     return
                 storage_result = persist_loader_outputs_dto(
@@ -547,30 +564,16 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                     save_tsdb_fn=save_market_data_to_timescaledb,
                 )
                 incremental_parquet_files.extend(storage_result.parquet_files)
-                months = sorted(
-                    {
-                        month
-                        for month in (_extract_date_partition(path) for path in storage_result.parquet_files)
-                        if month is not None
-                    }
-                )
-                logger.info(
-                    "Incremental parquet flush phase=%s type=oi exchange=%s symbol=%s "
-                    "timeframe=%s rows=%s files=%s months=%s",
-                    phase,
-                    task.exchange,
-                    task.symbol,
-                    task.timeframe,
-                    len(rows),
-                    len(storage_result.parquet_files),
-                    ",".join(months) if months else "unknown",
+                _log_new_monthly_partitions(
+                    data_type="oi",
+                    exchange=task.exchange,
+                    market="perp",
+                    symbol=task.symbol,
+                    timeframe=task.timeframe,
+                    parquet_files=storage_result.parquet_files,
                 )
 
-            def _persist_funding_task(
-                task: FundingFetchTaskDTO,
-                rows: list[FundingPoint],
-                phase: Literal["chunk", "complete"] = "complete",
-            ) -> None:
+            def _persist_funding_task(task: FundingFetchTaskDTO, rows: list[FundingPoint]) -> None:
                 if not rows:
                     return
                 storage_result = persist_loader_outputs_dto(
@@ -587,42 +590,32 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                     save_tsdb_fn=save_market_data_to_timescaledb,
                 )
                 incremental_parquet_files.extend(storage_result.parquet_files)
-                months = sorted(
-                    {
-                        month
-                        for month in (_extract_date_partition(path) for path in storage_result.parquet_files)
-                        if month is not None
-                    }
-                )
-                logger.info(
-                    "Incremental parquet flush phase=%s type=funding exchange=%s symbol=%s "
-                    "timeframe=%s rows=%s files=%s months=%s",
-                    phase,
-                    task.exchange,
-                    task.symbol,
-                    task.timeframe,
-                    len(rows),
-                    len(storage_result.parquet_files),
-                    ",".join(months) if months else "unknown",
+                _log_new_monthly_partitions(
+                    data_type="funding",
+                    exchange=task.exchange,
+                    market="perp",
+                    symbol=task.symbol,
+                    timeframe=task.timeframe,
+                    parquet_files=storage_result.parquet_files,
                 )
 
             def _persist_candle_chunk(task: CandleFetchTaskDTO, rows: list[SpotCandle]) -> None:
                 if not rows:
                     return
                 streamed_candle_tasks.add((task.exchange, task.market, task.symbol, task.timeframe))
-                _persist_candle_task(task, rows, phase="chunk")
+                _persist_candle_task(task, rows)
 
             def _persist_oi_chunk(task: OpenInterestFetchTaskDTO, rows: list[OpenInterestPoint]) -> None:
                 if not rows:
                     return
                 streamed_oi_tasks.add((task.exchange, task.symbol, task.timeframe))
-                _persist_oi_task(task, rows, phase="chunk")
+                _persist_oi_task(task, rows)
 
             def _persist_funding_chunk(task: FundingFetchTaskDTO, rows: list[FundingPoint]) -> None:
                 if not rows:
                     return
                 streamed_funding_tasks.add((task.exchange, task.symbol, task.timeframe))
-                _persist_funding_task(task, rows, phase="chunk")
+                _persist_funding_task(task, rows)
 
             task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors = asyncio.run(
                 _fetch_all_task_groups(

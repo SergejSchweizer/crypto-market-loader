@@ -8,7 +8,6 @@ import os
 from collections.abc import Callable
 from datetime import datetime
 
-from application.schema import dataset_contract
 from application.dto import (
     CandleFetchResultDTO,
     CandleFetchTaskDTO,
@@ -17,6 +16,7 @@ from application.dto import (
     OpenInterestFetchResultDTO,
     OpenInterestFetchTaskDTO,
 )
+from application.schema import dataset_contract
 from application.services.gapfill_service import _last_closed_open_ms, _missing_ranges_ms
 from ingestion.funding import (
     FundingPoint,
@@ -393,7 +393,7 @@ async def fetch_candle_tasks_parallel(
     task_results: dict[tuple[Exchange, Market, str, str], list[SpotCandle]] = {}
     task_errors: dict[tuple[Exchange, Market, str, str], str] = {}
     for idx, task in enumerate(tasks, start=1):
-        logger.info(
+        logger.debug(
             "Fetch start [%s/%s] exchange=%s market=%s symbol=%s timeframe=%s mode=%s",
             idx,
             total_tasks,
@@ -438,7 +438,7 @@ async def fetch_candle_tasks_parallel(
                     if task_timeout_s is not None
                     else await fetch_call
                 )
-            logger.info(
+            logger.debug(
                 "Fetch complete [%s/%s] exchange=%s market=%s symbol=%s timeframe=%s candles=%s",
                 idx,
                 total_tasks,
@@ -481,7 +481,7 @@ async def fetch_open_interest_tasks_parallel(
     task_results: dict[tuple[Exchange, str, str], list[OpenInterestPoint]] = {}
     task_errors: dict[tuple[Exchange, str, str], str] = {}
     for idx, task in enumerate(tasks, start=1):
-        logger.info(
+        logger.debug(
             "OI fetch start [%s/%s] exchange=%s market=oi symbol=%s timeframe=%s mode=%s",
             idx,
             total_tasks,
@@ -525,7 +525,7 @@ async def fetch_open_interest_tasks_parallel(
                     if task_timeout_s is not None
                     else await fetch_call
                 )
-            logger.info(
+            logger.debug(
                 "OI fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",
                 idx,
                 total_tasks,
@@ -566,7 +566,7 @@ async def fetch_funding_tasks_parallel(
     task_results: dict[tuple[Exchange, str, str], list[FundingPoint]] = {}
     task_errors: dict[tuple[Exchange, str, str], str] = {}
     for idx, task in enumerate(tasks, start=1):
-        logger.info(
+        logger.debug(
             "Funding fetch start [%s/%s] exchange=%s market=funding symbol=%s timeframe=%s mode=%s",
             idx,
             total_tasks,
@@ -610,7 +610,7 @@ async def fetch_funding_tasks_parallel(
                     if task_timeout_s is not None
                     else await fetch_call
                 )
-            logger.info(
+            logger.debug(
                 "Funding fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",
                 idx,
                 total_tasks,
