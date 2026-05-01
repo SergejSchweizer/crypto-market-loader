@@ -5,21 +5,30 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from ingestion.http_client import get_json
+from ingestion.http_client import HttpClientHttpError, get_json
 
 DERIBIT_LAST_SETTLEMENTS_URL = "https://www.deribit.com/api/v2/public/get_last_settlements_by_instrument"
 DERIBIT_MAX_POINTS_PER_REQUEST = 1000
+
+
+def _normalize_open_interest_instrument(symbol: str) -> str:
+    """Map normalized perp symbols to Deribit OI endpoint instrument names."""
+
+    if symbol == "SOL-PERPETUAL":
+        return "SOL_USDC-PERPETUAL"
+    return symbol
 
 
 def fetch_open_interest_all(symbol: str, period: str) -> list[dict[str, object]]:
     """Fetch all available Deribit historical open-interest points."""
 
     del period
+    instrument_name = _normalize_open_interest_instrument(symbol)
     continuation: str | None = None
     pages: list[list[dict[str, object]]] = []
 
     while True:
-        page, next_continuation = _fetch_open_interest_page(symbol=symbol, continuation=continuation)
+        page, next_continuation = _fetch_open_interest_page(symbol=instrument_name, continuation=continuation)
         if not page:
             break
         pages.append(page)
@@ -46,10 +55,11 @@ def fetch_open_interest_range(
         return []
 
     del period
+    instrument_name = _normalize_open_interest_instrument(symbol)
     continuation: str | None = None
     rows: list[dict[str, object]] = []
     while True:
-        page, next_continuation = _fetch_open_interest_page(symbol=symbol, continuation=continuation)
+        page, next_continuation = _fetch_open_interest_page(symbol=instrument_name, continuation=continuation)
         if not page:
             break
         rows.extend(
@@ -111,7 +121,13 @@ def _fetch_open_interest_page(symbol: str, continuation: str | None) -> tuple[li
     if continuation:
         params["continuation"] = continuation
 
-    payload = get_json(DERIBIT_LAST_SETTLEMENTS_URL, params=params)
+    try:
+        payload = get_json(DERIBIT_LAST_SETTLEMENTS_URL, params=params)
+    except HttpClientHttpError as exc:
+        if exc.status_code == 400:
+            # Some instruments are not supported by this endpoint. Treat as no data.
+            return [], None
+        raise
     if not isinstance(payload, dict):
         raise ValueError("Unexpected Deribit open-interest response format")
 

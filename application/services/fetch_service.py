@@ -353,10 +353,11 @@ async def fetch_candle_tasks_parallel(
     concurrency: int,
     logger: logging.Logger,
     symbol_fetcher: Callable[..., list[SpotCandle]] = fetch_symbol_candles,
+    shared_semaphore: asyncio.Semaphore | None = None,
 ) -> CandleFetchResultDTO:
     """Fetch OHLCV tasks concurrently with bounded parallelism."""
 
-    semaphore = asyncio.Semaphore(max(1, concurrency))
+    semaphore = shared_semaphore or asyncio.Semaphore(max(1, concurrency))
     total_tasks = len(tasks)
 
     async def _worker(
@@ -422,10 +423,11 @@ async def fetch_open_interest_tasks_parallel(
     concurrency: int,
     logger: logging.Logger,
     symbol_fetcher: Callable[..., list[OpenInterestPoint]] = fetch_symbol_open_interest,
+    shared_semaphore: asyncio.Semaphore | None = None,
 ) -> OpenInterestFetchResultDTO:
     """Fetch open-interest tasks concurrently with bounded parallelism."""
 
-    semaphore = asyncio.Semaphore(max(1, concurrency))
+    semaphore = shared_semaphore or asyncio.Semaphore(max(1, concurrency))
     total_tasks = len(tasks)
 
     async def _worker(
@@ -488,10 +490,11 @@ async def fetch_funding_tasks_parallel(
     concurrency: int,
     logger: logging.Logger,
     symbol_fetcher: Callable[..., list[FundingPoint]] = fetch_symbol_funding,
+    shared_semaphore: asyncio.Semaphore | None = None,
 ) -> FundingFetchResultDTO:
     """Fetch funding tasks concurrently with bounded parallelism."""
 
-    semaphore = asyncio.Semaphore(max(1, concurrency))
+    semaphore = shared_semaphore or asyncio.Semaphore(max(1, concurrency))
     total_tasks = len(tasks)
 
     async def _worker(

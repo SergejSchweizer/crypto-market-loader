@@ -68,6 +68,7 @@ from ingestion.spot import (
 
 DataType = Literal["spot", "perp", "oi", "funding"]
 MAX_LOADER_TASK_CONCURRENCY = 2
+MAX_GLOBAL_QUERY_CONCURRENCY = 2
 _ALLOWED_TIMEFRAME_VALUES = {"1m", "m1"}
 _TAIL_DELTA_ONLY = True
 
@@ -266,7 +267,11 @@ def _fetch_symbol_funding(
 
 
 async def _fetch_candle_tasks_parallel(
-    tasks: list[tuple[Exchange, Market, str, str]], lake_root: str, concurrency: int, logger: logging.Logger
+    tasks: list[tuple[Exchange, Market, str, str]],
+    lake_root: str,
+    concurrency: int,
+    logger: logging.Logger,
+    shared_semaphore: asyncio.Semaphore | None = None,
 ) -> tuple[dict[tuple[Exchange, Market, str, str], list[SpotCandle]], dict[tuple[Exchange, Market, str, str], str]]:
     service_tasks = [
         CandleFetchTaskDTO(exchange=exchange, market=market, symbol=symbol, timeframe=timeframe)
@@ -278,12 +283,17 @@ async def _fetch_candle_tasks_parallel(
         concurrency=concurrency,
         logger=logger,
         symbol_fetcher=_fetch_symbol_candles,
+        shared_semaphore=shared_semaphore,
     )
     return result.rows, result.errors
 
 
 async def _fetch_open_interest_tasks_parallel(
-    oi_tasks: list[tuple[Exchange, str, str]], lake_root: str, concurrency: int, logger: logging.Logger
+    oi_tasks: list[tuple[Exchange, str, str]],
+    lake_root: str,
+    concurrency: int,
+    logger: logging.Logger,
+    shared_semaphore: asyncio.Semaphore | None = None,
 ) -> tuple[dict[tuple[Exchange, str, str], list[OpenInterestPoint]], dict[tuple[Exchange, str, str], str]]:
     service_tasks = [
         OpenInterestFetchTaskDTO(exchange=exchange, symbol=symbol, timeframe=timeframe)
@@ -295,12 +305,17 @@ async def _fetch_open_interest_tasks_parallel(
         concurrency=concurrency,
         logger=logger,
         symbol_fetcher=_fetch_symbol_open_interest,
+        shared_semaphore=shared_semaphore,
     )
     return result.rows, result.errors
 
 
 async def _fetch_funding_tasks_parallel(
-    funding_tasks: list[tuple[Exchange, str, str]], lake_root: str, concurrency: int, logger: logging.Logger
+    funding_tasks: list[tuple[Exchange, str, str]],
+    lake_root: str,
+    concurrency: int,
+    logger: logging.Logger,
+    shared_semaphore: asyncio.Semaphore | None = None,
 ) -> tuple[dict[tuple[Exchange, str, str], list[FundingPoint]], dict[tuple[Exchange, str, str], str]]:
     service_tasks = [
         FundingFetchTaskDTO(exchange=exchange, symbol=symbol, timeframe=timeframe)
@@ -312,6 +327,7 @@ async def _fetch_funding_tasks_parallel(
         concurrency=concurrency,
         logger=logger,
         symbol_fetcher=_fetch_symbol_funding,
+        shared_semaphore=shared_semaphore,
     )
     return result.rows, result.errors
 
@@ -335,11 +351,15 @@ async def _fetch_all_task_groups(
 ]:
     """Fetch OHLCV, OI, and funding task groups concurrently."""
 
+    max_global_queries = _env_concurrency("LOADER_GLOBAL_QUERY_CONCURRENCY", MAX_GLOBAL_QUERY_CONCURRENCY)
+    shared_semaphore = asyncio.Semaphore(max(1, max_global_queries))
+
     candle_job = _fetch_candle_tasks_parallel(
         tasks=tasks,
         lake_root=lake_root,
         concurrency=candle_concurrency,
         logger=logger,
+        shared_semaphore=shared_semaphore,
     )
     oi_job = (
         _fetch_open_interest_tasks_parallel(
@@ -347,6 +367,7 @@ async def _fetch_all_task_groups(
             lake_root=lake_root,
             concurrency=oi_concurrency,
             logger=logger,
+            shared_semaphore=shared_semaphore,
         )
         if oi_tasks
         else asyncio.sleep(0, result=({}, {}))
@@ -357,6 +378,7 @@ async def _fetch_all_task_groups(
             lake_root=lake_root,
             concurrency=funding_concurrency,
             logger=logger,
+            shared_semaphore=shared_semaphore,
         )
         if funding_tasks
         else asyncio.sleep(0, result=({}, {}))
@@ -446,11 +468,12 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
             oi_concurrency = _env_concurrency("LOADER_OI_CONCURRENCY", base_concurrency)
             funding_concurrency = _env_concurrency("LOADER_FUNDING_CONCURRENCY", base_concurrency)
             logger.info(
-                "Parallel fetch enabled with asyncio concurrency ohlcv=%s oi=%s funding=%s base=%s",
+                "Parallel fetch enabled with asyncio concurrency ohlcv=%s oi=%s funding=%s base=%s global_max=%s",
                 candle_concurrency,
                 oi_concurrency,
                 funding_concurrency,
                 base_concurrency,
+                _env_concurrency("LOADER_GLOBAL_QUERY_CONCURRENCY", MAX_GLOBAL_QUERY_CONCURRENCY),
             )
             task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors = asyncio.run(
                 _fetch_all_task_groups(

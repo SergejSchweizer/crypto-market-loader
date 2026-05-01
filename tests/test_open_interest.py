@@ -8,6 +8,7 @@ import pytest
 
 from ingestion import open_interest as oi
 from ingestion.exchanges import deribit_open_interest
+from ingestion.http_client import HttpClientHttpError
 
 
 def test_normalize_open_interest_timeframe_deribit() -> None:
@@ -56,3 +57,41 @@ def test_fetch_open_interest_range_deribit_historical(monkeypatch: pytest.Monkey
     assert len(rows) == 1
     assert rows[0].exchange == "deribit"
     assert rows[0].open_interest == 1000.0
+
+
+def test_fetch_open_interest_all_returns_empty_on_http_400(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise_http_400(url: str, params: dict[str, object] | None = None, **kwargs: object) -> object:
+        del url, params, kwargs
+        raise HttpClientHttpError("HTTP error 400 for test", status_code=400, retryable=False)
+
+    monkeypatch.setattr(deribit_open_interest, "get_json", _raise_http_400)
+
+    rows = oi.fetch_open_interest_all_history(
+        exchange="deribit",
+        symbol="SOL",
+        interval="1m",
+        market="perp",
+    )
+    assert rows == []
+
+
+def test_fetch_open_interest_all_maps_sol_to_usdc_perpetual(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: list[str] = []
+
+    def _fake_get_json(url: str, params: dict[str, object] | None = None, **kwargs: object) -> object:
+        del url, kwargs
+        assert params is not None
+        captured.append(str(params["instrument_name"]))
+        return {"result": {"settlements": []}}
+
+    monkeypatch.setattr(deribit_open_interest, "get_json", _fake_get_json)
+
+    rows = oi.fetch_open_interest_all_history(
+        exchange="deribit",
+        symbol="SOL",
+        interval="1m",
+        market="perp",
+    )
+
+    assert rows == []
+    assert captured == ["SOL_USDC-PERPETUAL"]

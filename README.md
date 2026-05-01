@@ -353,14 +353,27 @@ dataset_type=funding/
     data.parquet
 ```
 
-Loader mode is automatic:
-- Only two modes exist:
-  1. `fetch all history` when no parquet data exists for the symbol/timeframe.
-  2. `fill gaps` when parquet data exists (internal gaps + tail to latest closed candle).
-- If no parquet data exists for a symbol/timeframe, it fetches full available exchange history.
-- If parquet data exists, it performs gap-fill (internal gaps + tail to latest closed candle).
-- Default fast delta mode: loader runs with tail-delta-only behavior and skips historical internal gap checks, fetching only from the latest stored open_time forward.
-- Use `--full-gap-fill` to disable tail-delta-only and run full internal gap checks.
+### 6.7 Loader Delta Behavior (Default)
+
+The loader is delta-first by default on every run:
+- Default mode is `--tail-delta-only` (enabled by default).
+- If parquet data already exists for a symbol/timeframe, loader fetches only from `latest_stored_open_time + 1 interval` forward.
+- If no parquet data exists for a symbol/timeframe, loader performs an initial full-history bootstrap for that series.
+- Use `--full-gap-fill` when you want historical internal gap checks in addition to tail updates.
+
+### 6.8 Dataset Time Ranges
+
+All ingestion runs are `1m` timeframe only. Effective time-range coverage by dataset:
+
+| Dataset | Exchange Endpoint | Historical Start | Historical End | Notes |
+|---|---|---|---|---|
+| `spot` | `public/get_tradingview_chart_data` | Earliest data available from Deribit for instrument | Latest closed candle at run time | First run bootstraps full history; later runs fetch tail delta by default. |
+| `perp` | `public/get_tradingview_chart_data` | Earliest data available from Deribit for instrument | Latest closed candle at run time | Same bootstrap/delta behavior as `spot`. |
+| `oi` | `public/get_last_settlements_by_instrument` | Earliest settlement/OI records available from Deribit for instrument | Latest available settlement/OI record at run time | SOL OI uses `SOL_USDC-PERPETUAL` mapping on this endpoint. |
+| `funding` | `public/get_funding_rate_history` | **2019-01-01 00:00:00 UTC** (hardcoded lower bound) | Current run time | Range is explicitly bounded in code from 2019-01-01 to now. |
+
+Practical note:
+- The exact stored range in your lake depends on what has already been ingested for each `(exchange, symbol, dataset, timeframe)` series.
 
 Example full-history bootstrap (first run can be long-running):
 
@@ -372,7 +385,8 @@ Note:
 - Loader network fetch tasks run in parallel via `asyncio` with bounded concurrency.
 - Parallel fetch orchestration is implemented in `application/services/fetch_service.py`; `api/cli.py` delegates to this service.
 - Parquet partition writes are parallelized.
-- Concurrency is controlled by `DEPTH_FETCH_CONCURRENCY` (default: `2`).
+- Global concurrent exchange queries are capped by `LOADER_GLOBAL_QUERY_CONCURRENCY` (default: `2`).
+- Per-stream caps (`ohlcv`, `oi`, `funding`) are also bounded and cannot exceed the global cap.
 
 Run silently without JSON output:
 

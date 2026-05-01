@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import time
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -13,6 +14,15 @@ from urllib.request import urlopen
 
 class HttpClientError(RuntimeError):
     """Raised when HTTP requests fail."""
+
+
+class HttpClientHttpError(HttpClientError):
+    """Raised when HTTP responses are non-successful."""
+
+    def __init__(self, message: str, *, status_code: int, retryable: bool) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.retryable = retryable
 
 
 def _env_float(name: str, default: float) -> float:
@@ -42,9 +52,11 @@ def _env_int(name: str, default: int) -> int:
 
 
 def _retry_sleep(attempt: int, backoff_s: float) -> None:
-    """Sleep with exponential backoff based on retry attempt index."""
+    """Sleep with exponential backoff and light jitter."""
 
-    time.sleep(backoff_s * (2**attempt))
+    base_delay = backoff_s * (2**attempt)
+    jitter = random.uniform(0.0, backoff_s)
+    time.sleep(base_delay + jitter)
 
 
 def _is_retryable_http_error(exc: HTTPError) -> bool:
@@ -91,7 +103,11 @@ def get_json(
             if _is_retryable_http_error(exc) and attempt < retries:
                 _retry_sleep(attempt=attempt, backoff_s=backoff)
                 continue
-            raise HttpClientError(f"HTTP error {exc.code} for {request_url}") from exc
+            raise HttpClientHttpError(
+                f"HTTP error {exc.code} for {request_url}",
+                status_code=exc.code,
+                retryable=_is_retryable_http_error(exc),
+            ) from exc
         except URLError as exc:
             if attempt < retries:
                 _retry_sleep(attempt=attempt, backoff_s=backoff)

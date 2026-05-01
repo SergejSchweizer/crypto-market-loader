@@ -8,7 +8,7 @@ from urllib.error import HTTPError, URLError
 import pytest
 
 from ingestion import http_client
-from ingestion.http_client import HttpClientError, get_json
+from ingestion.http_client import HttpClientError, HttpClientHttpError, get_json
 
 
 class _FakeResponse:
@@ -77,3 +77,18 @@ def test_get_json_does_not_retry_on_http_400(monkeypatch: pytest.MonkeyPatch) ->
     with pytest.raises(HttpClientError, match="HTTP error 400"):
         get_json("https://example.com", max_retries=3, retry_backoff_s=0.0)
     assert calls["count"] == 1
+
+
+def test_get_json_raises_typed_http_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_urlopen(url: str, timeout: float) -> _FakeResponse:
+        del timeout
+        raise HTTPError(url=url, code=503, msg="unavailable", hdrs=Message(), fp=None)
+
+    monkeypatch.setattr(http_client, "urlopen", fake_urlopen)
+    monkeypatch.setattr(http_client, "_retry_sleep", lambda attempt, backoff_s: None)
+
+    with pytest.raises(HttpClientHttpError) as exc_info:
+        get_json("https://example.com", max_retries=0, retry_backoff_s=0.0)
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.retryable is True
