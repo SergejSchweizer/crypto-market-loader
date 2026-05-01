@@ -15,7 +15,8 @@ from ingestion.lake import candle_record, funding_record, open_interest_record
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import Market, SpotCandle
 
-OhlcvTableName = "ohlcv"
+SpotTableName = "spot"
+PerpTableName = "perp"
 OpenInterestTableName = "open_interest"
 FundingTableName = "funding"
 WatermarkTableName = "ingest_watermarks"
@@ -191,7 +192,7 @@ def _build_ohlcv_db_row(row: dict[str, object]) -> dict[str, object]:
         "quote_volume": row.get("quote_volume"),
         "trade_count": row.get("trade_count"),
         "schema_version": row.get("schema_version", "v1"),
-        "dataset_type": row.get("dataset_type", "ohlcv"),
+        "dataset_type": row.get("dataset_type", "spot"),
         "event_time": row.get("event_time", row.get("open_time")),
         "ingested_at": row.get("ingested_at"),
         "run_id": row.get("run_id", "unknown"),
@@ -351,9 +352,10 @@ def _create_schema_and_tables(conn: Any, schema: str) -> None:
         cur.execute(f"CREATE SCHEMA IF NOT EXISTS {safe_schema};")
         cur.execute("CREATE EXTENSION IF NOT EXISTS timescaledb;")
 
-        cur.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {safe_schema}.{OhlcvTableName} (
+        for table_name in (SpotTableName, PerpTableName):
+            cur.execute(
+                f"""
+            CREATE TABLE IF NOT EXISTS {safe_schema}.{table_name} (
                 exchange TEXT NOT NULL,
                 symbol TEXT NOT NULL,
                 instrument_type TEXT NOT NULL,
@@ -377,22 +379,22 @@ def _create_schema_and_tables(conn: Any, schema: str) -> None:
                 PRIMARY KEY (exchange, instrument_type, symbol, timeframe, open_time)
             );
             """
-        )
-        cur.execute(
-            f"""
+            )
+            cur.execute(
+                f"""
             SELECT create_hypertable(
-                '{safe_schema}.{OhlcvTableName}',
+                '{safe_schema}.{table_name}',
                 'open_time',
                 if_not_exists => TRUE
             );
             """
-        )
-        cur.execute(
-            f"""
-            CREATE INDEX IF NOT EXISTS idx_{OhlcvTableName}_symbol_time
-            ON {safe_schema}.{OhlcvTableName} (exchange, symbol, timeframe, open_time DESC);
+            )
+            cur.execute(
+                f"""
+            CREATE INDEX IF NOT EXISTS idx_{table_name}_symbol_time
+            ON {safe_schema}.{table_name} (exchange, symbol, timeframe, open_time DESC);
             """
-        )
+            )
 
         cur.execute(
             f"""
@@ -573,8 +575,8 @@ def _upsert_ingest_watermarks(
         cur.executemany(sql, payload)
 
 
-def _upsert_ohlcv(conn: Any, schema: str, rows: list[dict[str, object]]) -> int:
-    """Upsert OHLCV rows into TimescaleDB."""
+def _upsert_candles(conn: Any, schema: str, rows: list[dict[str, object]], table_name: str) -> int:
+    """Upsert candle rows into one TimescaleDB table."""
 
     if not rows:
         return 0
@@ -585,8 +587,9 @@ def _upsert_ohlcv(conn: Any, schema: str, rows: list[dict[str, object]]) -> int:
         raise RuntimeError("psycopg is required for TimescaleDB output. Install project dependencies.") from exc
 
     safe_schema = _validate_sql_identifier(value=schema, kind="schema")
+    safe_table = _validate_sql_identifier(value=table_name, kind="table")
     sql = f"""
-        INSERT INTO {safe_schema}.{OhlcvTableName} (
+        INSERT INTO {safe_schema}.{safe_table} (
             exchange, symbol, instrument_type, timeframe, open_time, close_time,
             open, high, low, close, volume, quote_volume, trade_count,
             schema_version, dataset_type, event_time, ingested_at, run_id,
@@ -712,16 +715,19 @@ def save_market_data_to_timescaledb(
     run_id = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
     ingested_at = datetime.now(UTC)
 
-    ohlcv_rows: list[dict[str, object]] = []
+    spot_rows: list[dict[str, object]] = []
+    perp_rows: list[dict[str, object]] = []
     for market, candle_by_exchange in candles_for_storage.items():
         for candle_by_symbol in candle_by_exchange.values():
             for candles in candle_by_symbol.values():
-                ohlcv_rows.extend(
-                    [
-                        candle_record(candle=item, market=market, run_id=run_id, ingested_at=ingested_at)
-                        for item in candles
-                    ]
-                )
+                rows = [
+                    candle_record(candle=item, market=market, run_id=run_id, ingested_at=ingested_at)
+                    for item in candles
+                ]
+                if market == "spot":
+                    spot_rows.extend(rows)
+                else:
+                    perp_rows.extend(rows)
 
     oi_rows: list[dict[str, object]] = []
     for market, oi_by_exchange in open_interest_for_storage.items():
@@ -750,13 +756,16 @@ def save_market_data_to_timescaledb(
         with conn.transaction():
             if create_schema:
                 _create_schema_and_tables(conn=conn, schema=safe_schema)
-            ohlcv_count = _upsert_ohlcv(conn=conn, schema=safe_schema, rows=ohlcv_rows)
+            spot_count = _upsert_candles(conn=conn, schema=safe_schema, rows=spot_rows, table_name=SpotTableName)
+            perp_count = _upsert_candles(conn=conn, schema=safe_schema, rows=perp_rows, table_name=PerpTableName)
             oi_count = _upsert_open_interest(conn=conn, schema=safe_schema, rows=oi_rows)
             funding_count = _upsert_funding(conn=conn, schema=safe_schema, rows=funding_rows)
 
     return {
         "schema": safe_schema,
-        "ohlcv_rows": ohlcv_count,
+        "spot_rows": spot_count,
+        "perp_rows": perp_count,
+        "ohlcv_rows": spot_count + perp_count,
         "oi_rows": oi_count,
         "funding_rows": funding_count,
     }
@@ -807,19 +816,15 @@ def save_parquet_lake_to_timescaledb(
             return False
         return True
 
-    all_ohlcv_files = sorted(
-        [
-            *_iter_matching_parquet_files(
-                lake_root=lake_root,
-                glob_pattern="dataset_type=spot/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
-                allow_partition=_allow,
-            ),
-            *_iter_matching_parquet_files(
-                lake_root=lake_root,
-                glob_pattern="dataset_type=perp/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
-                allow_partition=_allow,
-            ),
-        ]
+    all_spot_files = _iter_matching_parquet_files(
+        lake_root=lake_root,
+        glob_pattern="dataset_type=spot/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
+        allow_partition=_allow,
+    )
+    all_perp_files = _iter_matching_parquet_files(
+        lake_root=lake_root,
+        glob_pattern="dataset_type=perp/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet",
+        allow_partition=_allow,
     )
     all_oi_files = _iter_matching_parquet_files(
         lake_root=lake_root,
@@ -839,14 +844,6 @@ def save_parquet_lake_to_timescaledb(
                 _create_schema_and_tables(conn=conn, schema=safe_schema)
             spot_latest_by_key = _load_latest_open_time_by_key(conn=conn, schema=safe_schema, dataset_type="spot")
             perp_latest_by_key = _load_latest_open_time_by_key(conn=conn, schema=safe_schema, dataset_type="perp")
-            ohlcv_latest_by_key: dict[SeriesKey, datetime] = {}
-            for series_key, value in {
-                **spot_latest_by_key,
-                **perp_latest_by_key,
-            }.items():
-                previous = ohlcv_latest_by_key.get(series_key)
-                if previous is None or value > previous:
-                    ohlcv_latest_by_key[series_key] = value
             oi_latest_by_key = _load_latest_open_time_by_key(
                 conn=conn,
                 schema=safe_schema,
@@ -858,20 +855,32 @@ def save_parquet_lake_to_timescaledb(
                 dataset_type="funding",
             )
 
-    ohlcv_files = _filter_files_by_watermark_month(all_ohlcv_files, ohlcv_latest_by_key)
+    spot_files = _filter_files_by_watermark_month(all_spot_files, spot_latest_by_key)
+    perp_files = _filter_files_by_watermark_month(all_perp_files, perp_latest_by_key)
     oi_files = _filter_files_by_watermark_month(all_oi_files, oi_latest_by_key)
     funding_files = _filter_files_by_watermark_month(all_funding_files, funding_latest_by_key)
 
     if ingest_workers <= 1:
-        ohlcv_count, ohlcv_scanned, ohlcv_skipped, ohlcv_watermarks = _upsert_rows_from_parquet_files(
+        spot_count, spot_scanned, spot_skipped, spot_watermarks = _upsert_rows_from_parquet_files(
             settings=settings,
             schema=safe_schema,
-            parquet_files=ohlcv_files,
+            parquet_files=spot_files,
             batch_size=parquet_batch_size,
             write_batch_size=write_batch_size,
             row_builder=_build_ohlcv_db_row,
-            upsert_fn=_upsert_ohlcv,
-            max_open_time_by_series=ohlcv_latest_by_key,
+            upsert_fn=lambda conn, schema, rows: _upsert_candles(conn, schema, rows, SpotTableName),
+            max_open_time_by_series=spot_latest_by_key,
+            progress_callback=progress_callback,
+        )
+        perp_count, perp_scanned, perp_skipped, perp_watermarks = _upsert_rows_from_parquet_files(
+            settings=settings,
+            schema=safe_schema,
+            parquet_files=perp_files,
+            batch_size=parquet_batch_size,
+            write_batch_size=write_batch_size,
+            row_builder=_build_ohlcv_db_row,
+            upsert_fn=lambda conn, schema, rows: _upsert_candles(conn, schema, rows, PerpTableName),
+            max_open_time_by_series=perp_latest_by_key,
             progress_callback=progress_callback,
         )
         oi_count, oi_scanned, oi_skipped, oi_watermarks = _upsert_rows_from_parquet_files(
@@ -898,16 +907,28 @@ def save_parquet_lake_to_timescaledb(
         )
     else:
         with ThreadPoolExecutor(max_workers=min(ingest_workers, 3)) as pool:
-            ohlcv_future = pool.submit(
+            spot_future = pool.submit(
                 _upsert_rows_from_parquet_files,
                 settings=settings,
                 schema=safe_schema,
-                parquet_files=ohlcv_files,
+                parquet_files=spot_files,
                 batch_size=parquet_batch_size,
                 write_batch_size=write_batch_size,
                 row_builder=_build_ohlcv_db_row,
-                upsert_fn=_upsert_ohlcv,
-                max_open_time_by_series=ohlcv_latest_by_key,
+                upsert_fn=lambda conn, schema, rows: _upsert_candles(conn, schema, rows, SpotTableName),
+                max_open_time_by_series=spot_latest_by_key,
+                progress_callback=progress_callback,
+            )
+            perp_future = pool.submit(
+                _upsert_rows_from_parquet_files,
+                settings=settings,
+                schema=safe_schema,
+                parquet_files=perp_files,
+                batch_size=parquet_batch_size,
+                write_batch_size=write_batch_size,
+                row_builder=_build_ohlcv_db_row,
+                upsert_fn=lambda conn, schema, rows: _upsert_candles(conn, schema, rows, PerpTableName),
+                max_open_time_by_series=perp_latest_by_key,
                 progress_callback=progress_callback,
             )
             oi_future = pool.submit(
@@ -934,7 +955,8 @@ def save_parquet_lake_to_timescaledb(
                 max_open_time_by_series=funding_latest_by_key,
                 progress_callback=progress_callback,
             )
-            ohlcv_count, ohlcv_scanned, ohlcv_skipped, ohlcv_watermarks = ohlcv_future.result()
+            spot_count, spot_scanned, spot_skipped, spot_watermarks = spot_future.result()
+            perp_count, perp_scanned, perp_skipped, perp_watermarks = perp_future.result()
             oi_count, oi_scanned, oi_skipped, oi_watermarks = oi_future.result()
             funding_count, funding_scanned, funding_skipped, funding_watermarks = funding_future.result()
 
@@ -944,13 +966,13 @@ def save_parquet_lake_to_timescaledb(
                 conn=conn,
                 schema=safe_schema,
                 dataset_type="spot",
-                watermark_by_series=ohlcv_watermarks,
+                watermark_by_series=spot_watermarks,
             )
             _upsert_ingest_watermarks(
                 conn=conn,
                 schema=safe_schema,
                 dataset_type="perp",
-                watermark_by_series=ohlcv_watermarks,
+                watermark_by_series=perp_watermarks,
             )
             _upsert_ingest_watermarks(
                 conn=conn,
@@ -967,16 +989,24 @@ def save_parquet_lake_to_timescaledb(
 
     return {
         "schema": safe_schema,
-        "ohlcv_rows": ohlcv_count,
+        "spot_rows": spot_count,
+        "perp_rows": perp_count,
+        "ohlcv_rows": spot_count + perp_count,
         "oi_rows": oi_count,
         "funding_rows": funding_count,
-        "ohlcv_files": len(ohlcv_files),
+        "spot_files": len(spot_files),
+        "perp_files": len(perp_files),
+        "ohlcv_files": len(spot_files) + len(perp_files),
         "oi_files": len(oi_files),
         "funding_files": len(funding_files),
-        "ohlcv_scanned_rows": ohlcv_scanned,
+        "spot_scanned_rows": spot_scanned,
+        "perp_scanned_rows": perp_scanned,
+        "ohlcv_scanned_rows": spot_scanned + perp_scanned,
         "oi_scanned_rows": oi_scanned,
         "funding_scanned_rows": funding_scanned,
-        "ohlcv_skipped_rows": ohlcv_skipped,
+        "spot_skipped_rows": spot_skipped,
+        "perp_skipped_rows": perp_skipped,
+        "ohlcv_skipped_rows": spot_skipped + perp_skipped,
         "oi_skipped_rows": oi_skipped,
         "funding_skipped_rows": funding_skipped,
     }

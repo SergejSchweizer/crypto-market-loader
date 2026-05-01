@@ -94,6 +94,8 @@ CLI -> Application Service Layer (gapfill_service, fetch_service)
 
 Storage and artifact side effects are also routed through dedicated services (`storage_service`, `artifact_service`) to keep CLI logic thin and testable. Canonical CLI-to-storage naming (`spot`/`perp`/`funding` direct + `oi -> dataset_type=oi_m1_feature`) is formalized in `application/schema.py`.
 
+TimescaleDB persistence uses separated dataset tables: `spot` and `perp` for candle rows, plus `open_interest` and `funding` for derivative features/rates; delta ingest state is tracked in `ingest_watermarks`.
+
 ### Core Mapping
 For each candle index \(t\):
 
@@ -160,7 +162,7 @@ No predictive or regime models are trained in this stage.
 | Incremental parquet persistence | Partition merge + natural-key dedup | Passed with idempotent key policy |
 | Service-layer fetch orchestration tests | Sequential success/error isolation | Passed (`tests/test_fetch_service.py`) |
 | Service-layer gap-fill utility tests | Closed-candle timestamp and missing-range logic | Passed (`tests/test_gapfill_service.py`) |
-| Service-layer storage orchestration tests | Parquet + Timescale side-effect routing | Passed (`tests/test_storage_service.py`) |
+| Service-layer storage orchestration tests | Parquet + Timescale side-effect routing (spot/perp split tables) | Passed (`tests/test_storage_service.py`) |
 | Canonical schema contract tests | CLI datatype to storage contract mapping | Passed (`tests/test_schema_contract.py`) |
 | Loader sample artifacts | Per market/exchange/symbol/timeframe CSV + full-history plot | Passed with deterministic naming |
 | Chunked Timescale ingest | Streaming parquet read + bounded DB upsert batches | Passed with stable memory profile |

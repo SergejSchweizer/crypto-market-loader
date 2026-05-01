@@ -72,7 +72,7 @@ Tooling and test purpose:
 - `api/cli.py`: CLI command registration, argument parsing, orchestration entrypoint, and JSON output formatting.
 
 ### 5.4 Infrastructure Layer
-- `infra/timescaledb/sink.py`: TimescaleDB schema bootstrap and idempotent upsert sink for OHLCV/OI/funding.
+- `infra/timescaledb/sink.py`: TimescaleDB schema bootstrap and idempotent upsert sink with dedicated tables for `spot`, `perp`, `open_interest`, and `funding`.
 
 ### 5.0 Canonical Data Type Naming
 
@@ -321,6 +321,13 @@ python3 main.py loader --exchange deribit --market spot perp oi funding --symbol
 TimescaleDB bootstrap options:
 - Default behavior creates schema/tables/hypertables if missing.
 - Use `--timescaledb-no-bootstrap` to write into pre-existing schema objects only.
+
+TimescaleDB table layout:
+- `spot`: spot candle rows (`dataset_type=spot`).
+- `perp`: perp candle rows (`dataset_type=perp`).
+- `open_interest`: OI feature-grid rows (`dataset_type=oi_m1_feature`).
+- `funding`: funding rows (`dataset_type=funding`).
+- `ingest_watermarks`: per-series delta ingest state.
 
 Fetch OHLCV (spot+perp), open interest, and funding in one run:
 

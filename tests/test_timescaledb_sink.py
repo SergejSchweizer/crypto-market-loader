@@ -228,10 +228,12 @@ def test_loader_parquet_then_ingest_timescaledb_end_to_end(
     )
 
     assert summary["ohlcv_rows"] == 1
+    assert summary["spot_rows"] == 1
+    assert summary["perp_rows"] == 0
     assert summary["oi_rows"] == 1
     executed = state.get("executemany_sql")
     assert isinstance(executed, list)
-    assert any("market_data.ohlcv" in sql for sql in executed)
+    assert any("market_data.spot" in sql for sql in executed)
     assert any("market_data.open_interest" in sql for sql in executed)
 
 
@@ -249,7 +251,7 @@ def test_save_parquet_lake_to_timescaledb_parallel_workers(
         create_schema=True,
     )
 
-    assert cast(int, state.get("connect_calls", 0)) == 5
+    assert cast(int, state.get("connect_calls", 0)) == 6
 
 
 def test_save_parquet_lake_to_timescaledb_reports_ingest_progress(

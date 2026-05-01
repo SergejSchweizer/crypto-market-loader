@@ -77,16 +77,22 @@ def run_ingest_timescaledb(args: argparse.Namespace, logger: logging.Logger) -> 
     logger.info(
         (
             "Command complete: ingest-timescaledb "
-            "ohlcv_rows=%s oi_rows=%s funding_rows=%s "
-            "ohlcv_files=%s oi_files=%s funding_files=%s "
-            "ohlcv_skipped_rows=%s oi_skipped_rows=%s funding_skipped_rows=%s"
+            "spot_rows=%s perp_rows=%s ohlcv_rows=%s oi_rows=%s funding_rows=%s "
+            "spot_files=%s perp_files=%s ohlcv_files=%s oi_files=%s funding_files=%s "
+            "spot_skipped_rows=%s perp_skipped_rows=%s ohlcv_skipped_rows=%s oi_skipped_rows=%s funding_skipped_rows=%s"
         ),
+        summary.get("spot_rows", 0),
+        summary.get("perp_rows", 0),
         summary["ohlcv_rows"],
         summary["oi_rows"],
         summary["funding_rows"],
+        summary.get("spot_files", 0),
+        summary.get("perp_files", 0),
         summary.get("ohlcv_files", 0),
         summary.get("oi_files", 0),
         summary.get("funding_files", 0),
+        summary.get("spot_skipped_rows", 0),
+        summary.get("perp_skipped_rows", 0),
         summary.get("ohlcv_skipped_rows", 0),
         summary.get("oi_skipped_rows", 0),
         summary.get("funding_skipped_rows", 0),
