@@ -269,12 +269,19 @@ Logging:
 Environment:
 - optional command defaults can be set in `config.yaml` (CLI flags override YAML values)
 - keep `config.yaml` untracked
+- initialize `config.yaml` from tracked `sample_config.yaml` and set secrets locally
 
 YAML config shape:
 
 ```yaml
 global:
   no_json_output: false
+
+env:
+  TIMESCALEDB_HOST: 127.0.0.1
+  TIMESCALEDB_PORT: 54321
+  TIMESCALEDB_USER: crypto
+  TIMESCALEDB_PASSWORD: <secret>
 
 loader:
   exchange: deribit
@@ -298,11 +305,14 @@ Use non-default config path:
 python3 main.py --config /path/to/config.yaml loader
 ```
 
-Key variables:
-- HTTP: `DEPTH_HTTP_TIMEOUT_S`, `DEPTH_HTTP_MAX_RETRIES`, `DEPTH_HTTP_RETRY_BACKOFF_S`
-- Compatibility knobs: `DEPTH_FETCH_CONCURRENCY`, `LOADER_OHLCV_CONCURRENCY`, `LOADER_OI_CONCURRENCY`, `LOADER_FUNDING_CONCURRENCY`
-- Timescale ingest workers: `TIMESCALE_INGEST_WORKERS`
-- DB config: `TIMESCALEDB_HOST`, `TIMESCALEDB_PORT`, `TIMESCALEDB_USER`, `TIMESCALEDB_PASSWORD`, `TIMESCALEDB_DB`, `PGSSLMODE`
+Bootstrap local config:
+
+```bash
+cp sample_config.yaml config.yaml
+chmod 600 config.yaml
+```
+
+Runtime configuration variables are provided in `config.yaml` under `env:` and injected into the process environment at CLI start.
 
 ## 12. Known Limitations
 - Deribit-only integration

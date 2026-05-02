@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import os
+import stat
 import sys
 from pathlib import Path
 from typing import Any, cast
@@ -125,23 +127,43 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _load_yaml_config(path: str) -> dict[str, object]:
-    """Load YAML config file into a dictionary."""
+    """Load and validate mandatory YAML config file."""
 
     config_path = Path(path)
     if not config_path.exists():
-        return {}
+        raise FileNotFoundError(
+            f"Required config file '{config_path}' is missing. Create config.yaml before running commands."
+        )
+    if not config_path.is_file():
+        raise ValueError(f"Config path '{config_path}' must be a regular file")
+
+    file_mode = stat.S_IMODE(config_path.stat().st_mode)
+    if file_mode & 0o007:
+        raise PermissionError(
+            f"Insecure permissions on '{config_path}' ({oct(file_mode)}). "
+            "Remove all permissions for 'others' (recommended: chmod 600 config.yaml)."
+        )
     try:
         import yaml
     except ImportError:
-        # Keep CLI usable in minimal environments; YAML config is optional.
-        return {}
+        raise RuntimeError("PyYAML is required to parse config.yaml. Install project dependencies.")
     with config_path.open("r", encoding="utf-8") as handle:
         loaded = yaml.safe_load(handle)
     if loaded is None:
-        return {}
+        raise ValueError("config.yaml is empty")
     if not isinstance(loaded, dict):
         raise ValueError("config file must contain a top-level mapping")
-    return cast(dict[str, object], loaded)
+    config = cast(dict[str, object], loaded)
+
+    required_sections = {"global", "env", "loader", "ingest-timescaledb", "export-descriptive-stats"}
+    missing = [section for section in required_sections if section not in config]
+    if missing:
+        raise ValueError(f"config.yaml missing required section(s): {', '.join(sorted(missing))}")
+
+    if not isinstance(config.get("env"), dict):
+        raise ValueError("config.yaml section 'env' must be a mapping")
+
+    return config
 
 
 def _subparser_for_command(parser: argparse.ArgumentParser, command: str) -> argparse.ArgumentParser | None:
@@ -196,6 +218,20 @@ def _apply_yaml_defaults(
             setattr(args, key, value)
 
 
+def _apply_env_from_config(config: dict[str, object]) -> None:
+    """Load ``env`` mapping from YAML config into process environment."""
+
+    env_config = config.get("env")
+    if not isinstance(env_config, dict):
+        return
+    for key, value in env_config.items():
+        if not isinstance(key, str):
+            continue
+        if value is None:
+            continue
+        os.environ[key] = str(value)
+
+
 def main() -> None:
     """CLI entrypoint."""
 
@@ -204,6 +240,7 @@ def main() -> None:
     pre_parser.add_argument("command", nargs="?")
     pre_args, _ = pre_parser.parse_known_args(sys.argv[1:])
     config_data = _load_yaml_config(pre_args.config)
+    _apply_env_from_config(config_data)
 
     parser = build_parser()
     args = parser.parse_args()

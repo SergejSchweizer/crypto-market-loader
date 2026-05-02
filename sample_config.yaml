@@ -1,0 +1,51 @@
+global:
+  no_json_output: false
+
+env:
+  TIMESCALEDB_HOST: 127.0.0.1
+  TIMESCALEDB_PORT: 54321
+  TIMESCALEDB_USER: crypto
+  TIMESCALEDB_PASSWORD: CHANGE_ME
+  TIMESCALEDB_DB: crypto
+  PGSSLMODE: disable
+  DEPTH_HTTP_TIMEOUT_S: 8
+  DEPTH_HTTP_MAX_RETRIES: 2
+  DEPTH_HTTP_RETRY_BACKOFF_S: 0.5
+  DEPTH_SYNC_LOG_DIR: /volume1/Temp/logs
+  DEPTH_FETCH_CONCURRENCY: 2
+
+loader:
+  exchange: deribit
+  market:
+    - spot
+    - perp
+    - oi
+    - funding
+  symbols:
+    - BTCUSDT
+    - ETHUSDT
+    - SOLUSDT
+  plot: false
+  plot_price: close
+  save_parquet_lake: false
+  save_timescaledb: false
+  timescaledb_schema: market_data
+  timescaledb_no_bootstrap: false
+  lake_root: lake/bronze
+  tail_delta_only: false
+
+ingest-timescaledb:
+  lake_root: lake/bronze
+  timescaledb_schema: market_data
+  timescaledb_no_bootstrap: false
+  timeframes:
+    - 1m
+
+export-descriptive-stats:
+  lake_root: lake/bronze
+  output_csv: docs/tables/descriptive_stats_baseline.csv
+  start_time: "2026-01-01T00:00:00+00:00"
+  end_time: "2026-01-31T23:59:59+00:00"
+  instrument_types:
+    - spot
+    - perp

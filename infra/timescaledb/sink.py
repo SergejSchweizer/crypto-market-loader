@@ -43,7 +43,7 @@ def _db_settings() -> dict[str, Any]:
     password = os.getenv("TIMESCALEDB_PASSWORD")
     if password is None or password == "":
         raise RuntimeError(
-            "TIMESCALEDB_PASSWORD is required. Set it in your local environment or .env (not committed)."
+            "TIMESCALEDB_PASSWORD is required. Set it via process environment or config.yaml env mapping."
         )
 
     return {

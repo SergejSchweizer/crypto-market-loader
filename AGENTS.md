@@ -116,7 +116,7 @@ Always ignore and keep untracked (unless repo intentionally requires otherwise):
 - `.cache/`
 - `.ipynb_checkpoints/`
 - `.env`
-- `.env.*` (except explicit examples such as `.env.example`)
+- `.env.*`
 
 If local-only files are accidentally tracked, remove them from git index while keeping local copies.
 
@@ -153,8 +153,18 @@ Rules:
 - Never commit secrets or credentials.
 - Use environment variables and local config files.
 - Keep sensitive config out of version control.
-- Provide `.env.example` (or equivalent) for required variables.
+- Provide a sanitized tracked config template (`sample_config.yaml`) for required variables.
 - Do not place live secret values in docs.
+
+## Configuration Security Policy (MANDATORY)
+
+- `config.yaml` is the single required runtime configuration source for this repository.
+- CLI/runtime usage without `config.yaml` is not allowed.
+- `.env` must not be used for runtime configuration.
+- `config.yaml` must remain untracked in git and must not be committed.
+- `config.yaml` permissions must be restrictive (no permissions for “others”; recommended `chmod 600 config.yaml`).
+- `sample_config.yaml` must be tracked, must not contain sensitive values, and must stay aligned with required `config.yaml` keys.
+- Agents must update `config.yaml` structure/docs together with any code changes that add/remove config keys.
 
 ---
 
@@ -230,4 +240,3 @@ The repository should remain:
 - reproducible for operators/researchers
 - understandable for reviewers
 - extensible for future contributors and agents
-
