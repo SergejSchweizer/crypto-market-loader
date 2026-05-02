@@ -11,6 +11,13 @@ from ingestion.spot import SpotCandle
 
 PriceField = Literal["spot", "close", "open", "high", "low"]
 
+_FIGURE_FACE = "#05070d"
+_AXIS_FACE = "#0c111b"
+_GRID_COLOR = "#334155"
+_SPINE_COLOR = "#475569"
+_TEXT_COLOR = "#e2e8f0"
+_MUTED_TEXT_COLOR = "#94a3b8"
+
 
 def price_value(candle: SpotCandle, price_field: PriceField) -> float:
     """Select a price value from a candle based on requested field."""
@@ -86,27 +93,38 @@ def save_candle_plots(
                 sharex=True,
                 gridspec_kw={"height_ratios": [7, 3]},
             )
-            figure.patch.set_facecolor("#f7f9fc")
+            figure.patch.set_facecolor(_FIGURE_FACE)
 
             for axis in (price_axis, volume_axis):
-                axis.set_facecolor("#fdfefe")
-                axis.grid(alpha=0.2, linestyle="--", linewidth=0.8, color="#8aa0b5")
+                axis.set_facecolor(_AXIS_FACE)
+                axis.grid(alpha=0.35, linestyle="--", linewidth=0.8, color=_GRID_COLOR)
                 axis.spines["top"].set_visible(False)
                 axis.spines["right"].set_visible(False)
-                axis.spines["left"].set_color("#8aa0b5")
-                axis.spines["bottom"].set_color("#8aa0b5")
+                axis.spines["left"].set_color(_SPINE_COLOR)
+                axis.spines["bottom"].set_color(_SPINE_COLOR)
+                axis.tick_params(axis="x", colors=_MUTED_TEXT_COLOR)
+                axis.tick_params(axis="y", colors=_MUTED_TEXT_COLOR)
 
-            price_axis.plot(times, prices, color="#3a86ff", linewidth=4.0, alpha=0.15)
-            price_axis.plot(times, prices, color="#1d4ed8", linewidth=2.2)
-            price_axis.fill_between(times, prices, min(prices), color="#60a5fa", alpha=0.12)
-            price_axis.set_ylabel(f"{price_field} price", color="#334155")
+            price_axis.plot(times, prices, color="#38bdf8", linewidth=4.0, alpha=0.18)
+            price_axis.plot(times, prices, color="#22d3ee", linewidth=2.2, label=f"{price_field} price")
+            price_axis.fill_between(times, prices, min(prices), color="#0ea5e9", alpha=0.14)
+            price_axis.set_ylabel(f"{price_field} price", color=_TEXT_COLOR)
             price_axis.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
             price_axis.set_title(
                 f"{exchange.upper()}  {symbol}  ({interval})",
                 fontsize=13,
                 fontweight="semibold",
-                color="#0f172a",
+                color=_TEXT_COLOR,
                 pad=10,
+            )
+            price_axis.legend(
+                loc="upper left",
+                frameon=True,
+                framealpha=0.75,
+                facecolor="#020617",
+                edgecolor=_SPINE_COLOR,
+                labelcolor=_TEXT_COLOR,
+                fontsize=9,
             )
 
             time_points = mdates.date2num(times)  # type: ignore[no-untyped-call]
@@ -129,11 +147,11 @@ def save_candle_plots(
                 width=bar_width,
                 alpha=0.82,
                 linewidth=0.3,
-                edgecolor="#ffffff",
+                edgecolor="#e2e8f0",
             )
-            volume_axis.set_ylabel("volume", color="#334155")
+            volume_axis.set_ylabel("volume", color=_TEXT_COLOR)
             volume_axis.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
-            volume_axis.set_xlabel("time (UTC)", color="#334155")
+            volume_axis.set_xlabel("time (UTC)", color=_TEXT_COLOR)
             volume_axis.xaxis.set_major_formatter(mdates.DateFormatter("%m.%Y"))  # type: ignore[no-untyped-call]
             volume_axis.legend(
                 handles=[
@@ -142,9 +160,10 @@ def save_candle_plots(
                 ],
                 loc="upper left",
                 frameon=True,
-                framealpha=0.9,
-                facecolor="#ffffff",
-                edgecolor="#cbd5e1",
+                framealpha=0.75,
+                facecolor="#020617",
+                edgecolor=_SPINE_COLOR,
+                labelcolor=_TEXT_COLOR,
                 fontsize=8,
             )
 
@@ -181,33 +200,74 @@ def save_open_interest_plot(
 
     try:
         import matplotlib.dates as mdates
+        import matplotlib.patches as mpatches
         import matplotlib.pyplot as plt
         import matplotlib.ticker as mticker
     except ImportError as exc:
         raise RuntimeError("matplotlib is required for plotting. Install project dependencies first.") from exc
 
-    figure, axis = plt.subplots(figsize=(12, 4))
-    figure.patch.set_facecolor("#f7f9fc")
-    axis.set_facecolor("#fdfefe")
-    axis.grid(alpha=0.2, linestyle="--", linewidth=0.8, color="#8aa0b5")
-    axis.spines["top"].set_visible(False)
-    axis.spines["right"].set_visible(False)
-    axis.spines["left"].set_color("#8aa0b5")
-    axis.spines["bottom"].set_color("#8aa0b5")
+    figure, (axis, delta_axis) = plt.subplots(
+        2,
+        1,
+        figsize=(12, 6),
+        sharex=True,
+        gridspec_kw={"height_ratios": [7, 3]},
+    )
+    figure.patch.set_facecolor(_FIGURE_FACE)
+    for panel in (axis, delta_axis):
+        panel.set_facecolor(_AXIS_FACE)
+        panel.grid(alpha=0.35, linestyle="--", linewidth=0.8, color=_GRID_COLOR)
+        panel.spines["top"].set_visible(False)
+        panel.spines["right"].set_visible(False)
+        panel.spines["left"].set_color(_SPINE_COLOR)
+        panel.spines["bottom"].set_color(_SPINE_COLOR)
+        panel.tick_params(axis="x", colors=_MUTED_TEXT_COLOR)
+        panel.tick_params(axis="y", colors=_MUTED_TEXT_COLOR)
 
-    axis.plot(times, open_interest_values, color="#0f766e", linewidth=2.0)  # type: ignore[arg-type]
-    axis.fill_between(times, open_interest_values, min(open_interest_values), color="#14b8a6", alpha=0.12)  # type: ignore[arg-type]
+    axis.plot(times, open_interest_values, color="#2dd4bf", linewidth=2.2, label="open interest")  # type: ignore[arg-type]
+    axis.fill_between(times, open_interest_values, min(open_interest_values), color="#14b8a6", alpha=0.14)  # type: ignore[arg-type]
     axis.set_title(
         f"{exchange.upper()}  {symbol}  ({interval})  Open Interest",
         fontsize=12,
         fontweight="semibold",
-        color="#0f172a",
+        color=_TEXT_COLOR,
         pad=10,
     )
-    axis.set_ylabel("open interest", color="#334155")
+    axis.set_ylabel("open interest", color=_TEXT_COLOR)
     axis.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
-    axis.set_xlabel("time (UTC)", color="#334155")
-    axis.xaxis.set_major_formatter(mdates.DateFormatter("%m.%Y"))  # type: ignore[no-untyped-call]
+    axis.legend(
+        loc="upper left",
+        frameon=True,
+        framealpha=0.75,
+        facecolor="#020617",
+        edgecolor=_SPINE_COLOR,
+        labelcolor=_TEXT_COLOR,
+        fontsize=9,
+    )
+
+    deltas = [0.0]
+    deltas.extend(curr - prev for prev, curr in zip(open_interest_values, open_interest_values[1:], strict=False))
+    delta_colors = ["#22c55e" if value >= 0 else "#ef4444" for value in deltas]
+    delta_axis.bar(times, deltas, color=delta_colors, alpha=0.82, linewidth=0.0)
+    delta_axis.axhline(0.0, color="#64748b", linewidth=0.9, alpha=0.8)
+    delta_axis.set_ylabel("delta", color=_TEXT_COLOR)
+    delta_axis.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+    delta_axis.set_xlabel("time (UTC)", color=_TEXT_COLOR)
+    delta_axis.xaxis.set_major_formatter(mdates.DateFormatter("%m.%Y"))  # type: ignore[no-untyped-call]
+    delta_axis.legend(
+        handles=[
+            mpatches.Patch(color="#22c55e", label="OI up"),
+            mpatches.Patch(color="#ef4444", label="OI down"),
+        ],
+        loc="upper left",
+        frameon=True,
+        framealpha=0.75,
+        facecolor="#020617",
+        edgecolor=_SPINE_COLOR,
+        labelcolor=_TEXT_COLOR,
+        fontsize=8,
+    )
+
     figure.autofmt_xdate()
     figure.tight_layout()
 
@@ -238,28 +298,63 @@ def save_funding_plot(
     except ImportError as exc:
         raise RuntimeError("matplotlib is required for plotting. Install project dependencies first.") from exc
 
-    figure, axis = plt.subplots(figsize=(12, 4))
-    figure.patch.set_facecolor("#f7f9fc")
-    axis.set_facecolor("#fdfefe")
-    axis.grid(alpha=0.2, linestyle="--", linewidth=0.8, color="#8aa0b5")
-    axis.spines["top"].set_visible(False)
-    axis.spines["right"].set_visible(False)
-    axis.spines["left"].set_color("#8aa0b5")
-    axis.spines["bottom"].set_color("#8aa0b5")
+    figure, (axis, abs_axis) = plt.subplots(
+        2,
+        1,
+        figsize=(12, 6),
+        sharex=True,
+        gridspec_kw={"height_ratios": [7, 3]},
+    )
+    figure.patch.set_facecolor(_FIGURE_FACE)
+    for panel in (axis, abs_axis):
+        panel.set_facecolor(_AXIS_FACE)
+        panel.grid(alpha=0.35, linestyle="--", linewidth=0.8, color=_GRID_COLOR)
+        panel.spines["top"].set_visible(False)
+        panel.spines["right"].set_visible(False)
+        panel.spines["left"].set_color(_SPINE_COLOR)
+        panel.spines["bottom"].set_color(_SPINE_COLOR)
+        panel.tick_params(axis="x", colors=_MUTED_TEXT_COLOR)
+        panel.tick_params(axis="y", colors=_MUTED_TEXT_COLOR)
 
-    axis.plot(times, funding_values, color="#7c3aed", linewidth=2.0)  # type: ignore[arg-type]
-    axis.fill_between(times, funding_values, min(funding_values), color="#a78bfa", alpha=0.12)  # type: ignore[arg-type]
+    axis.plot(times, funding_values, color="#a78bfa", linewidth=2.2, label="funding rate")  # type: ignore[arg-type]
+    axis.fill_between(times, funding_values, 0.0, color="#8b5cf6", alpha=0.14)  # type: ignore[arg-type]
+    axis.axhline(0.0, color="#64748b", linewidth=0.9, alpha=0.8)
     axis.set_title(
         f"{exchange.upper()}  {symbol}  ({interval})  Funding Rate",
         fontsize=12,
         fontweight="semibold",
-        color="#0f172a",
+        color=_TEXT_COLOR,
         pad=10,
     )
-    axis.set_ylabel("funding rate", color="#334155")
+    axis.set_ylabel("funding rate", color=_TEXT_COLOR)
     axis.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.6f}"))
-    axis.set_xlabel("time (UTC)", color="#334155")
-    axis.xaxis.set_major_formatter(mdates.DateFormatter("%m.%Y"))  # type: ignore[no-untyped-call]
+    axis.legend(
+        loc="upper left",
+        frameon=True,
+        framealpha=0.75,
+        facecolor="#020617",
+        edgecolor=_SPINE_COLOR,
+        labelcolor=_TEXT_COLOR,
+        fontsize=9,
+    )
+
+    abs_values = [abs(value) for value in funding_values]
+    abs_axis.plot(times, abs_values, color="#f59e0b", linewidth=1.8, label="abs(funding)")
+    abs_axis.fill_between(times, abs_values, 0.0, color="#f59e0b", alpha=0.12)
+    abs_axis.set_ylabel("abs rate", color=_TEXT_COLOR)
+    abs_axis.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.6f}"))
+    abs_axis.set_xlabel("time (UTC)", color=_TEXT_COLOR)
+    abs_axis.xaxis.set_major_formatter(mdates.DateFormatter("%m.%Y"))  # type: ignore[no-untyped-call]
+    abs_axis.legend(
+        loc="upper left",
+        frameon=True,
+        framealpha=0.75,
+        facecolor="#020617",
+        edgecolor=_SPINE_COLOR,
+        labelcolor=_TEXT_COLOR,
+        fontsize=8,
+    )
+
     figure.autofmt_xdate()
     figure.tight_layout()
 

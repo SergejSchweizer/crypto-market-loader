@@ -20,8 +20,12 @@ def test_normalize_funding_timeframe_rejects_unsupported_values() -> None:
 
 
 def test_fetch_funding_all_history_returns_empty_on_http_400(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake_fetch_funding_all(symbol: str, period: str) -> list[dict[str, object]]:
-        del symbol, period
+    def fake_fetch_funding_all(
+        symbol: str,
+        period: str,
+        on_page: object | None = None,
+    ) -> list[dict[str, object]]:
+        del symbol, period, on_page
         raise HttpClientHttpError("bad request", status_code=400, retryable=False)
 
     monkeypatch.setattr("ingestion.funding.deribit_funding.fetch_funding_all", fake_fetch_funding_all)

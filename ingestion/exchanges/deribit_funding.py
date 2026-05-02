@@ -53,8 +53,16 @@ def fetch_funding_range(
             rows.extend(
                 [item for item in page if start_open_ms <= int(cast(Any, item["timestamp"])) <= end_open_ms]
             )
-            last_ts = max(int(cast(Any, item["timestamp"])) for item in page)
-            cursor = max(cursor + period_ms, last_ts + period_ms)
+            page_ts = [int(cast(Any, item["timestamp"])) for item in page]
+            min_ts = min(page_ts)
+            max_ts = max(page_ts)
+            # Some Deribit responses may return only a narrow sub-window inside the
+            # requested range. Advance from the covered region instead of jumping to
+            # ``max_ts + period`` to avoid skipping undiscovered earlier slices.
+            if min_ts > cursor:
+                cursor = min_ts
+            else:
+                cursor = max(cursor + period_ms, max_ts + period_ms)
         else:
             cursor = window_end_ms + 1
 

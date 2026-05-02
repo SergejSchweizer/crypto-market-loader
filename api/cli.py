@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 from typing import Any, cast
 
 from api.commands import loader as loader_cmd
@@ -17,7 +19,6 @@ from application.services.runtime_service import (
     SingleInstanceLock,
     configure_logging,
     fetch_concurrency,
-    load_env_file,
 )
 from infra.timescaledb import save_market_data_to_timescaledb
 from ingestion.funding import (
@@ -108,6 +109,11 @@ def build_parser() -> argparse.ArgumentParser:
     """Create top-level CLI parser."""
 
     parser = argparse.ArgumentParser(description="crypto-market-loader CLI")
+    parser.add_argument(
+        "--config",
+        default="config.yaml",
+        help="Path to YAML configuration file for command defaults",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     add_loader_parser(subparsers)
@@ -118,12 +124,94 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _load_yaml_config(path: str) -> dict[str, object]:
+    """Load YAML config file into a dictionary."""
+
+    config_path = Path(path)
+    if not config_path.exists():
+        return {}
+    try:
+        import yaml
+    except ImportError:
+        # Keep CLI usable in minimal environments; YAML config is optional.
+        return {}
+    with config_path.open("r", encoding="utf-8") as handle:
+        loaded = yaml.safe_load(handle)
+    if loaded is None:
+        return {}
+    if not isinstance(loaded, dict):
+        raise ValueError("config file must contain a top-level mapping")
+    return cast(dict[str, object], loaded)
+
+
+def _subparser_for_command(parser: argparse.ArgumentParser, command: str) -> argparse.ArgumentParser | None:
+    """Return subparser object for selected command."""
+
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):  # type: ignore[attr-defined]
+            candidate = action.choices.get(command)
+            if isinstance(candidate, argparse.ArgumentParser):
+                return candidate
+    return None
+
+
+def _collect_explicit_cli_dests(command_parser: argparse.ArgumentParser, argv: list[str]) -> set[str]:
+    """Collect argparse destination names explicitly provided via CLI flags."""
+
+    provided: set[str] = set()
+    option_to_dest: dict[str, str] = {}
+    for action in command_parser._actions:
+        for option in action.option_strings:
+            option_to_dest[option] = action.dest
+    for token in argv:
+        if token == "--":
+            break
+        if token.startswith("--"):
+            option_name = token.split("=", 1)[0]
+            dest = option_to_dest.get(option_name)
+            if dest:
+                provided.add(dest)
+    return provided
+
+
+def _apply_yaml_defaults(
+    args: argparse.Namespace,
+    command: str,
+    config: dict[str, object],
+    explicit_dests: set[str],
+) -> None:
+    """Apply global and command-level YAML defaults unless overridden by CLI."""
+
+    global_config = config.get("global")
+    if isinstance(global_config, dict):
+        for key, value in global_config.items():
+            if key in explicit_dests or not hasattr(args, key):
+                continue
+            setattr(args, key, value)
+    command_config = config.get(command)
+    if isinstance(command_config, dict):
+        for key, value in command_config.items():
+            if key in explicit_dests or not hasattr(args, key):
+                continue
+            setattr(args, key, value)
+
+
 def main() -> None:
     """CLI entrypoint."""
 
-    load_env_file()
+    pre_parser = argparse.ArgumentParser(add_help=False)
+    pre_parser.add_argument("--config", default="config.yaml")
+    pre_parser.add_argument("command", nargs="?")
+    pre_args, _ = pre_parser.parse_known_args(sys.argv[1:])
+    config_data = _load_yaml_config(pre_args.config)
+
     parser = build_parser()
     args = parser.parse_args()
+    command = cast(str, args.command)
+    command_parser = _subparser_for_command(parser, command)
+    if command_parser is not None:
+        explicit = _collect_explicit_cli_dests(command_parser, sys.argv[1:])
+        _apply_yaml_defaults(args=args, command=command, config=config_data, explicit_dests=explicit)
     logger = configure_logging(module_name=str(args.command))
     logger.info("Command start: %s", args.command)
 

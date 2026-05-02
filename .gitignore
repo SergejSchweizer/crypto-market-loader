@@ -60,4 +60,5 @@ lake_test/
 .env
 .env.*
 !.env.example
+config.yaml
 docker/.env

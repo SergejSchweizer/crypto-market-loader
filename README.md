@@ -267,8 +267,36 @@ Logging:
 - override via `DEPTH_SYNC_LOG_DIR`
 
 Environment:
-- `.env` is auto-loaded locally
-- keep `.env` untracked
+- optional command defaults can be set in `config.yaml` (CLI flags override YAML values)
+- keep `config.yaml` untracked
+
+YAML config shape:
+
+```yaml
+global:
+  no_json_output: false
+
+loader:
+  exchange: deribit
+  market: [funding]
+  symbols: [BTC, ETH]
+  plot: true
+  save_parquet_lake: true
+
+ingest-timescaledb:
+  lake_root: lake/bronze
+  timeframes: [1m]
+
+export-descriptive-stats:
+  start_time: "2026-01-01T00:00:00+00:00"
+  end_time: "2026-01-31T23:59:59+00:00"
+```
+
+Use non-default config path:
+
+```bash
+python3 main.py --config /path/to/config.yaml loader
+```
 
 Key variables:
 - HTTP: `DEPTH_HTTP_TIMEOUT_S`, `DEPTH_HTTP_MAX_RETRIES`, `DEPTH_HTTP_RETRY_BACKOFF_S`
