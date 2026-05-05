@@ -1,4 +1,4 @@
-"""Tests for loader storage orchestration service."""
+"""Tests for bronze-ingest storage orchestration service."""
 
 from __future__ import annotations
 
@@ -38,14 +38,14 @@ def _sample_oi() -> OpenInterestPoint:
     )
 
 
-def test_persist_loader_outputs_writes_parquet_and_timescaledb() -> None:
+def test_persist_loader_outputs_writes_parquet_outputs() -> None:
     candles: dict[Market, dict[str, dict[str, list[SpotCandle]]]] = {
         "spot": {"deribit": {"BTCUSDT": [_sample_candle()]}}
     }
     oi: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = {
         "perp": {"deribit": {"BTCUSDT": [_sample_oi()]}}
     }
-    calls: dict[str, int] = {"spot": 0, "oi": 0, "tsdb": 0}
+    calls: dict[str, int] = {"spot": 0, "oi": 0}
 
     def fake_save_spot_lake_fn(**kwargs: object) -> list[str]:
         del kwargs
@@ -57,25 +57,15 @@ def test_persist_loader_outputs_writes_parquet_and_timescaledb() -> None:
         calls["oi"] += 1
         return ["oi.parquet"]
 
-    def fake_save_tsdb_fn(**kwargs: object) -> dict[str, int | str]:
-        del kwargs
-        calls["tsdb"] += 1
-        return {"schema": "market_data", "ohlcv_rows": 1, "oi_rows": 1}
-
     result = persist_loader_outputs(
         candles_for_storage=candles,
         open_interest_for_storage=oi,
         save_parquet_lake=True,
-        save_timescaledb=True,
         lake_root="lake/bronze",
-        timescaledb_schema="market_data",
-        create_schema=True,
         oi_requested=True,
         save_spot_lake_fn=fake_save_spot_lake_fn,
         save_oi_lake_fn=fake_save_oi_lake_fn,
-        save_tsdb_fn=fake_save_tsdb_fn,
     )
 
     assert result["_parquet_files"] == ["spot.parquet", "oi.parquet"]
-    assert result["_timescaledb"] == {"schema": "market_data", "ohlcv_rows": 1, "oi_rows": 1}
-    assert calls == {"spot": 1, "oi": 1, "tsdb": 1}
+    assert calls == {"spot": 1, "oi": 1}

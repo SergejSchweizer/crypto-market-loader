@@ -61,6 +61,8 @@ def write_loader_samples_dto(
     def _safe_name(value: str) -> str:
         return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
 
+    layer_name = _safe_name(resolved_options.sample_layer.strip().lower() or "bronze")
+
     for market, candle_by_exchange in storage.candles.items():
         for exchange, candle_by_symbol in candle_by_exchange.items():
             for symbol_key, candles in candle_by_symbol.items():
@@ -68,7 +70,7 @@ def write_loader_samples_dto(
                     continue
                 timeframe = candles[0].interval
                 base_name = (
-                    f"{market}_{_safe_name(exchange)}_{_safe_name(symbol_key)}_"
+                    f"{layer_name}_{market}_{_safe_name(exchange)}_{_safe_name(symbol_key)}_"
                     f"{_safe_name(timeframe)}_sample_10_rows"
                 )
                 rows = [
@@ -108,7 +110,8 @@ def write_loader_samples_dto(
                     continue
                 timeframe = oi_items[0].interval
                 base_name = (
-                    f"oi_{market}_{_safe_name(exchange)}_{_safe_name(symbol_key)}_{_safe_name(timeframe)}_sample_10_rows"
+                    f"{layer_name}_oi_{market}_{_safe_name(exchange)}_"
+                    f"{_safe_name(symbol_key)}_{_safe_name(timeframe)}_sample_10_rows"
                 )
                 rows = [
                     open_interest_record(item=item, market=market, run_id=run_id, ingested_at=ingested_at)
@@ -140,7 +143,8 @@ def write_loader_samples_dto(
                     continue
                 timeframe = funding_items[0].interval
                 base_name = (
-                    f"funding_{market}_{_safe_name(exchange)}_{_safe_name(symbol_key)}_{_safe_name(timeframe)}_sample_10_rows"
+                    f"{layer_name}_funding_{market}_{_safe_name(exchange)}_"
+                    f"{_safe_name(symbol_key)}_{_safe_name(timeframe)}_sample_10_rows"
                 )
                 rows = [
                     {

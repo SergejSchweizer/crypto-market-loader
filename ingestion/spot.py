@@ -165,7 +165,10 @@ def fetch_candles_all_history(
         if on_history_chunk is None:
             return
         on_history_chunk(
-            [parse_kline(exchange=exchange, symbol=normalized_symbol, interval=normalized_interval, row=row) for row in page]
+            [
+                parse_kline(exchange=exchange, symbol=normalized_symbol, interval=normalized_interval, row=row)
+                for row in page
+            ]
         )
 
     rows = deribit.fetch_klines_all(

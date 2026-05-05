@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from ingestion.http_client import HttpClientHttpError, get_json
@@ -107,13 +107,11 @@ def fetch_open_interest_range(
 
 
 def parse_open_interest_row(symbol: str, period: str, row: dict[str, object]) -> dict[str, object]:
-    """Convert Deribit settlement payload to normalized record fields."""
+    """Convert Deribit settlement payload to normalized raw record fields."""
 
     open_time_ms = int(cast(Any, row["timestamp"]))
-    period_ms = _period_to_milliseconds(period)
-    bucket_open_ms = (open_time_ms // period_ms) * period_ms
-    open_time = datetime.fromtimestamp(bucket_open_ms / 1000, tz=UTC)
-    close_time = datetime.fromtimestamp((bucket_open_ms + period_ms - 1) / 1000, tz=UTC)
+    open_time = datetime.fromtimestamp(open_time_ms / 1000, tz=UTC)
+    close_time = open_time
 
     return {
         "symbol": symbol,
@@ -123,18 +121,6 @@ def parse_open_interest_row(symbol: str, period: str, row: dict[str, object]) ->
         "open_interest": float(cast(Any, row["open_interest"])),
         "open_interest_value": 0.0,
     }
-
-
-def _period_to_milliseconds(period: str) -> int:
-    """Convert normalized timeframe to milliseconds."""
-
-    if period.endswith("m"):
-        return int(period[:-1]) * 60_000
-    if period.endswith("h"):
-        return int(period[:-1]) * 3_600_000
-    if period.endswith("d"):
-        return int(period[:-1]) * 86_400_000
-    raise ValueError(f"Unsupported period '{period}'")
 
 
 def _fetch_open_interest_page(symbol: str, continuation: str | None) -> tuple[list[dict[str, object]], str | None]:

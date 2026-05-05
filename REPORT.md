@@ -1,9 +1,9 @@
 # Deribit Market Data Ingestion Baseline for Crypto Research Pipelines
 
 ## Abstract
-This report presents a production-oriented baseline for cryptocurrency market-data ingestion designed to support downstream quantitative research. The problem addressed is the lack of reproducible, maintainable ingestion layers in early-stage quant projects, where exchange-specific scripts and schema drift frequently undermine empirical validity. We implement a typed, modular ingestion pipeline with adapter abstractions for Deribit, command-line interfaces for deterministic execution, and partitioned parquet-lake storage. Data are sourced from public exchange REST endpoints and normalized into canonical OHLCV, open-interest, and funding schemas with metadata fields for run traceability. The main finding is engineering-focused: the system provides deterministic normalization, supports backward pagination and gap-fill synchronization for historical series, enforces 1-minute OHLCV/OI policy with native 8h funding cadence, and preserves idempotent persistence via natural-key partition merges plus Timescale watermark-based delta ingest. The contribution is a maintainable ingestion foundation suitable for subsequent market microstructure, regime, and forecasting studies, with explicit reproducibility controls (strict typing, tests, linting, config-driven runs, and stable execution commands).
+This report presents a production-oriented baseline for cryptocurrency market-data ingestion designed to support downstream quantitative research. The problem addressed is the lack of reproducible, maintainable ingestion layers in early-stage quant projects, where exchange-specific scripts and schema drift frequently undermine empirical validity. We implement a typed, modular ingestion pipeline with adapter abstractions for Deribit, command-line interfaces for deterministic execution, and partitioned parquet-lake storage. Data are sourced from public exchange REST endpoints and normalized into canonical OHLCV, open-interest, and funding schemas with metadata fields for run traceability. The main finding is engineering-focused: the system provides deterministic normalization, supports backward pagination and gap-fill synchronization for historical series, enforces 1-minute OHLCV/OI policy with native 8h funding cadence, and preserves idempotent persistence via natural-key partition merges. The contribution is a maintainable ingestion foundation suitable for subsequent market microstructure, regime, and forecasting studies, with explicit reproducibility controls (strict typing, tests, linting, config-driven runs, and stable execution commands).
 
-Canonical data-type naming in this project is fixed as `spot`, `perp`, `oi`, and `funding` across CLI and code. The parquet storage label for OI feature-grid rows is `dataset_type=oi_m1_feature`. OHLCV/OI scope is `1m` / `M1`, while funding is stored in native Deribit `8h` cadence.
+Canonical data-type naming in this project is fixed as `spot`, `perp`, `oi`, and `funding` across CLI and code. The parquet storage label for OI raw rows is `dataset_type=oi`. OHLCV is `1m`; OI is raw event-time, while funding is stored in native Deribit `8h` cadence.
 
 ## Introduction
 Reliable market-data ingestion is a prerequisite for valid quantitative inference in crypto research.
@@ -71,17 +71,14 @@ Within crypto-specific empirical work, market microstructure studies and liquidi
 
 #### `oi` (perpetual open interest)
 - Constructed fields:
-  `open_time`, `close_time`, `open_interest`, `open_interest_value`, `oi_ffill`, `oi_is_observed`, `minutes_since_oi_observation`.
+  `open_time`, `close_time`, `open_interest`, `open_interest_value`.
 - Field construction logic:
   - OI ingestion is gated to `perp` context; non-perp requests return empty results by design.
   - `open_time` derives from exchange timestamp and is UTC-normalized.
   - `close_time` is computed as `open_time + timeframe_ms - 1`.
   - `open_interest` is mapped from exchange OI position-size field.
   - `open_interest_value` is populated when the source returns a notional/value metric; else `0.0`.
-  - Missing 1m slots between observed OI points are forward-filled into `oi_ffill`.
-  - `oi_is_observed` marks whether a row is a raw observation (`true`) or synthesized fill row (`false`).
-  - `minutes_since_oi_observation` tracks distance (in minutes) from the latest observed OI row.
-- Exchange-specific mapping:
+  -   -   - - Exchange-specific mapping:
   - Deribit: settlement `timestamp` is bucketed to the requested timeframe prior to interval construction; `open_interest <- position`, `open_interest_value <- 0.0`.
 
 ## Methodology
@@ -89,12 +86,10 @@ Within crypto-specific empirical work, market microstructure studies and liquidi
 ```text
 CLI -> Application Service Layer (gapfill_service, fetch_service)
     -> Adapter Layer -> HTTP Client -> Exchange REST APIs
-    -> Normalized SpotCandle/OpenInterestPoint -> Parquet Lake/TimescaleDB
+    -> Normalized SpotCandle/OpenInterestPoint -> Parquet Lake
 ```
 
-Storage and artifact side effects are also routed through dedicated services (`storage_service`, `artifact_service`) to keep CLI logic thin and testable. Canonical CLI-to-storage naming (`spot`/`perp`/`funding` direct + `oi -> dataset_type=oi_m1_feature`) is formalized in `application/schema.py`.
-
-TimescaleDB persistence uses separated dataset tables: `spot` and `perp` for candle rows, plus `open_interest` and `funding` for derivative features/rates; delta ingest state is tracked in `ingest_watermarks`.
+Storage and artifact side effects are also routed through dedicated services (`storage_service`, `artifact_service`) to keep CLI logic thin and testable. Canonical CLI-to-storage naming (`spot`/`perp`/`funding` direct  + `oi -> dataset_type=oi`) is formalized in `application/schema.py`.
 
 ### Core Mapping
 For each candle index \(t\):
@@ -128,7 +123,6 @@ Upsert policy enforces idempotency:
 - Fetch execution is sequential to reduce exchange-side blocking/rate-limit pressure.
 - Fetch orchestration and task error isolation are handled in a dedicated service layer (`application/services/fetch_service.py`) rather than directly in CLI command code.
 - Parquet reads/writes process data in batches to bound memory usage.
-- Timescale ingestion from parquet uses streaming row iteration with bounded DB upsert batches and per-series watermark state for delta-only ingest.
 
 ## Results
 All figures in this report are generated from repository pipeline outputs (agent-generated plot artifacts), not notebook exports.
@@ -162,12 +156,9 @@ No predictive or regime models are trained in this stage.
 | Incremental parquet persistence | Partition merge + natural-key dedup | Passed with idempotent key policy |
 | Service-layer fetch orchestration tests | Sequential success/error isolation | Passed (`tests/test_fetch_service.py`) |
 | Service-layer gap-fill utility tests | Closed-candle timestamp and missing-range logic | Passed (`tests/test_gapfill_service.py`) |
-| Service-layer storage orchestration tests | Parquet + Timescale side-effect routing (spot/perp split tables) | Passed (`tests/test_storage_service.py`) |
+| Service-layer storage orchestration tests | Parquet side-effect routing | Passed (`tests/test_storage_service.py`) |
 | Canonical schema contract tests | CLI datatype to storage contract mapping | Passed (`tests/test_schema_contract.py`) |
-| Loader sample artifacts | Per market/exchange/symbol/timeframe CSV + full-history plot | Passed with deterministic naming |
-| Chunked Timescale ingest | Streaming parquet read + bounded DB upsert batches | Passed with stable memory profile |
-| Timescale delta ingest | Per-series watermark state (`ingest_watermarks`) + newer-than-watermark row filter | Passed and idempotent across reruns |
-| OI integration | Deribit perp dataset_type=oi_m1_feature | Passed for all-history and gap-fill paths |
+| Loader sample artifacts | Per market/exchange/symbol/timeframe CSV | Passed with deterministic naming || OI integration | Deribit perp dataset_type=oi | Passed for all-history and gap-fill paths |
 
 ### Figures
 Figure 1. OHLCV Spot series (Deribit BTCUSDT 1m).

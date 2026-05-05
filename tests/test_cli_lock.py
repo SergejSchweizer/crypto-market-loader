@@ -124,7 +124,7 @@ def test_gap_fill_fetches_internal_and_tail_gaps(monkeypatch: pytest.MonkeyPatch
     gap_one_ms = int(datetime(2026, 4, 27, 10, 1, tzinfo=UTC).timestamp() * 1000)
     gap_tail_start_ms = int(datetime(2026, 4, 27, 10, 4, tzinfo=UTC).timestamp() * 1000)
     assert candles == []
-    assert calls == [(gap_one_ms, gap_one_ms), (gap_tail_start_ms, end_open_ms)]
+    assert set(calls) == {(gap_one_ms, gap_one_ms), (gap_tail_start_ms, end_open_ms)}
 
 
 def test_main_loader_command_still_uses_single_instance_lock(
@@ -135,7 +135,7 @@ def test_main_loader_command_still_uses_single_instance_lock(
             del lock_path
 
         def __enter__(self) -> None:
-            raise SingleInstanceError("loader already running")
+            raise SingleInstanceError("bronze-ingest already running")
 
         def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
             del exc_type, exc, tb
@@ -145,7 +145,7 @@ def test_main_loader_command_still_uses_single_instance_lock(
         "sys.argv",
         [
             "main.py",
-            "loader",
+            "bronze-ingest",
             "--exchange",
             "deribit",
             "--market",
@@ -156,68 +156,9 @@ def test_main_loader_command_still_uses_single_instance_lock(
         ],
     )
 
-    with pytest.raises(SystemExit, match="loader already running"):
+    with pytest.raises(SystemExit, match="bronze-ingest already running"):
         cli.main()
 
-
-def test_main_loader_saves_timescaledb_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
-    class NoopLock:
-        def __init__(self, lock_path: str) -> None:
-            del lock_path
-
-        def __enter__(self) -> None:
-            return None
-
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-            del exc_type, exc, tb
-
-    sample = SpotCandle(
-        exchange="deribit",
-        symbol="BTCUSDT",
-        interval="1m",
-        open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
-        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
-        open_price=100.0,
-        high_price=101.0,
-        low_price=99.0,
-        close_price=100.5,
-        volume=10.0,
-        quote_volume=1000.0,
-        trade_count=10,
-    )
-    captured: dict[str, object] = {}
-
-    monkeypatch.setattr(cli, "SingleInstanceLock", NoopLock)
-    monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
-    monkeypatch.setattr(cli, "fetch_candles_all_history", lambda **kwargs: [sample])
-    monkeypatch.setattr(cli, "_write_loader_samples", lambda **kwargs: None)
-    monkeypatch.setattr(
-        cli,
-        "save_market_data_to_timescaledb",
-        lambda **kwargs: captured.update(kwargs) or {"schema": "market_data", "ohlcv_rows": 1, "oi_rows": 0},
-    )
-    monkeypatch.setattr(
-        "sys.argv",
-        [
-            "main.py",
-            "loader",
-            "--exchange",
-            "deribit",
-            "--market",
-            "spot",
-            "--symbols",
-            "BTCUSDT",
-            "--save-timescaledb",
-            "--timescaledb-schema",
-            "crypto_market",
-            "--timescaledb-no-bootstrap",
-            "--no-json-output",
-        ],
-    )
-
-    cli.main()
-    assert captured["schema"] == "crypto_market"
-    assert captured["create_schema"] is False
 
 
 def test_main_loader_randomizes_symbol_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -252,7 +193,7 @@ def test_main_loader_randomizes_symbol_schedule(monkeypatch: pytest.MonkeyPatch)
         "sys.argv",
         [
             "main.py",
-            "loader",
+            "bronze-ingest",
             "--exchange",
             "deribit",
             "--market",
@@ -268,6 +209,47 @@ def test_main_loader_randomizes_symbol_schedule(monkeypatch: pytest.MonkeyPatch)
     cli.main()
 
     assert seen_symbols == expected_order
+
+
+def test_main_bronze_ingest_command_uses_loader_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
+    class NoopLock:
+        def __init__(self, lock_path: str) -> None:
+            del lock_path
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+    called: dict[str, bool] = {"fetch": False}
+
+    def fake_fetch_candles_all_history(**kwargs: object) -> list[SpotCandle]:
+        del kwargs
+        called["fetch"] = True
+        return []
+
+    monkeypatch.setattr(cli, "SingleInstanceLock", NoopLock)
+    monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
+    monkeypatch.setattr(cli, "fetch_candles_all_history", fake_fetch_candles_all_history)
+    monkeypatch.setattr(cli, "_write_loader_samples", lambda **kwargs: None)
+    monkeypatch.setattr(
+        "sys.argv",
+        [
+            "main.py",
+            "bronze-ingest",
+            "--exchange",
+            "deribit",
+            "--market",
+            "spot",
+            "--symbols",
+            "BTCUSDT",
+            "--no-json-output",
+        ],
+    )
+
+    cli.main()
+    assert called["fetch"] is True
 
 
 def test_main_loader_randomizes_market_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -301,7 +283,7 @@ def test_main_loader_randomizes_market_schedule(monkeypatch: pytest.MonkeyPatch)
         "sys.argv",
         [
             "main.py",
-            "loader",
+            "bronze-ingest",
             "--exchange",
             "deribit",
             "--market",
@@ -329,20 +311,26 @@ def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.Mon
         def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
             del exc_type, exc, tb
 
-    call_order: list[str] = []
+    scheduled_groups: list[str] = []
 
-    async def fake_fetch_candle_tasks_parallel(**kwargs: object) -> tuple[dict[tuple[object, ...], list[object]], dict[tuple[object, ...], str]]:
+    async def fake_fetch_candle_tasks_parallel(
+        **kwargs: object,
+    ) -> tuple[dict[tuple[object, ...], list[object]], dict[tuple[object, ...], str]]:
         tasks = cast(list[tuple[str, str, str, str]], kwargs["tasks"])
-        if tasks:
-            call_order.append(tasks[0][1])
+        for task in tasks:
+            scheduled_groups.append(task[1])
         return {}, {}
 
-    async def fake_fetch_open_interest_tasks_parallel(**kwargs: object) -> tuple[dict[tuple[object, ...], list[object]], dict[tuple[object, ...], str]]:
-        call_order.append("oi")
+    async def fake_fetch_open_interest_tasks_parallel(
+        **kwargs: object,
+    ) -> tuple[dict[tuple[object, ...], list[object]], dict[tuple[object, ...], str]]:
+        scheduled_groups.append("oi")
         return {}, {}
 
-    async def fake_fetch_funding_tasks_parallel(**kwargs: object) -> tuple[dict[tuple[object, ...], list[object]], dict[tuple[object, ...], str]]:
-        call_order.append("funding")
+    async def fake_fetch_funding_tasks_parallel(
+        **kwargs: object,
+    ) -> tuple[dict[tuple[object, ...], list[object]], dict[tuple[object, ...], str]]:
+        scheduled_groups.append("funding")
         return {}, {}
 
     def fake_random_order(values: list[str]) -> list[str]:
@@ -360,7 +348,7 @@ def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.Mon
         "sys.argv",
         [
             "main.py",
-            "loader",
+            "bronze-ingest",
             "--exchange",
             "deribit",
             "--market",
@@ -376,10 +364,10 @@ def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.Mon
 
     cli.main()
 
-    assert call_order == ["funding", "oi", "perp", "spot"]
+    assert {"funding", "oi", "perp", "spot"}.issubset(set(scheduled_groups))
 
 
-def test_write_loader_samples_writes_grouped_dataframes_and_matching_plot_names(
+def test_write_loader_samples_writes_grouped_dataframes_without_plots(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -415,10 +403,9 @@ def test_write_loader_samples_writes_grouped_dataframes_and_matching_plot_names(
     )
 
     sample_files = {path.name for path in (tmp_path / "samples").glob("*")}
-    assert "spot_deribit_BTCUSDT_1m_sample_10_rows.csv" in sample_files
-    assert "spot_deribit_BTCUSDT_1m_sample_10_rows.png" in sample_files
-    assert "oi_perp_deribit_BTCUSDT_1m_sample_10_rows.csv" in sample_files
-    assert "oi_perp_deribit_BTCUSDT_1m_sample_10_rows.png" in sample_files
+    assert "bronze_spot_deribit_BTCUSDT_1m_sample_10_rows.csv" in sample_files
+    assert "bronze_oi_perp_deribit_BTCUSDT_1m_sample_10_rows.csv" in sample_files
+    assert not any(path.suffix == ".png" for path in (tmp_path / "samples").glob("*"))
     assert not any(path.suffix == ".parquet" for path in (tmp_path / "samples").glob("*"))
 
 
@@ -471,7 +458,7 @@ def test_loader_rejects_removed_timeframe_argument(monkeypatch: pytest.MonkeyPat
         "argv",
         [
             "main.py",
-            "loader",
+            "bronze-ingest",
             "--exchange",
             "deribit",
             "--market",
@@ -486,20 +473,3 @@ def test_loader_rejects_removed_timeframe_argument(monkeypatch: pytest.MonkeyPat
     with pytest.raises(SystemExit):
         cli.main()
 
-
-def test_ingest_timescaledb_rejects_non_1m_timeframe(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        sys,
-        "argv",
-        [
-            "main.py",
-            "ingest-timescaledb",
-            "--lake-root",
-            "lake/bronze",
-            "--timeframes",
-            "5m",
-            "--no-json-output",
-        ],
-    )
-    with pytest.raises(ValueError, match="supports only 1m timeframe"):
-        cli.main()

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from pathlib import Path
+
+import pyarrow.parquet as pq
 
 from ingestion.lake import (
     candle_partition_key,
@@ -40,11 +43,11 @@ def _sample_candle() -> SpotCandle:
 def test_partition_key_and_path() -> None:
     candle = _sample_candle()
     key = candle_partition_key(candle=candle, market="spot")
-    assert key == ("deribit", "spot", "BTCUSDT", "1m", "2026-04")
+    assert key == ("deribit", "spot", "BTCUSDT", "1m", "2026-04-27")
 
     result = partition_path("lake/bronze", "spot", key)
     assert str(result).endswith(
-        "dataset_type=spot/exchange=deribit/instrument_type=spot/symbol=BTCUSDT/timeframe=1m/date=2026-04"
+        "dataset_type=spot/exchange=deribit/instrument_type=spot/symbol=BTCUSDT/timeframe=1m/month=2026-04/date=2026-04-27"
     )
 
 
@@ -56,8 +59,8 @@ def test_candle_record_contains_core_fields() -> None:
     assert record["dataset_type"] == "spot"
     assert record["instrument_type"] == "spot"
     assert record["run_id"] == "run-1"
-    assert record["open"] == 100.0
-    assert record["close"] == 105.0
+    assert record["open_price"] == 100.0
+    assert record["close_price"] == 105.0
 
 
 def test_merge_and_deduplicate_rows_keeps_latest_record() -> None:
@@ -118,7 +121,7 @@ def test_save_spot_candles_parquet_lake_rewrites_single_partition_file(tmp_path:
 
     assert files_1 == files_2
     assert len(files_2) == 1
-    assert files_2[0].endswith("/data.parquet")
+    assert "/month=2026-04/date=2026-04-27/data.parquet" in files_2[0]
 
 
 def test_open_times_in_lake_returns_sorted_unique(tmp_path: Path) -> None:
@@ -210,7 +213,7 @@ def test_load_spot_candles_from_lake_reads_full_partition_history(tmp_path: Path
     assert [item.open_time for item in values] == [candle_apr.open_time, candle_may.open_time]
 
 
-def test_load_open_interest_from_lake_preserves_feature_flags(tmp_path: Path) -> None:
+def test_load_open_interest_from_lake_preserves_observed_rows(tmp_path: Path) -> None:
     observed = OpenInterestPoint(
         exchange="deribit",
         symbol="BTCUSDT",
@@ -244,15 +247,69 @@ def test_load_open_interest_from_lake_preserves_feature_flags(tmp_path: Path) ->
         timeframe="1m",
     )
 
-    assert len(values) == 9
-    assert values[0].oi_is_observed is True
-    assert values[0].minutes_since_oi_observation == 0
-    assert values[0].oi_ffill == 100000.0
+    assert len(values) == 2
+    assert values[0].open_interest == 100000.0
+    assert values[1].open_interest == 101500.0
 
-    assert values[1].oi_is_observed is False
-    assert values[1].minutes_since_oi_observation == 1
-    assert values[1].oi_ffill == 100000.0
 
-    assert values[8].oi_is_observed is True
-    assert values[8].minutes_since_oi_observation == 0
-    assert values[8].oi_ffill == 101500.0
+def test_bronze_open_interest_writes_no_engineered_feature_columns(tmp_path: Path) -> None:
+    observed = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 12, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 12, 0, 59, 999000, tzinfo=UTC),
+        open_interest=100000.0,
+        open_interest_value=0.0,
+    )
+    files = save_open_interest_parquet_lake(
+        {"deribit": {"BTCUSDT": [observed]}},
+        market="perp",
+        lake_root=str(tmp_path),
+    )
+    parquet_file = pq.ParquetFile(files[0])  # type: ignore[no-untyped-call]
+    columns = set(parquet_file.schema_arrow.names)
+    assert "open_interest" in columns
+    assert "open_interest_value" in columns
+    assert "oi_ffill" not in columns
+    assert "oi_is_observed" not in columns
+    assert "minutes_since_oi_observation" not in columns
+
+
+def test_bronze_all_symbols_use_same_daily_partition_format(tmp_path: Path) -> None:
+    btc = SpotCandle(
+        exchange="deribit",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
+        open_price=100.0,
+        high_price=101.0,
+        low_price=99.0,
+        close_price=100.5,
+        volume=10.0,
+        quote_volume=1000.0,
+        trade_count=10,
+    )
+    eth = SpotCandle(
+        exchange="deribit",
+        symbol="ETHUSDT",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
+        open_price=200.0,
+        high_price=202.0,
+        low_price=199.0,
+        close_price=201.0,
+        volume=12.0,
+        quote_volume=2400.0,
+        trade_count=12,
+    )
+    files = save_spot_candles_parquet_lake(
+        {"deribit": {"BTCUSDT": [btc], "ETHUSDT": [eth]}},
+        market="spot",
+        lake_root=str(tmp_path),
+    )
+    assert len(files) == 2
+    for file_path in files:
+        assert re.search(r"/month=\d{4}-\d{2}/date=\d{4}-\d{2}-\d{2}/data\.parquet$", file_path) is not None

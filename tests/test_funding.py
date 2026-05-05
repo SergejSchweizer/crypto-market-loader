@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 
+from ingestion.exchanges import deribit_funding
 from ingestion.funding import fetch_funding_all_history, fetch_funding_range, normalize_funding_timeframe
-from ingestion.http_client import HttpClientHttpError
+from ingestion.http_client import HttpClientError, HttpClientHttpError
 
 
 def test_normalize_funding_timeframe_uses_native_deribit_interval() -> None:
@@ -43,6 +46,29 @@ def test_fetch_funding_range_returns_empty_on_http_400(monkeypatch: pytest.Monke
     ) -> list[dict[str, object]]:
         del symbol, period, start_open_ms, end_open_ms
         raise HttpClientHttpError("bad request", status_code=400, retryable=False)
+
+    monkeypatch.setattr("ingestion.funding.deribit_funding.fetch_funding_range", fake_fetch_funding_range)
+
+    rows = fetch_funding_range(
+        exchange="deribit",
+        symbol="SOL",
+        interval="1m",
+        start_open_ms=0,
+        end_open_ms=60_000,
+        market="perp",
+    )
+    assert rows == []
+
+
+def test_fetch_funding_range_returns_empty_on_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_fetch_funding_range(
+        symbol: str,
+        period: str,
+        start_open_ms: int,
+        end_open_ms: int,
+    ) -> list[dict[str, object]]:
+        del symbol, period, start_open_ms, end_open_ms
+        raise HttpClientError("Connection error")
 
     monkeypatch.setattr("ingestion.funding.deribit_funding.fetch_funding_range", fake_fetch_funding_range)
 
@@ -149,3 +175,14 @@ def test_fetch_funding_range_normalizes_symbol_aliases_for_deribit(
     assert len(rows) == 1
     assert rows[0].symbol == expected_symbol
     assert rows[0].interval == "8h"
+
+
+def test_parse_funding_row_preserves_raw_timestamp() -> None:
+    ts_ms = int(datetime(2026, 4, 28, 12, 8, 34, tzinfo=UTC).timestamp() * 1000)
+    parsed = deribit_funding.parse_funding_row(
+        symbol="BTC-PERPETUAL",
+        period="8h",
+        row={"timestamp": ts_ms, "interest_8h": 0.0001, "index_price": 100.0, "prev_index_price": 99.0},
+    )
+    assert parsed["open_time"] == datetime(2026, 4, 28, 12, 8, 34, tzinfo=UTC)
+    assert parsed["close_time"] == datetime(2026, 4, 28, 12, 8, 34, tzinfo=UTC)

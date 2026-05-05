@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, cast
 
 from ingestion.exchanges import deribit_funding
-from ingestion.http_client import HttpClientHttpError
+from ingestion.http_client import HttpClientError, HttpClientHttpError
 from ingestion.spot import Exchange, Market, interval_to_milliseconds, normalize_storage_symbol
 
 DERIBIT_FUNDING_NATIVE_INTERVAL = "8h"
@@ -57,8 +57,9 @@ def normalize_funding_timeframe(exchange: Exchange, value: str) -> str:
         raise ValueError(f"Unsupported exchange '{exchange}'")
     normalized = value.strip().lower()
     if normalized not in {"1m", "m1", DERIBIT_FUNDING_NATIVE_INTERVAL}:
+        supported = f"1m, M1, {DERIBIT_FUNDING_NATIVE_INTERVAL}"
         raise ValueError(
-            f"Unsupported funding timeframe '{value}' for {exchange}. Supported values: 1m, M1, {DERIBIT_FUNDING_NATIVE_INTERVAL}"
+            f"Unsupported funding timeframe '{value}' for {exchange}. Supported values: {supported}"
         )
     return DERIBIT_FUNDING_NATIVE_INTERVAL
 
@@ -90,7 +91,9 @@ def fetch_funding_all_history(
         def _on_page(page: list[dict[str, object]]) -> None:
             if on_history_chunk is None:
                 return
-            parsed_page = [deribit_funding.parse_funding_row(normalized_symbol, normalized_interval, row) for row in page]
+            parsed_page = [
+                deribit_funding.parse_funding_row(normalized_symbol, normalized_interval, row) for row in page
+            ]
             on_history_chunk(
                 [
                     FundingPoint(
@@ -118,6 +121,8 @@ def fetch_funding_all_history(
         if exc.status_code == 400:
             return []
         raise
+    except HttpClientError:
+        return []
     parsed = [deribit_funding.parse_funding_row(normalized_symbol, normalized_interval, row) for row in rows]
     return [
         FundingPoint(
@@ -161,6 +166,8 @@ def fetch_funding_range(
         if exc.status_code == 400:
             return []
         raise
+    except HttpClientError:
+        return []
     parsed = [deribit_funding.parse_funding_row(normalized_symbol, normalized_interval, row) for row in rows]
     return [
         FundingPoint(

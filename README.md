@@ -12,10 +12,10 @@ It is built for:
 
 Scope in this repository:
 - Exchange: `deribit`
-- Datatypes: `spot`, `perp`, `oi_m1_feature`, `funding`
+- Datatypes: `spot`, `perp`, `oi`, `funding`
 - Symbols: `BTC`, `ETH`, `SOL`
-- Ingestion policy: `1m` loader timeframe (funding remains native `8h`)
-- Storage targets: Parquet lake and TimescaleDB
+- Ingestion policy: `1m` bronze-ingest timeframe (funding remains native `8h`)
+- Storage target: Parquet lake
 
 ## 2. End-to-End Flow
 
@@ -26,8 +26,7 @@ CLI command
   -> normalized typed rows
   -> sinks:
        A) Parquet partition lake
-       B) TimescaleDB typed tables
-  -> optional sample CSV + plot artifacts
+  -> optional sample CSV artifacts
 ```
 
 ## 3. Project Overview
@@ -37,7 +36,7 @@ CLI command
 | Datatype | Market Domain | Importance |
 |---|---|---|
 | `perp` | Perpetual markets | `5/5` |
-| `oi_m1_feature` | Perpetual markets | `4/5` |
+| `oi` | Perpetual markets | `4/5` |
 | `funding` | Perpetual markets | `3/5` |
 | `spot` | Spot markets | `2/5` |
 
@@ -47,7 +46,7 @@ CLI command
 |---|---|
 | `spot` | Spot markets |
 | `perp` | Perpetual markets |
-| `oi_m1_feature` | Perpetual markets |
+| `oi` | Perpetual markets |
 | `funding` | Perpetual markets |
 
 ## 4. Data Contracts By Datatype
@@ -56,10 +55,10 @@ CLI command
 - Source endpoint: `public/get_tradingview_chart_data`
 - Stored cadence: `1m`
 - Parquet dataset: `dataset_type=spot`
-- Timescale table: `spot`
+
 - Timeframe handling: fixed `1m` cadence (no variable timeframe key in core contract)
 - Core fields:
-  - `open`, `high`, `low`, `close`: OHLC Preise pro 1m-Intervall
+  - `open_price`, `high_price`, `low_price`, `close_price`: OHLC Preise pro 1m-Intervall
   - `volume`: gehandelte Basis-Menge im Intervall
   - `quote_volume`: gehandeltes Notional in Quote-Währung
   - `trade_count`: Anzahl Trades im Intervall
@@ -68,37 +67,33 @@ CLI command
 - Source endpoint: `public/get_tradingview_chart_data`
 - Stored cadence: `1m`
 - Parquet dataset: `dataset_type=perp`
-- Timescale table: `perp`
+
 - Timeframe handling: fixed `1m` cadence (no variable timeframe key in core contract)
 - Core fields:
-  - `open`, `high`, `low`, `close`: OHLC Preise pro 1m-Intervall (Perpetual)
+  - `open_price`, `high_price`, `low_price`, `close_price`: OHLC Preise pro 1m-Intervall (Perpetual)
   - `volume`: gehandelte Kontrakt-/Basis-Menge im Intervall
   - `quote_volume`: gehandeltes Notional in Quote-Währung
   - `trade_count`: Anzahl Trades im Intervall
 
-### 4.3 `oi_m1_feature`
+### 4.3 `oi`
 - Source endpoint: `public/get_last_settlements_by_instrument`
-- Stored cadence: `1m` feature grid
-- Parquet dataset: `dataset_type=oi_m1_feature`
-- Timescale table: `open_interest`
-- Timeframe handling: fixed `1m` feature grid (no variable timeframe key in core contract)
+- Stored cadence: raw event timestamp
+- Bronze persistence: observed source rows only (no synthetic gap-fill rows at bronze layer)
+- Parquet dataset: `dataset_type=oi`
+
+- Timeframe handling: source event-time rows are preserved without feature-grid expansion
 - Core fields:
   - `open_interest`: beobachteter Open-Interest-Wert des Quellpunkts
   - `open_interest_value`: Wertmaß von Open Interest laut Quelle (falls vorhanden)
-  - `oi_ffill`: auf 1m-Grid vorwärtsgefüllter OI-Wert
-  - `oi_is_observed`: `true` bei Originalpunkt, `false` bei synthetischer Fill-Row
-  - `minutes_since_oi_observation`: Minuten seit letztem beobachteten OI-Punkt
 - Semantics:
-  - observed OI minute: `oi_is_observed=true`, `minutes_since_oi_observation=0`
-  - synthetic minute: forward-filled value, `oi_is_observed=false`, counter increments
-  - no backward-fill before first observed point
+  - bronze stores observed rows only; synthetic interpolation is deferred to later medallion steps
 
 ### 4.4 `funding`
 - Source endpoint: `public/get_funding_rate_history`
-- Stored cadence: native `8h` (not transformed to `1m`)
+- Stored cadence: raw event timestamp
 - Parquet dataset: `dataset_type=funding`
-- Timescale table: `funding`
-- Timeframe handling: fixed native `8h` cadence (no variable timeframe key in core contract)
+
+- Timeframe handling: source event-time rows are preserved without bucket aggregation
 - Core fields:
   - `funding_rate`: Funding-Rate des nativen 8h-Fensters
   - `index_price`: Referenz-/Indexpreis zum Funding-Zeitpunkt
@@ -120,12 +115,10 @@ project/
 
 Key modules:
 - `application/services/fetch_service.py`: sequential fetch orchestration
-- `application/services/storage_service.py`: parquet + Timescale write orchestration
-- `application/services/artifact_service.py`: sample CSV/plot output
+- `application/services/storage_service.py`: parquet write orchestration
+- `application/services/artifact_service.py`: sample CSV output
 - `ingestion/lake.py`: partitioned parquet read/write/load
-- `infra/timescaledb/sink.py`: table DDL, upserts, watermarks
 - `api/commands/loader.py`: main online ingestion entrypoint
-- `api/commands/timescaledb_ingest.py`: offline parquet -> Timescale ingest
 
 ## 6. Installation And Environment
 
@@ -146,7 +139,6 @@ If repository path changes, recreate `.venv` so entrypoint shebangs stay valid.
 ### 6.3 Core Dependencies
 - `pyarrow`: parquet I/O
 - `pandas`, `numpy`: dataframe and numerical operations
-- `matplotlib`: optional plotting
 
 ### 6.4 Tooling Dependencies
 - `ruff`: lint/style checks
@@ -160,31 +152,20 @@ If repository path changes, recreate `.venv` so entrypoint shebangs stay valid.
 Spot:
 
 ```bash
-python3 main.py loader --exchange deribit --market spot --symbols BTC ETH SOL
+python3 main.py bronze-ingest --exchange deribit --market spot --symbols BTC ETH SOL
 ```
 
 All datatypes:
 
 ```bash
-python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --save-parquet-lake --lake-root lake/bronze
+python3 main.py bronze-ingest --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --save-parquet-lake --lake-root lake/bronze
 ```
 
-All datatypes + Timescale:
-
-```bash
-python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --save-timescaledb --timescaledb-schema market_data
-```
-
-With plots:
-
-```bash
-python3 main.py loader --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --save-parquet-lake --plot
-```
 
 ### 7.2 Ingestion Policy
 - Loader CLI has no timeframe parameter; cadence is fixed by datatype:
 - Effective persisted cadence:
-  - `spot`, `perp`, `oi_m1_feature`: `1m`
+  - `spot`, `perp`, `oi`: `1m`
   - `funding`: `8h`
 
 ### 7.3 Delta Behavior
@@ -203,42 +184,32 @@ Default mode is delta-first:
 
 ```text
 dataset_type=spot/
-  exchange=<exchange>/instrument_type=spot/symbol=<symbol>/timeframe=<interval>/date=<YYYY-MM>/data.parquet
+  exchange=<exchange>/instrument_type=spot/symbol=<symbol>/timeframe=<interval>/month=<YYYY-MM>/date=<YYYY-MM-DD>/data.parquet
 
 dataset_type=perp/
-  exchange=<exchange>/instrument_type=perp/symbol=<symbol>/timeframe=<interval>/date=<YYYY-MM>/data.parquet
+  exchange=<exchange>/instrument_type=perp/symbol=<symbol>/timeframe=<interval>/month=<YYYY-MM>/date=<YYYY-MM-DD>/data.parquet
 
-dataset_type=oi_m1_feature/
-  exchange=<exchange>/instrument_type=perp/symbol=<symbol>/timeframe=<interval>/date=<YYYY-MM>/data.parquet
+dataset_type=oi/
+  exchange=<exchange>/instrument_type=perp/symbol=<symbol>/timeframe=<interval>/month=<YYYY-MM>/date=<YYYY-MM-DD>/data.parquet
 
 dataset_type=funding/
-  exchange=<exchange>/instrument_type=perp/symbol=<symbol>/timeframe=<interval>/date=<YYYY-MM>/data.parquet
+  exchange=<exchange>/instrument_type=perp/symbol=<symbol>/timeframe=<interval>/month=<YYYY-MM>/date=<YYYY-MM-DD>/data.parquet
 ```
 
-### 8.2 TimescaleDB Tables
-- `spot`
-- `perp`
-- `open_interest`
-- `funding`
-- `ingest_watermarks`
-
-### 8.3 Architecture/Storage Tradeoffs
+### 8.2 Architecture/Storage Tradeoffs
 - Parquet lake: cheap historical storage, partition-friendly batch reads, reproducibility
-- TimescaleDB: indexed low-latency time-series queries, robust incremental upserts
-- Combined model: keeps history-oriented storage independent from serving-oriented storage
 
 ## 9. Datetime, Sampling, And Plot Nuances
 
 ### 9.1 Datetime Semantics
 - `open_time`, `close_time`, `event_time` are UTC timestamps
-- interval alignment follows exchange-derived bucket boundaries
+- for OI, raw source event timestamps are preserved; OHLCV remains interval-aligned
 - `ingested_at` is UTC write timestamp
 
 ### 9.2 Samples And Plots
 - CSV samples are random across full available series (`random_state=42`)
 - if series length `< 10`, sampling uses replacement (duplicates are expected)
-- plots are generated only when `--plot` is enabled
-- each plot uses full available period and downsampling capped at `1000` points
+- sample artifact output is CSV-only for bronze ingestion
 
 ## 10. Testing And Quality Gates
 
@@ -278,21 +249,11 @@ global:
   no_json_output: false
 
 env:
-  TIMESCALEDB_HOST: 127.0.0.1
-  TIMESCALEDB_PORT: 54321
-  TIMESCALEDB_USER: crypto
-  TIMESCALEDB_PASSWORD: <secret>
-
-loader:
+  bronze-ingest:
   exchange: deribit
   market: [funding]
   symbols: [BTC, ETH]
-  plot: true
   save_parquet_lake: true
-
-ingest-timescaledb:
-  lake_root: lake/bronze
-  timeframes: [1m]
 
 export-descriptive-stats:
   start_time: "2026-01-01T00:00:00+00:00"
@@ -302,7 +263,7 @@ export-descriptive-stats:
 Use non-default config path:
 
 ```bash
-python3 main.py --config /path/to/config.yaml loader
+python3 main.py --config /path/to/config.yaml bronze-ingest
 ```
 
 Bootstrap local config:

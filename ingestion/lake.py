@@ -11,7 +11,7 @@ from typing import Any, cast
 
 from application.schema import dataset_contract
 from ingestion.funding import FundingPoint
-from ingestion.open_interest import OpenInterestPoint, expand_open_interest_to_interval_grid
+from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import SpotCandle
 
 DatasetType = str
@@ -44,7 +44,7 @@ def candle_partition_key(candle: SpotCandle, market: str) -> PartitionKey:
         market,
         candle.symbol,
         candle.interval,
-        candle.open_time.strftime("%Y-%m"),
+        candle.open_time.strftime("%Y-%m-%d"),
     )
 
 
@@ -52,6 +52,7 @@ def partition_path(lake_root: str, dataset_type: DatasetType, key: PartitionKey)
     """Return destination path for one parquet partition."""
 
     exchange, instrument_type, symbol, timeframe, date_partition = key
+    month_partition = date_partition[:7]
     return (
         Path(lake_root)
         / f"dataset_type={dataset_type}"
@@ -59,12 +60,13 @@ def partition_path(lake_root: str, dataset_type: DatasetType, key: PartitionKey)
         / f"instrument_type={instrument_type}"
         / f"symbol={symbol}"
         / f"timeframe={timeframe}"
+        / f"month={month_partition}"
         / f"date={date_partition}"
     )
 
 
 def candle_record(candle: SpotCandle, market: str, run_id: str, ingested_at: datetime) -> dict[str, object]:
-    """Convert a candle to generic parquet-lake row format."""
+    """Convert a candle to bronze parquet row format (source-shaped fields)."""
 
     return {
         "schema_version": "v1",
@@ -79,14 +81,14 @@ def candle_record(candle: SpotCandle, market: str, run_id: str, ingested_at: dat
         "open_time": candle.open_time,
         "close_time": candle.close_time,
         "timeframe": candle.interval,
-        "open": candle.open_price,
-        "high": candle.high_price,
-        "low": candle.low_price,
-        "close": candle.close_price,
+        "open_price": candle.open_price,
+        "high_price": candle.high_price,
+        "low_price": candle.low_price,
+        "close_price": candle.close_price,
         "volume": candle.volume,
         "quote_volume": candle.quote_volume,
         "trade_count": candle.trade_count,
-        "extra": asdict(candle),
+        "origin_payload": asdict(candle),
     }
 
 
@@ -98,7 +100,7 @@ def open_interest_partition_key(item: OpenInterestPoint, market: str) -> Partiti
         market,
         item.symbol,
         item.interval,
-        item.open_time.strftime("%Y-%m"),
+        item.open_time.strftime("%Y-%m-%d"),
     )
 
 
@@ -108,7 +110,7 @@ def open_interest_record(
     run_id: str,
     ingested_at: datetime,
 ) -> dict[str, object]:
-    """Convert open-interest point to parquet-lake row format."""
+    """Convert open-interest point to bronze parquet row format (source-shaped fields)."""
 
     return {
         "schema_version": "v1",
@@ -125,9 +127,6 @@ def open_interest_record(
         "timeframe": item.interval,
         "open_interest": item.open_interest,
         "open_interest_value": item.open_interest_value,
-        "oi_ffill": item.open_interest if item.oi_ffill is None else item.oi_ffill,
-        "oi_is_observed": item.oi_is_observed,
-        "minutes_since_oi_observation": item.minutes_since_oi_observation,
     }
 
 
@@ -139,7 +138,7 @@ def funding_partition_key(item: FundingPoint, market: str) -> PartitionKey:
         market,
         item.symbol,
         item.interval,
-        item.open_time.strftime("%Y-%m"),
+        item.open_time.strftime("%Y-%m-%d"),
     )
 
 
@@ -197,7 +196,7 @@ def open_times_in_lake_by_dataset(
         return []
 
     values: list[datetime] = []
-    for data_file in sorted(partition_root.glob("date=*/data.parquet")):
+    for data_file in sorted(partition_root.glob("month=*/date=*/data.parquet")):
         parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
         for batch in parquet_file.iter_batches(columns=["open_time"], batch_size=10_000):  # type: ignore[no-untyped-call]
             for row in batch.to_pylist():
@@ -363,7 +362,7 @@ def latest_open_time_in_lake_by_dataset(
     if not partition_root.exists():
         return None
 
-    data_files = sorted(partition_root.glob("date=*/data.parquet"))
+    data_files = sorted(partition_root.glob("month=*/date=*/data.parquet"))
     if not data_files:
         return None
     latest_file = data_files[-1]
@@ -425,7 +424,7 @@ def load_spot_candles_from_lake(
         return []
 
     candles_by_open_time: dict[datetime, SpotCandle] = {}
-    for data_file in sorted(partition_root.glob("date=*/data.parquet")):
+    for data_file in sorted(partition_root.glob("month=*/date=*/data.parquet")):
         parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
         for batch in parquet_file.iter_batches(batch_size=10_000):  # type: ignore[no-untyped-call]
             for row in batch.to_pylist():
@@ -440,10 +439,10 @@ def load_spot_candles_from_lake(
                     interval=str(row.get("timeframe", timeframe)),
                     open_time=open_time,
                     close_time=close_time,
-                    open_price=float(row.get("open", 0.0)),
-                    high_price=float(row.get("high", 0.0)),
-                    low_price=float(row.get("low", 0.0)),
-                    close_price=float(row.get("close", 0.0)),
+                    open_price=float(row.get("open_price", row.get("open", 0.0))),
+                    high_price=float(row.get("high_price", row.get("high", 0.0))),
+                    low_price=float(row.get("low_price", row.get("low", 0.0))),
+                    close_price=float(row.get("close_price", row.get("close", 0.0))),
                     volume=float(row.get("volume", 0.0)),
                     quote_volume=None if quote_volume_raw is None else float(quote_volume_raw),
                     trade_count=int(row.get("trade_count", 0)),
@@ -477,7 +476,7 @@ def load_open_interest_from_lake(
         return []
 
     items_by_open_time: dict[datetime, OpenInterestPoint] = {}
-    for data_file in sorted(partition_root.glob("date=*/data.parquet")):
+    for data_file in sorted(partition_root.glob("month=*/date=*/data.parquet")):
         parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
         for batch in parquet_file.iter_batches(batch_size=10_000):  # type: ignore[no-untyped-call]
             for row in batch.to_pylist():
@@ -493,13 +492,6 @@ def load_open_interest_from_lake(
                     close_time=close_time,
                     open_interest=float(row.get("open_interest", 0.0)),
                     open_interest_value=float(row.get("open_interest_value", 0.0)),
-                    oi_ffill=(
-                        float(row["oi_ffill"])
-                        if row.get("oi_ffill") is not None
-                        else float(row.get("open_interest", 0.0))
-                    ),
-                    oi_is_observed=bool(row.get("oi_is_observed", True)),
-                    minutes_since_oi_observation=int(row.get("minutes_since_oi_observation", 0)),
                 )
     return [items_by_open_time[key] for key in sorted(items_by_open_time)]
 
@@ -530,7 +522,7 @@ def load_funding_from_lake(
         return []
 
     items_by_open_time: dict[datetime, FundingPoint] = {}
-    for data_file in sorted(partition_root.glob("date=*/data.parquet")):
+    for data_file in sorted(partition_root.glob("month=*/date=*/data.parquet")):
         parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
         for batch in parquet_file.iter_batches(batch_size=10_000):  # type: ignore[no-untyped-call]
             for row in batch.to_pylist():
@@ -610,8 +602,7 @@ def save_open_interest_parquet_lake(
     grouped: defaultdict[PartitionKey, list[dict[str, object]]] = defaultdict(list)
     for symbol_map in open_interest_by_exchange.values():
         for items in symbol_map.values():
-            expanded_items = expand_open_interest_to_interval_grid(items)
-            for item in expanded_items:
+            for item in items:
                 key = open_interest_partition_key(item=item, market=market)
                 grouped[key].append(
                     open_interest_record(item=item, market=market, run_id=run_id, ingested_at=ingested_at)
@@ -690,8 +681,12 @@ def load_combined_dataframe_from_lake(
 
     data_files = sorted(
         [
-            *Path(lake_root).glob("dataset_type=spot/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"),
-            *Path(lake_root).glob("dataset_type=perp/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"),
+            *Path(lake_root).glob(
+                "dataset_type=spot/exchange=*/instrument_type=*/symbol=*/timeframe=*/month=*/date=*/data.parquet"
+            ),
+            *Path(lake_root).glob(
+                "dataset_type=perp/exchange=*/instrument_type=*/symbol=*/timeframe=*/month=*/date=*/data.parquet"
+            ),
         ]
     )
 
@@ -722,6 +717,16 @@ def load_combined_dataframe_from_lake(
         parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
         for batch in parquet_file.iter_batches(batch_size=10_000):  # type: ignore[no-untyped-call]
             frame = batch.to_pandas()
+            # Bronze may store source-shaped candle fields; normalize for dataframe consumers.
+            rename_map = {
+                "open_price": "open",
+                "high_price": "high",
+                "low_price": "low",
+                "close_price": "close",
+            }
+            for source_col, target_col in rename_map.items():
+                if target_col not in frame.columns and source_col in frame.columns:
+                    frame[target_col] = frame[source_col]
             if start_time is not None:
                 frame = frame[frame["open_time"] >= start_time]
             if end_time is not None:
@@ -762,7 +767,7 @@ def load_combined_dataframe_from_lake(
     if include_open_interest:
         oi_files = sorted(
             Path(lake_root).glob(
-                f"dataset_type={OI_DATASET_TYPE}/exchange=*/instrument_type=*/symbol=*/timeframe=*/date=*/data.parquet"
+                f"dataset_type={OI_DATASET_TYPE}/exchange=*/instrument_type=*/symbol=*/timeframe=*/month=*/date=*/data.parquet"
             )
         )
         oi_frames: list[Any] = []

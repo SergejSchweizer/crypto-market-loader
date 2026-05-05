@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import random
 from collections.abc import Callable
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from application.dto import (
     CandleFetchResultDTO,
@@ -46,6 +47,14 @@ from ingestion.spot import (
 OI_DATASET_TYPE = dataset_contract("oi").dataset_type
 
 
+def _ranges_in_random_order(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Return missing time ranges in randomized order for unbiased backfill scheduling."""
+
+    if len(ranges) <= 1:
+        return ranges
+    return random.SystemRandom().sample(ranges, k=len(ranges))
+
+
 def _task_timeout_seconds() -> float | None:
     """Return optional per-task timeout in seconds from environment."""
 
@@ -59,6 +68,34 @@ def _task_timeout_seconds() -> float | None:
     if value <= 0:
         return None
     return value
+
+
+def _split_range_into_utc_days(start_open_ms: int, end_open_ms: int) -> list[tuple[int, int]]:
+    """Split an inclusive millisecond range into UTC day-bounded slices."""
+
+    if end_open_ms < start_open_ms:
+        return []
+    start_dt = datetime.fromtimestamp(start_open_ms / 1000, tz=UTC)
+    end_dt = datetime.fromtimestamp(end_open_ms / 1000, tz=UTC)
+    cursor = start_dt
+    windows: list[tuple[int, int]] = []
+    while cursor.date() < end_dt.date():
+        day_end = datetime.combine(cursor.date(), datetime.min.time(), tzinfo=UTC) + timedelta(days=1) - timedelta(
+            milliseconds=1
+        )
+        windows.append((int(cursor.timestamp() * 1000), int(day_end.timestamp() * 1000)))
+        cursor = day_end + timedelta(milliseconds=1)
+    windows.append((int(cursor.timestamp() * 1000), end_open_ms))
+    return windows
+
+
+def _day_windows_in_random_order(start_open_ms: int, end_open_ms: int) -> list[tuple[int, int]]:
+    """Split range into UTC day windows and return them in random order."""
+
+    windows = _split_range_into_utc_days(start_open_ms, end_open_ms)
+    if len(windows) <= 1:
+        return windows
+    return random.SystemRandom().sample(windows, k=len(windows))
 
 
 def fetch_symbol_candles(
@@ -106,14 +143,18 @@ def fetch_symbol_candles(
         start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
         if start_open_ms > end_open_ms:
             return []
-        fetched_rows = range_fetcher(
-            exchange=exchange,
-            symbol=symbol,
-            interval=timeframe,
-            start_open_ms=start_open_ms,
-            end_open_ms=end_open_ms,
-            market=market,
-        )
+        fetched_rows: list[SpotCandle] = []
+        for day_start_ms, day_end_ms in _day_windows_in_random_order(start_open_ms, end_open_ms):
+            fetched_rows.extend(
+                range_fetcher(
+                    exchange=exchange,
+                    symbol=symbol,
+                    interval=timeframe,
+                    start_open_ms=day_start_ms,
+                    end_open_ms=day_end_ms,
+                    market=market,
+                )
+            )
         unique_by_open_time = {item.open_time: item for item in fetched_rows}
         return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
 
@@ -145,17 +186,18 @@ def fetch_symbol_candles(
         return []
 
     fetched: list[SpotCandle] = []
-    for start_open_ms, gap_end_ms in missing_ranges:
-        fetched.extend(
-            range_fetcher(
-                exchange=exchange,
-                symbol=symbol,
-                interval=timeframe,
-                start_open_ms=start_open_ms,
-                end_open_ms=gap_end_ms,
-                market=market,
+    for start_open_ms, gap_end_ms in _ranges_in_random_order(missing_ranges):
+        for day_start_ms, day_end_ms in _day_windows_in_random_order(start_open_ms, gap_end_ms):
+            fetched.extend(
+                range_fetcher(
+                    exchange=exchange,
+                    symbol=symbol,
+                    interval=timeframe,
+                    start_open_ms=day_start_ms,
+                    end_open_ms=day_end_ms,
+                    market=market,
+                )
             )
-        )
 
     unique_by_open_time = {item.open_time: item for item in fetched}
     return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
@@ -212,14 +254,18 @@ def fetch_symbol_open_interest(
         start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
         if start_open_ms > end_open_ms:
             return []
-        fetched_rows = range_fetcher(
-            exchange=exchange,
-            symbol=symbol,
-            interval=normalized_interval,
-            start_open_ms=start_open_ms,
-            end_open_ms=end_open_ms,
-            market=market,
-        )
+        fetched_rows: list[OpenInterestPoint] = []
+        for day_start_ms, day_end_ms in _day_windows_in_random_order(start_open_ms, end_open_ms):
+            fetched_rows.extend(
+                range_fetcher(
+                    exchange=exchange,
+                    symbol=symbol,
+                    interval=normalized_interval,
+                    start_open_ms=day_start_ms,
+                    end_open_ms=day_end_ms,
+                    market=market,
+                )
+            )
         unique_by_open_time = {item.open_time: item for item in fetched_rows}
         return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
 
@@ -252,17 +298,18 @@ def fetch_symbol_open_interest(
         return []
 
     fetched: list[OpenInterestPoint] = []
-    for start_open_ms, gap_end_ms in missing_ranges:
-        fetched.extend(
-            range_fetcher(
-                exchange=exchange,
-                symbol=symbol,
-                interval=normalized_interval,
-                start_open_ms=start_open_ms,
-                end_open_ms=gap_end_ms,
-                market=market,
+    for start_open_ms, gap_end_ms in _ranges_in_random_order(missing_ranges):
+        for day_start_ms, day_end_ms in _day_windows_in_random_order(start_open_ms, gap_end_ms):
+            fetched.extend(
+                range_fetcher(
+                    exchange=exchange,
+                    symbol=symbol,
+                    interval=normalized_interval,
+                    start_open_ms=day_start_ms,
+                    end_open_ms=day_end_ms,
+                    market=market,
+                )
             )
-        )
 
     unique_by_open_time = {item.open_time: item for item in fetched}
     return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
@@ -319,14 +366,18 @@ def fetch_symbol_funding(
         start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
         if start_open_ms > end_open_ms:
             return []
-        fetched_rows = range_fetcher(
-            exchange=exchange,
-            symbol=symbol,
-            interval=normalized_interval,
-            start_open_ms=start_open_ms,
-            end_open_ms=end_open_ms,
-            market=market,
-        )
+        fetched_rows: list[FundingPoint] = []
+        for day_start_ms, day_end_ms in _day_windows_in_random_order(start_open_ms, end_open_ms):
+            fetched_rows.extend(
+                range_fetcher(
+                    exchange=exchange,
+                    symbol=symbol,
+                    interval=normalized_interval,
+                    start_open_ms=day_start_ms,
+                    end_open_ms=day_end_ms,
+                    market=market,
+                )
+            )
         unique_by_open_time = {item.open_time: item for item in fetched_rows}
         return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
 
@@ -359,17 +410,18 @@ def fetch_symbol_funding(
         return []
 
     fetched: list[FundingPoint] = []
-    for start_open_ms, gap_end_ms in missing_ranges:
-        fetched.extend(
-            range_fetcher(
-                exchange=exchange,
-                symbol=symbol,
-                interval=normalized_interval,
-                start_open_ms=start_open_ms,
-                end_open_ms=gap_end_ms,
-                market=market,
+    for start_open_ms, gap_end_ms in _ranges_in_random_order(missing_ranges):
+        for day_start_ms, day_end_ms in _day_windows_in_random_order(start_open_ms, gap_end_ms):
+            fetched.extend(
+                range_fetcher(
+                    exchange=exchange,
+                    symbol=symbol,
+                    interval=normalized_interval,
+                    start_open_ms=day_start_ms,
+                    end_open_ms=day_end_ms,
+                    market=market,
+                )
             )
-        )
 
     unique_by_open_time = {item.open_time: item for item in fetched}
     return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
@@ -385,14 +437,17 @@ async def fetch_candle_tasks_parallel(
     on_task_complete: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
     on_task_chunk: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
 ) -> CandleFetchResultDTO:
-    """Fetch OHLCV tasks sequentially."""
+    """Fetch OHLCV tasks with bounded concurrency."""
 
-    del concurrency, shared_semaphore
     total_tasks = len(tasks)
     task_timeout_s = _task_timeout_seconds()
     task_results: dict[tuple[Exchange, Market, str, str], list[SpotCandle]] = {}
     task_errors: dict[tuple[Exchange, Market, str, str], str] = {}
-    for idx, task in enumerate(tasks, start=1):
+
+    semaphore = shared_semaphore or asyncio.Semaphore(max(1, concurrency))
+    results_lock = asyncio.Lock()
+
+    async def _run_task(idx: int, task: CandleFetchTaskDTO) -> None:
         logger.debug(
             "Fetch start [%s/%s] exchange=%s market=%s symbol=%s timeframe=%s mode=%s",
             idx,
@@ -405,39 +460,40 @@ async def fetch_candle_tasks_parallel(
         )
         key = (task.exchange, task.market, task.symbol, task.timeframe)
         try:
-            try:
-                fetch_call = asyncio.to_thread(
-                    symbol_fetcher,
-                    task.exchange,
-                    task.market,
-                    task.symbol,
-                    task.timeframe,
-                    lake_root,
-                    on_history_chunk=(lambda rows, _task=task: on_task_chunk(_task, rows))
-                    if on_task_chunk is not None
-                    else None,
-                )
-                candles = (
-                    await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
-                    if task_timeout_s is not None
-                    else await fetch_call
-                )
-            except TypeError as exc:
-                if "on_history_chunk" not in str(exc):
-                    raise
-                fetch_call = asyncio.to_thread(
-                    symbol_fetcher,
-                    task.exchange,
-                    task.market,
-                    task.symbol,
-                    task.timeframe,
-                    lake_root,
-                )
-                candles = (
-                    await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
-                    if task_timeout_s is not None
-                    else await fetch_call
-                )
+            async with semaphore:
+                try:
+                    fetch_call = asyncio.to_thread(
+                        symbol_fetcher,
+                        task.exchange,
+                        task.market,
+                        task.symbol,
+                        task.timeframe,
+                        lake_root,
+                        on_history_chunk=(lambda rows, _task=task: on_task_chunk(_task, rows))
+                        if on_task_chunk is not None
+                        else None,
+                    )
+                    candles = (
+                        await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
+                        if task_timeout_s is not None
+                        else await fetch_call
+                    )
+                except TypeError as exc:
+                    if "on_history_chunk" not in str(exc):
+                        raise
+                    fetch_call = asyncio.to_thread(
+                        symbol_fetcher,
+                        task.exchange,
+                        task.market,
+                        task.symbol,
+                        task.timeframe,
+                        lake_root,
+                    )
+                    candles = (
+                        await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
+                        if task_timeout_s is not None
+                        else await fetch_call
+                    )
             logger.debug(
                 "Fetch complete [%s/%s] exchange=%s market=%s symbol=%s timeframe=%s candles=%s",
                 idx,
@@ -448,9 +504,10 @@ async def fetch_candle_tasks_parallel(
                 task.timeframe,
                 len(candles),
             )
-            task_results[key] = candles
-            if on_task_complete is not None:
-                on_task_complete(task, candles)
+            async with results_lock:
+                task_results[key] = candles
+                if on_task_complete is not None:
+                    on_task_complete(task, candles)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Fetch failed exchange=%s market=%s symbol=%s timeframe=%s",
@@ -459,7 +516,10 @@ async def fetch_candle_tasks_parallel(
                 task.symbol,
                 task.timeframe,
             )
-            task_errors[key] = str(exc)
+            async with results_lock:
+                task_errors[key] = str(exc)
+
+    await asyncio.gather(*[_run_task(idx, task) for idx, task in enumerate(tasks, start=1)])
     return CandleFetchResultDTO(rows=task_results, errors=task_errors)
 
 
@@ -473,14 +533,16 @@ async def fetch_open_interest_tasks_parallel(
     on_task_complete: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
     on_task_chunk: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
 ) -> OpenInterestFetchResultDTO:
-    """Fetch open-interest tasks sequentially."""
+    """Fetch open-interest tasks with bounded concurrency."""
 
-    del concurrency, shared_semaphore
     total_tasks = len(tasks)
     task_timeout_s = _task_timeout_seconds()
     task_results: dict[tuple[Exchange, str, str], list[OpenInterestPoint]] = {}
     task_errors: dict[tuple[Exchange, str, str], str] = {}
-    for idx, task in enumerate(tasks, start=1):
+    semaphore = shared_semaphore or asyncio.Semaphore(max(1, concurrency))
+    results_lock = asyncio.Lock()
+
+    async def _run_task(idx: int, task: OpenInterestFetchTaskDTO) -> None:
         logger.debug(
             "OI fetch start [%s/%s] exchange=%s market=oi symbol=%s timeframe=%s mode=%s",
             idx,
@@ -492,39 +554,40 @@ async def fetch_open_interest_tasks_parallel(
         )
         key = (task.exchange, task.symbol, task.timeframe)
         try:
-            try:
-                fetch_call = asyncio.to_thread(
-                    symbol_fetcher,
-                    task.exchange,
-                    "perp",
-                    task.symbol,
-                    task.timeframe,
-                    lake_root,
-                    on_history_chunk=(lambda values, _task=task: on_task_chunk(_task, values))
-                    if on_task_chunk is not None
-                    else None,
-                )
-                rows = (
-                    await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
-                    if task_timeout_s is not None
-                    else await fetch_call
-                )
-            except TypeError as exc:
-                if "on_history_chunk" not in str(exc):
-                    raise
-                fetch_call = asyncio.to_thread(
-                    symbol_fetcher,
-                    task.exchange,
-                    "perp",
-                    task.symbol,
-                    task.timeframe,
-                    lake_root,
-                )
-                rows = (
-                    await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
-                    if task_timeout_s is not None
-                    else await fetch_call
-                )
+            async with semaphore:
+                try:
+                    fetch_call = asyncio.to_thread(
+                        symbol_fetcher,
+                        task.exchange,
+                        "perp",
+                        task.symbol,
+                        task.timeframe,
+                        lake_root,
+                        on_history_chunk=(lambda values, _task=task: on_task_chunk(_task, values))
+                        if on_task_chunk is not None
+                        else None,
+                    )
+                    rows = (
+                        await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
+                        if task_timeout_s is not None
+                        else await fetch_call
+                    )
+                except TypeError as exc:
+                    if "on_history_chunk" not in str(exc):
+                        raise
+                    fetch_call = asyncio.to_thread(
+                        symbol_fetcher,
+                        task.exchange,
+                        "perp",
+                        task.symbol,
+                        task.timeframe,
+                        lake_root,
+                    )
+                    rows = (
+                        await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
+                        if task_timeout_s is not None
+                        else await fetch_call
+                    )
             logger.debug(
                 "OI fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",
                 idx,
@@ -534,9 +597,10 @@ async def fetch_open_interest_tasks_parallel(
                 task.timeframe,
                 len(rows),
             )
-            task_results[key] = rows
-            if on_task_complete is not None:
-                on_task_complete(task, rows)
+            async with results_lock:
+                task_results[key] = rows
+                if on_task_complete is not None:
+                    on_task_complete(task, rows)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "OI fetch failed exchange=%s symbol=%s timeframe=%s",
@@ -544,7 +608,10 @@ async def fetch_open_interest_tasks_parallel(
                 task.symbol,
                 task.timeframe,
             )
-            task_errors[key] = str(exc)
+            async with results_lock:
+                task_errors[key] = str(exc)
+
+    await asyncio.gather(*[_run_task(idx, task) for idx, task in enumerate(tasks, start=1)])
     return OpenInterestFetchResultDTO(rows=task_results, errors=task_errors)
 
 
@@ -558,14 +625,16 @@ async def fetch_funding_tasks_parallel(
     on_task_complete: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
     on_task_chunk: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
 ) -> FundingFetchResultDTO:
-    """Fetch funding tasks sequentially."""
+    """Fetch funding tasks with bounded concurrency."""
 
-    del concurrency, shared_semaphore
     total_tasks = len(tasks)
     task_timeout_s = _task_timeout_seconds()
     task_results: dict[tuple[Exchange, str, str], list[FundingPoint]] = {}
     task_errors: dict[tuple[Exchange, str, str], str] = {}
-    for idx, task in enumerate(tasks, start=1):
+    semaphore = shared_semaphore or asyncio.Semaphore(max(1, concurrency))
+    results_lock = asyncio.Lock()
+
+    async def _run_task(idx: int, task: FundingFetchTaskDTO) -> None:
         logger.debug(
             "Funding fetch start [%s/%s] exchange=%s market=funding symbol=%s timeframe=%s mode=%s",
             idx,
@@ -577,39 +646,40 @@ async def fetch_funding_tasks_parallel(
         )
         key = (task.exchange, task.symbol, task.timeframe)
         try:
-            try:
-                fetch_call = asyncio.to_thread(
-                    symbol_fetcher,
-                    task.exchange,
-                    "perp",
-                    task.symbol,
-                    task.timeframe,
-                    lake_root,
-                    on_history_chunk=(lambda values, _task=task: on_task_chunk(_task, values))
-                    if on_task_chunk is not None
-                    else None,
-                )
-                rows = (
-                    await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
-                    if task_timeout_s is not None
-                    else await fetch_call
-                )
-            except TypeError as exc:
-                if "on_history_chunk" not in str(exc):
-                    raise
-                fetch_call = asyncio.to_thread(
-                    symbol_fetcher,
-                    task.exchange,
-                    "perp",
-                    task.symbol,
-                    task.timeframe,
-                    lake_root,
-                )
-                rows = (
-                    await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
-                    if task_timeout_s is not None
-                    else await fetch_call
-                )
+            async with semaphore:
+                try:
+                    fetch_call = asyncio.to_thread(
+                        symbol_fetcher,
+                        task.exchange,
+                        "perp",
+                        task.symbol,
+                        task.timeframe,
+                        lake_root,
+                        on_history_chunk=(lambda values, _task=task: on_task_chunk(_task, values))
+                        if on_task_chunk is not None
+                        else None,
+                    )
+                    rows = (
+                        await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
+                        if task_timeout_s is not None
+                        else await fetch_call
+                    )
+                except TypeError as exc:
+                    if "on_history_chunk" not in str(exc):
+                        raise
+                    fetch_call = asyncio.to_thread(
+                        symbol_fetcher,
+                        task.exchange,
+                        "perp",
+                        task.symbol,
+                        task.timeframe,
+                        lake_root,
+                    )
+                    rows = (
+                        await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
+                        if task_timeout_s is not None
+                        else await fetch_call
+                    )
             logger.debug(
                 "Funding fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",
                 idx,
@@ -619,9 +689,10 @@ async def fetch_funding_tasks_parallel(
                 task.timeframe,
                 len(rows),
             )
-            task_results[key] = rows
-            if on_task_complete is not None:
-                on_task_complete(task, rows)
+            async with results_lock:
+                task_results[key] = rows
+                if on_task_complete is not None:
+                    on_task_complete(task, rows)
         except Exception as exc:  # noqa: BLE001
             logger.exception(
                 "Funding fetch failed exchange=%s symbol=%s timeframe=%s",
@@ -629,5 +700,8 @@ async def fetch_funding_tasks_parallel(
                 task.symbol,
                 task.timeframe,
             )
-            task_errors[key] = str(exc)
+            async with results_lock:
+                task_errors[key] = str(exc)
+
+    await asyncio.gather(*[_run_task(idx, task) for idx, task in enumerate(tasks, start=1)])
     return FundingFetchResultDTO(rows=task_results, errors=task_errors)

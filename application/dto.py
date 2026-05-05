@@ -120,20 +120,14 @@ class PersistOptionsDTO:
         ```python
         options = PersistOptionsDTO(
             save_parquet_lake=True,
-            save_timescaledb=False,
             lake_root="lake/bronze",
-            timescaledb_schema="market_data",
-            create_schema=True,
             oi_requested=True,
         )
         ```
     """
 
     save_parquet_lake: bool
-    save_timescaledb: bool
     lake_root: str
-    timescaledb_schema: str
-    create_schema: bool
     oi_requested: bool
     funding_requested: bool = False
 
@@ -149,16 +143,12 @@ class PersistResultDTO:
     """
 
     parquet_files: list[str] = field(default_factory=list)
-    timescaledb_summary: dict[str, int | str] | None = None
-
     def to_output_dict(self) -> dict[str, object]:
         """Convert DTO to existing CLI output keys."""
 
         output: dict[str, object] = {}
         if self.parquet_files:
             output["_parquet_files"] = self.parquet_files
-        if self.timescaledb_summary is not None:
-            output["_timescaledb"] = self.timescaledb_summary
         return output
 
 
@@ -173,3 +163,4 @@ class ArtifactOptionsDTO:
     """
 
     generate_plots: bool = True
+    sample_layer: str = "bronze"

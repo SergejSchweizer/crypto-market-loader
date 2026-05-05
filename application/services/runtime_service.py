@@ -10,8 +10,8 @@ from pathlib import Path
 
 LOGGER_NAME = "crypto_market_loader"
 DEFAULT_LOG_DIR = "/volume1/Temp/logs"
-DEFAULT_FETCH_CONCURRENCY = 2
-MAX_FETCH_CONCURRENCY = 2
+DEFAULT_FETCH_CONCURRENCY = 4
+MAX_FETCH_CONCURRENCY = 8
 
 
 def load_env_file(path: str = ".env") -> None:

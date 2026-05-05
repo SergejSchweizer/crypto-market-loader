@@ -11,6 +11,7 @@ import pytest
 
 from application.dto import CandleFetchTaskDTO, OpenInterestFetchTaskDTO
 from application.services.fetch_service import (
+    _split_range_into_utc_days,
     fetch_candle_tasks_parallel,
     fetch_open_interest_tasks_parallel,
     fetch_symbol_candles,
@@ -126,6 +127,17 @@ def test_fetch_symbol_candles_tail_delta_only_uses_latest_open_time() -> None:
     assert candles == []
     expected_start_ms = int(datetime(2026, 4, 27, 10, 4, tzinfo=UTC).timestamp() * 1000)
     assert calls == [(expected_start_ms, end_open_ms)]
+
+
+def test_split_range_into_utc_days_splits_cross_day_windows() -> None:
+    start_ms = int(datetime(2026, 4, 27, 23, 59, tzinfo=UTC).timestamp() * 1000)
+    end_ms = int(datetime(2026, 4, 28, 0, 1, tzinfo=UTC).timestamp() * 1000)
+    windows = _split_range_into_utc_days(start_ms, end_ms)
+    assert len(windows) == 2
+    assert windows[0][0] == start_ms
+    assert windows[0][1] == int(datetime(2026, 4, 27, 23, 59, 59, 999000, tzinfo=UTC).timestamp() * 1000)
+    assert windows[1][0] == int(datetime(2026, 4, 28, 0, 0, tzinfo=UTC).timestamp() * 1000)
+    assert windows[1][1] == end_ms
 
 
 def test_fetch_symbol_candles_tail_delta_only_passes_history_chunk_callback() -> None:

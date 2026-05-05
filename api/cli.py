@@ -11,10 +11,9 @@ from typing import Any, cast
 
 from api.commands import loader as loader_cmd
 from api.commands import stats as stats_cmd
-from api.commands.loader import add_loader_parser
+from api.commands.loader import add_bronze_ingest_parser
 from api.commands.stats import add_export_descriptive_stats_parser, run_export_descriptive_stats
 from api.commands.timeframes import add_list_spot_timeframes_parser, run_list_spot_timeframes
-from api.commands.timescaledb_ingest import add_ingest_timescaledb_parser, run_ingest_timescaledb
 from application.services.gapfill_service import _last_closed_open_ms, _missing_ranges_ms
 from application.services.runtime_service import (
     SingleInstanceError,
@@ -22,7 +21,6 @@ from application.services.runtime_service import (
     configure_logging,
     fetch_concurrency,
 )
-from infra.timescaledb import save_market_data_to_timescaledb
 from ingestion.funding import (
     fetch_funding_all_history,
     fetch_funding_range,
@@ -104,7 +102,6 @@ def _sync_loader_runtime_overrides() -> None:
     loader_any.fetch_open_interest_range = fetch_open_interest_range
     loader_any.fetch_funding_all_history = fetch_funding_all_history
     loader_any.fetch_funding_range = fetch_funding_range
-    loader_any.save_market_data_to_timescaledb = save_market_data_to_timescaledb
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -118,9 +115,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    add_loader_parser(subparsers)
+    add_bronze_ingest_parser(subparsers)
     add_list_spot_timeframes_parser(subparsers)
-    add_ingest_timescaledb_parser(subparsers)
     add_export_descriptive_stats_parser(subparsers)
 
     return parser
@@ -145,8 +141,8 @@ def _load_yaml_config(path: str) -> dict[str, object]:
         )
     try:
         import yaml
-    except ImportError:
-        raise RuntimeError("PyYAML is required to parse config.yaml. Install project dependencies.")
+    except ImportError as exc:
+        raise RuntimeError("PyYAML is required to parse config.yaml. Install project dependencies.") from exc
     with config_path.open("r", encoding="utf-8") as handle:
         loaded = yaml.safe_load(handle)
     if loaded is None:
@@ -155,11 +151,10 @@ def _load_yaml_config(path: str) -> dict[str, object]:
         raise ValueError("config file must contain a top-level mapping")
     config = cast(dict[str, object], loaded)
 
-    required_sections = {"global", "env", "loader", "ingest-timescaledb", "export-descriptive-stats"}
+    required_sections = {"global", "env", "export-descriptive-stats"}
     missing = [section for section in required_sections if section not in config]
     if missing:
         raise ValueError(f"config.yaml missing required section(s): {', '.join(sorted(missing))}")
-
     if not isinstance(config.get("env"), dict):
         raise ValueError("config.yaml section 'env' must be a mapping")
 
@@ -211,6 +206,8 @@ def _apply_yaml_defaults(
                 continue
             setattr(args, key, value)
     command_config = config.get(command)
+    if not isinstance(command_config, dict) and command == "bronze-ingest":
+        command_config = config.get("loader")
     if isinstance(command_config, dict):
         for key, value in command_config.items():
             if key in explicit_dests or not hasattr(args, key):
@@ -245,6 +242,8 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     command = cast(str, args.command)
+    if command == "bronze-ingest" and "bronze-ingest" not in config_data and "loader" not in config_data:
+        raise ValueError("config.yaml missing required section: bronze-ingest")
     command_parser = _subparser_for_command(parser, command)
     if command_parser is not None:
         explicit = _collect_explicit_cli_dests(command_parser, sys.argv[1:])
@@ -252,13 +251,11 @@ def main() -> None:
     logger = configure_logging(module_name=str(args.command))
     logger.info("Command start: %s", args.command)
 
-    if args.command == "loader":
+    if args.command == "bronze-ingest":
         _sync_loader_runtime_overrides()
         loader_cmd.run_loader(args=args, logger=logger)
     elif args.command == "list-spot-timeframes":
         run_list_spot_timeframes(args=args, logger=logger)
-    elif args.command == "ingest-timescaledb":
-        run_ingest_timescaledb(args=args, logger=logger)
     elif args.command == "export-descriptive-stats":
         cast(Any, stats_cmd).load_combined_dataframe_from_lake = load_combined_dataframe_from_lake
         run_export_descriptive_stats(args=args, logger=logger)

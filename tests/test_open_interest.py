@@ -8,7 +8,7 @@ import pytest
 
 from ingestion import open_interest as oi
 from ingestion.exchanges import deribit_open_interest
-from ingestion.http_client import HttpClientHttpError
+from ingestion.http_client import HttpClientError, HttpClientHttpError
 
 
 def test_normalize_open_interest_timeframe_deribit() -> None:
@@ -70,6 +70,23 @@ def test_fetch_open_interest_all_returns_empty_on_http_400(monkeypatch: pytest.M
         exchange="deribit",
         symbol="SOL",
         interval="1m",
+        market="perp",
+    )
+    assert rows == []
+
+
+def test_fetch_open_interest_range_returns_empty_on_connection_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    def _raise_connection_error(**kwargs: object) -> list[dict[str, object]]:
+        del kwargs
+        raise HttpClientError("Connection error")
+
+    monkeypatch.setattr(deribit_open_interest, "fetch_open_interest_range", _raise_connection_error)
+    rows = oi.fetch_open_interest_range(
+        exchange="deribit",
+        symbol="BTC",
+        interval="1m",
+        start_open_ms=0,
+        end_open_ms=60_000,
         market="perp",
     )
     assert rows == []
@@ -167,42 +184,12 @@ def test_fetch_open_interest_all_breaks_on_repeated_continuation(monkeypatch: py
     assert [row["timestamp"] for row in rows] == [2, 3]
 
 
-def test_expand_open_interest_to_interval_grid_forward_fills() -> None:
-    first = oi.OpenInterestPoint(
-        exchange="deribit",
+def test_parse_open_interest_row_preserves_raw_timestamp() -> None:
+    ts_ms = int(datetime(2026, 4, 28, 12, 8, 34, tzinfo=UTC).timestamp() * 1000)
+    parsed = deribit_open_interest.parse_open_interest_row(
         symbol="BTC-PERPETUAL",
-        interval="1m",
-        open_time=datetime(2026, 4, 28, 12, 0, tzinfo=UTC),
-        close_time=datetime(2026, 4, 28, 12, 0, 59, 999000, tzinfo=UTC),
-        open_interest=100000.0,
-        open_interest_value=0.0,
+        period="1m",
+        row={"timestamp": ts_ms, "open_interest": 101500.0},
     )
-    second = oi.OpenInterestPoint(
-        exchange="deribit",
-        symbol="BTC-PERPETUAL",
-        interval="1m",
-        open_time=datetime(2026, 4, 28, 12, 8, tzinfo=UTC),
-        close_time=datetime(2026, 4, 28, 12, 8, 59, 999000, tzinfo=UTC),
-        open_interest=101500.0,
-        open_interest_value=0.0,
-    )
-
-    rows = oi.expand_open_interest_to_interval_grid([first, second])
-    assert len(rows) == 9
-    assert rows[0].open_time == datetime(2026, 4, 28, 12, 0, tzinfo=UTC)
-    assert rows[0].oi_is_observed is True
-    assert rows[0].minutes_since_oi_observation == 0
-    assert rows[0].oi_ffill == 100000.0
-
-    assert rows[1].open_time == datetime(2026, 4, 28, 12, 1, tzinfo=UTC)
-    assert rows[1].oi_is_observed is False
-    assert rows[1].minutes_since_oi_observation == 1
-    assert rows[1].oi_ffill == 100000.0
-    assert rows[7].open_time == datetime(2026, 4, 28, 12, 7, tzinfo=UTC)
-    assert rows[7].minutes_since_oi_observation == 7
-    assert rows[7].oi_ffill == 100000.0
-
-    assert rows[8].open_time == datetime(2026, 4, 28, 12, 8, tzinfo=UTC)
-    assert rows[8].oi_is_observed is True
-    assert rows[8].minutes_since_oi_observation == 0
-    assert rows[8].oi_ffill == 101500.0
+    assert parsed["open_time"] == datetime(2026, 4, 28, 12, 8, 34, tzinfo=UTC)
+    assert parsed["close_time"] == datetime(2026, 4, 28, 12, 8, 34, tzinfo=UTC)
