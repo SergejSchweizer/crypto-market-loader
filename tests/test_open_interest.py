@@ -75,7 +75,19 @@ def test_fetch_open_interest_all_returns_empty_on_http_400(monkeypatch: pytest.M
     assert rows == []
 
 
-def test_fetch_open_interest_all_maps_sol_to_usdc_perpetual(monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.parametrize(
+    ("symbol_input", "expected_instrument"),
+    [
+        ("BTC", "BTC-PERPETUAL"),
+        ("ETH", "ETH-PERPETUAL"),
+        ("SOL", "SOL_USDC-PERPETUAL"),
+    ],
+)
+def test_fetch_open_interest_all_maps_symbols_to_expected_deribit_instrument(
+    monkeypatch: pytest.MonkeyPatch,
+    symbol_input: str,
+    expected_instrument: str,
+) -> None:
     captured: list[str] = []
 
     def _fake_get_json(url: str, params: dict[str, object] | None = None, **kwargs: object) -> object:
@@ -88,13 +100,13 @@ def test_fetch_open_interest_all_maps_sol_to_usdc_perpetual(monkeypatch: pytest.
 
     rows = oi.fetch_open_interest_all_history(
         exchange="deribit",
-        symbol="SOL",
+        symbol=symbol_input,
         interval="1m",
         market="perp",
     )
 
     assert rows == []
-    assert captured == ["SOL_USDC-PERPETUAL"]
+    assert captured == [expected_instrument]
 
 
 def test_fetch_open_interest_all_stops_when_continuation_is_none_string(monkeypatch: pytest.MonkeyPatch) -> None:

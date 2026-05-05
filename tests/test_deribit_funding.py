@@ -2,10 +2,24 @@
 
 from __future__ import annotations
 
+import pytest
+
 from ingestion.exchanges import deribit_funding
 
 
-def test_fetch_funding_range_normalizes_sol_instrument_for_deribit(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize(
+    ("symbol_input", "expected_instrument"),
+    [
+        ("BTC-PERPETUAL", "BTC-PERPETUAL"),
+        ("ETH-PERPETUAL", "ETH-PERPETUAL"),
+        ("SOL-PERPETUAL", "SOL_USDC-PERPETUAL"),
+    ],
+)
+def test_fetch_funding_range_normalizes_instrument_for_deribit(
+    monkeypatch,  # type: ignore[no-untyped-def]
+    symbol_input: str,
+    expected_instrument: str,
+) -> None:
     captured: dict[str, object] = {}
 
     def fake_get_json(url: str, params: dict[str, object] | None = None):  # type: ignore[no-untyped-def]
@@ -26,14 +40,14 @@ def test_fetch_funding_range_normalizes_sol_instrument_for_deribit(monkeypatch) 
     monkeypatch.setattr(deribit_funding, "get_json", fake_get_json)
 
     rows = deribit_funding.fetch_funding_range(
-        symbol="SOL-PERPETUAL",
+        symbol=symbol_input,
         period="8h",
         start_open_ms=1_700_000_000_000,
         end_open_ms=1_700_000_000_000,
     )
 
     assert rows
-    assert captured["instrument_name"] == "SOL_USDC-PERPETUAL"
+    assert captured["instrument_name"] == expected_instrument
 
 
 def test_fetch_funding_range_does_not_skip_when_page_starts_after_cursor(

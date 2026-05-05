@@ -825,137 +825,152 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
                     output["_timescaledb_error"] = str(exc)
                     logger.exception("TimescaleDB write failed")
 
-            artifact_candles: dict[Market, dict[str, dict[str, list[SpotCandle]]]] = {}
-            artifact_oi: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = {}
-            artifact_funding: dict[Market, dict[str, dict[str, list[FundingPoint]]]] = {}
-            for exchange, market, symbol, timeframe in tasks:
-                symbol_key = symbol.upper()
-                if multi_market and multi_timeframe:
-                    plot_key = f"{market}_{symbol_key}__{timeframe}"
-                elif multi_market:
-                    plot_key = f"{market}_{symbol_key}"
-                elif multi_timeframe:
-                    plot_key = f"{symbol_key}__{timeframe}"
-                else:
-                    plot_key = symbol_key
+            artifact_candles: dict[Market, dict[str, dict[str, list[SpotCandle]]]] = candles_for_storage
+            artifact_oi: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = open_interest_for_storage
+            artifact_funding: dict[Market, dict[str, dict[str, list[FundingPoint]]]] = funding_for_storage
 
-                result_key = (exchange, market, symbol, timeframe)
-                fetched = task_results.get(result_key, [])
-                merged_by_open_time = {item.open_time: item for item in fetched}
-                try:
-                    storage_symbol = normalize_storage_symbol(exchange=exchange, symbol=symbol, market=market)
-                    stored_times = open_times_in_lake(
-                        lake_root=args.lake_root,
-                        market=market,
-                        exchange=exchange,
-                        symbol=storage_symbol,
-                        timeframe=timeframe,
-                    )
-                    if stored_times:
-                        lake_candles = load_spot_candles_from_lake(
+            if bool(args.plot):
+                artifact_candles = {}
+                artifact_oi = {}
+                artifact_funding = {}
+                for exchange, market, symbol, timeframe in tasks:
+                    symbol_key = symbol.upper()
+                    if multi_market and multi_timeframe:
+                        plot_key = f"{market}_{symbol_key}__{timeframe}"
+                    elif multi_market:
+                        plot_key = f"{market}_{symbol_key}"
+                    elif multi_timeframe:
+                        plot_key = f"{symbol_key}__{timeframe}"
+                    else:
+                        plot_key = symbol_key
+
+                    result_key = (exchange, market, symbol, timeframe)
+                    fetched = task_results.get(result_key, [])
+                    merged_by_open_time = {item.open_time: item for item in fetched}
+                    try:
+                        storage_symbol = normalize_storage_symbol(exchange=exchange, symbol=symbol, market=market)
+                        stored_times = open_times_in_lake(
                             lake_root=args.lake_root,
                             market=market,
                             exchange=exchange,
                             symbol=storage_symbol,
                             timeframe=timeframe,
                         )
-                        for candle_row in lake_candles:
-                            merged_by_open_time[candle_row.open_time] = candle_row
-                except Exception:  # noqa: BLE001
-                    logger.exception(
-                        "Failed to load full-history OHLCV source exchange=%s symbol=%s timeframe=%s",
-                        exchange,
-                        symbol,
-                        timeframe,
-                    )
-                merged = [merged_by_open_time[key] for key in sorted(merged_by_open_time)]
-                artifact_candles.setdefault(market, {}).setdefault(exchange, {})[plot_key] = merged
-
-            if oi_requested:
-                for exchange, symbol, timeframe in oi_tasks:
-                    symbol_key = symbol.upper()
-                    if multi_timeframe:
-                        oi_plot_key = f"{symbol_key}__{timeframe}"
-                    else:
-                        oi_plot_key = symbol_key
-                    oi_key = (exchange, symbol, timeframe)
-                    fetched_oi = oi_results.get(oi_key, [])
-                    merged_oi_by_open_time: dict[datetime, OpenInterestPoint] = {
-                        oi_row.open_time: oi_row for oi_row in fetched_oi
-                    }
-                    try:
-                        storage_symbol = normalize_storage_symbol(exchange=exchange, symbol=symbol, market="perp")
-                        normalized_oi_timeframe = normalize_open_interest_timeframe(exchange=exchange, value=timeframe)
-                        stored_oi_times = open_times_in_lake_by_dataset(
-                            lake_root=args.lake_root,
-                            dataset_type=OI_DATASET_TYPE,
-                            market="perp",
-                            exchange=exchange,
-                            symbol=storage_symbol,
-                            timeframe=normalized_oi_timeframe,
-                        )
-                        if stored_oi_times:
-                            lake_oi = load_open_interest_from_lake(
+                        if stored_times:
+                            lake_candles = load_spot_candles_from_lake(
                                 lake_root=args.lake_root,
+                                market=market,
+                                exchange=exchange,
+                                symbol=storage_symbol,
+                                timeframe=timeframe,
+                            )
+                            for candle_row in lake_candles:
+                                merged_by_open_time[candle_row.open_time] = candle_row
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "Failed to load full-history OHLCV source exchange=%s symbol=%s timeframe=%s",
+                            exchange,
+                            symbol,
+                            timeframe,
+                        )
+                    merged = [merged_by_open_time[key] for key in sorted(merged_by_open_time)]
+                    artifact_candles.setdefault(market, {}).setdefault(exchange, {})[plot_key] = merged
+
+                if oi_requested:
+                    for exchange, symbol, timeframe in oi_tasks:
+                        symbol_key = symbol.upper()
+                        if multi_timeframe:
+                            oi_plot_key = f"{symbol_key}__{timeframe}"
+                        else:
+                            oi_plot_key = symbol_key
+                        oi_key = (exchange, symbol, timeframe)
+                        fetched_oi = oi_results.get(oi_key, [])
+                        merged_oi_by_open_time: dict[datetime, OpenInterestPoint] = {
+                            oi_row.open_time: oi_row for oi_row in fetched_oi
+                        }
+                        try:
+                            storage_symbol = normalize_storage_symbol(exchange=exchange, symbol=symbol, market="perp")
+                            normalized_oi_timeframe = normalize_open_interest_timeframe(
+                                exchange=exchange, value=timeframe
+                            )
+                            stored_oi_times = open_times_in_lake_by_dataset(
+                                lake_root=args.lake_root,
+                                dataset_type=OI_DATASET_TYPE,
                                 market="perp",
                                 exchange=exchange,
                                 symbol=storage_symbol,
                                 timeframe=normalized_oi_timeframe,
                             )
-                            for oi_row in lake_oi:
-                                merged_oi_by_open_time[oi_row.open_time] = oi_row
-                    except Exception:  # noqa: BLE001
-                        logger.exception(
-                            "Failed to load full-history OI source exchange=%s symbol=%s timeframe=%s",
-                            exchange,
-                            symbol,
-                            timeframe,
-                        )
-                    merged_oi = [merged_oi_by_open_time[key] for key in sorted(merged_oi_by_open_time)]
-                    artifact_oi.setdefault("perp", {}).setdefault(exchange, {})[oi_plot_key] = merged_oi
+                            if stored_oi_times:
+                                lake_oi = load_open_interest_from_lake(
+                                    lake_root=args.lake_root,
+                                    market="perp",
+                                    exchange=exchange,
+                                    symbol=storage_symbol,
+                                    timeframe=normalized_oi_timeframe,
+                                )
+                                for oi_row in lake_oi:
+                                    merged_oi_by_open_time[oi_row.open_time] = oi_row
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "Failed to load full-history OI source exchange=%s symbol=%s timeframe=%s",
+                                exchange,
+                                symbol,
+                                timeframe,
+                            )
+                        merged_oi = [merged_oi_by_open_time[key] for key in sorted(merged_oi_by_open_time)]
+                        artifact_oi.setdefault("perp", {}).setdefault(exchange, {})[oi_plot_key] = merged_oi
 
-            if funding_requested:
-                for exchange, symbol, timeframe in funding_tasks:
-                    symbol_key = symbol.upper()
-                    funding_key = (exchange, symbol, timeframe)
-                    if multi_timeframe:
-                        funding_plot_key = f"{symbol_key}__{timeframe}"
-                    else:
-                        funding_plot_key = symbol_key
-                    fetched_funding = funding_results.get(funding_key, [])
-                    merged_funding_by_open_time: dict[datetime, FundingPoint] = {
-                        item.open_time: item for item in fetched_funding
-                    }
-                    try:
-                        storage_symbol = normalize_storage_symbol(exchange=exchange, symbol=symbol, market="perp")
-                        normalized_funding_timeframe = normalize_funding_timeframe(exchange=exchange, value=timeframe)
-                        stored_funding_times = open_times_in_lake_by_dataset(
-                            lake_root=args.lake_root,
-                            dataset_type="funding",
-                            market="perp",
-                            exchange=exchange,
-                            symbol=storage_symbol,
-                            timeframe=normalized_funding_timeframe,
-                        )
-                        if stored_funding_times:
-                            lake_funding = load_funding_from_lake(
+                if funding_requested:
+                    for exchange, symbol, timeframe in funding_tasks:
+                        symbol_key = symbol.upper()
+                        funding_key = (exchange, symbol, timeframe)
+                        if multi_timeframe:
+                            funding_plot_key = f"{symbol_key}__{timeframe}"
+                        else:
+                            funding_plot_key = symbol_key
+                        fetched_funding = funding_results.get(funding_key, [])
+                        merged_funding_by_open_time: dict[datetime, FundingPoint] = {
+                            item.open_time: item for item in fetched_funding
+                        }
+                        try:
+                            storage_symbol = normalize_storage_symbol(exchange=exchange, symbol=symbol, market="perp")
+                            normalized_funding_timeframe = normalize_funding_timeframe(
+                                exchange=exchange, value=timeframe
+                            )
+                            stored_funding_times = open_times_in_lake_by_dataset(
                                 lake_root=args.lake_root,
+                                dataset_type="funding",
                                 market="perp",
                                 exchange=exchange,
                                 symbol=storage_symbol,
                                 timeframe=normalized_funding_timeframe,
                             )
-                            for item in lake_funding:
-                                merged_funding_by_open_time[item.open_time] = item
-                    except Exception:  # noqa: BLE001
-                        logger.exception(
-                            "Failed to load full-history funding source exchange=%s symbol=%s timeframe=%s",
-                            exchange,
-                            symbol,
-                            timeframe,
-                        )
-                    merged_funding = [merged_funding_by_open_time[key] for key in sorted(merged_funding_by_open_time)]
-                    artifact_funding.setdefault("perp", {}).setdefault(exchange, {})[funding_plot_key] = merged_funding
+                            if stored_funding_times:
+                                lake_funding = load_funding_from_lake(
+                                    lake_root=args.lake_root,
+                                    market="perp",
+                                    exchange=exchange,
+                                    symbol=storage_symbol,
+                                    timeframe=normalized_funding_timeframe,
+                                )
+                                for item in lake_funding:
+                                    merged_funding_by_open_time[item.open_time] = item
+                        except Exception:  # noqa: BLE001
+                            logger.exception(
+                                "Failed to load full-history funding source exchange=%s symbol=%s timeframe=%s",
+                                exchange,
+                                symbol,
+                                timeframe,
+                            )
+                        merged_funding = [
+                            merged_funding_by_open_time[key] for key in sorted(merged_funding_by_open_time)
+                        ]
+                        artifact_funding.setdefault("perp", {}).setdefault(exchange, {})[
+                            funding_plot_key
+                        ] = merged_funding
+            else:
+                logger.info("Plot generation disabled; skipping full-history lake merge for sample artifacts")
 
             try:
                 _write_loader_samples(
