@@ -1080,6 +1080,18 @@ def write_symbol_plot(
 
     pl = _require_polars()
 
+    def _report_legend_lines() -> list[str]:
+        if report is None:
+            return []
+        months = f"{len(report.months_processed)}m"
+        return [
+            f"rows in/out: {report.rows_in}/{report.rows_out}",
+            f"dups removed: {report.duplicates_removed}",
+            f"invalid/null: {report.invalid_ohlc_rows}/{report.null_price_rows}",
+            f"months: {months}",
+            f"range: {report.min_timestamp or '-'} -> {report.max_timestamp or '-'}",
+        ]
+
     def _dataset_type_from_report(value: str) -> str:
         if value in {"spot_1m", "perp_1m"}:
             return value.split("_", 1)[0]
@@ -1161,38 +1173,71 @@ def write_symbol_plot(
             sharex=True,
             gridspec_kw={"height_ratios": [7, 3]},
         )
-        fig.patch.set_facecolor("#ffffff")
+        fig.patch.set_facecolor("#0b1220")
         for axis in (price_ax, volume_ax):
-            axis.set_facecolor("#f8fafc")
-            axis.grid(alpha=0.35, linestyle="--", linewidth=0.8, color="#94a3b8")
+            axis.set_facecolor("#0f172a")
+            axis.grid(alpha=0.35, linestyle="--", linewidth=0.8, color="#334155")
             axis.spines["top"].set_visible(False)
             axis.spines["right"].set_visible(False)
+            axis.spines["left"].set_color("#64748b")
+            axis.spines["bottom"].set_color("#64748b")
+            axis.tick_params(colors="#cbd5e1")
 
-        price_ax.plot(xs, values, color="#0f4c81", linewidth=2.0)
-        price_ax.fill_between(xs, values, [min(values)] * len(values), color="#93c5fd", alpha=0.25)
-        price_ax.set_title(f"{exchange.upper()} {symbol} {title_suffix}", fontsize=13, fontweight="semibold")
-        price_ax.set_ylabel(y_label)
+        price_ax.plot(xs, values, color="#38bdf8", linewidth=2.0)
+        price_ax.fill_between(xs, values, [min(values)] * len(values), color="#0ea5e9", alpha=0.22)
+        price_ax.set_title(f"{exchange.upper()} {symbol} {title_suffix}", fontsize=13, fontweight="semibold", color="#e2e8f0")
+        price_ax.set_ylabel(y_label, color="#cbd5e1")
         price_ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.2f}"))
+        legend_lines = _report_legend_lines()
+        if legend_lines:
+            price_ax.text(
+                0.01,
+                0.99,
+                "\n".join(legend_lines),
+                transform=price_ax.transAxes,
+                va="top",
+                ha="left",
+                fontsize=8.5,
+                color="#e2e8f0",
+                bbox={"facecolor": "#111827", "alpha": 0.82, "edgecolor": "#334155"},
+            )
 
-        volume_ax.bar(xs, volume_values, color="#60a5fa", alpha=0.8, width=0.0015)
-        volume_ax.set_ylabel("Volume")
-        volume_ax.set_xlabel("Time (UTC)")
+        volume_ax.fill_between(xs, volume_values, [0.0] * len(volume_values), color="#2563eb", alpha=0.5)
+        volume_ax.plot(xs, volume_values, color="#60a5fa", linewidth=1.2, alpha=0.95)
+        volume_ax.set_ylabel("Volume", color="#cbd5e1")
+        volume_ax.set_xlabel("Time (UTC)", color="#cbd5e1")
         volume_ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
         fig.tight_layout()
     else:
         xs, values = _downsample_series(xs, values, max_points=3000)
         fig, ax = plt.subplots(figsize=(13, 6.5))
-        fig.patch.set_facecolor("#ffffff")
-        ax.set_facecolor("#f8fafc")
-        ax.plot(xs, values, color="#0f4c81", linewidth=2.0)
-        ax.fill_between(xs, values, [min(values)] * len(values), color="#93c5fd", alpha=0.25)
-        ax.grid(alpha=0.35, linestyle="--", linewidth=0.8, color="#94a3b8")
+        fig.patch.set_facecolor("#0b1220")
+        ax.set_facecolor("#0f172a")
+        ax.plot(xs, values, color="#22d3ee", linewidth=2.0)
+        ax.fill_between(xs, values, [min(values)] * len(values), color="#0891b2", alpha=0.22)
+        ax.grid(alpha=0.35, linestyle="--", linewidth=0.8, color="#334155")
         ax.spines["top"].set_visible(False)
         ax.spines["right"].set_visible(False)
-        ax.set_title(f"{exchange.upper()} {symbol} {title_suffix}", fontsize=13, fontweight="semibold")
-        ax.set_xlabel("Time (UTC)")
-        ax.set_ylabel(y_label)
+        ax.spines["left"].set_color("#64748b")
+        ax.spines["bottom"].set_color("#64748b")
+        ax.tick_params(colors="#cbd5e1")
+        ax.set_title(f"{exchange.upper()} {symbol} {title_suffix}", fontsize=13, fontweight="semibold", color="#e2e8f0")
+        ax.set_xlabel("Time (UTC)", color="#cbd5e1")
+        ax.set_ylabel(y_label, color="#cbd5e1")
         ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.6f}" if "Rate" in y_label else "{x:,.2f}"))
+        legend_lines = _report_legend_lines()
+        if legend_lines:
+            ax.text(
+                0.01,
+                0.99,
+                "\n".join(legend_lines),
+                transform=ax.transAxes,
+                va="top",
+                ha="left",
+                fontsize=8.5,
+                color="#e2e8f0",
+                bbox={"facecolor": "#111827", "alpha": 0.82, "edgecolor": "#334155"},
+            )
         fig.tight_layout()
 
     filename = build_samples_plot_filename(zone=zone, exchange=exchange, symbol=symbol, market=plot_market)

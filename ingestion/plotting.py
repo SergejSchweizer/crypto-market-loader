@@ -11,12 +11,13 @@ from ingestion.spot import SpotCandle
 
 PriceField = Literal["spot", "close", "open", "high", "low"]
 
-_FIGURE_FACE = "#05070d"
-_AXIS_FACE = "#0c111b"
+# Unified dark schema (aligned with silver plots).
+_FIGURE_FACE = "#0b1220"
+_AXIS_FACE = "#0f172a"
 _GRID_COLOR = "#334155"
-_SPINE_COLOR = "#475569"
+_SPINE_COLOR = "#64748b"
 _TEXT_COLOR = "#e2e8f0"
-_MUTED_TEXT_COLOR = "#94a3b8"
+_MUTED_TEXT_COLOR = "#cbd5e1"
 
 
 def price_value(candle: SpotCandle, price_field: PriceField) -> float:
