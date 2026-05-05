@@ -105,8 +105,9 @@ CLI command
 project/
 |-- api/
 |-- application/
-|-- infra/
 |-- ingestion/
+|-- docs/
+|-- samples/
 |-- tests/
 |-- README.md
 |-- REPORT.md
@@ -172,7 +173,9 @@ python3 main.py bronze-ingest --exchange deribit --market spot perp oi funding -
 Default mode is delta-first:
 - first run without history: full bootstrap
 - next runs: continue from latest stored open time + one interval
-- optional `--full-gap-fill` performs historical internal gap checks
+- explicit CLI control:
+  - `--tail-delta-only` forces tail-only mode (overrides config)
+  - `--full-gap-fill` enables historical internal gap checks (overrides config)
 
 ### 7.4 Concurrency Behavior
 - Fetch execution uses bounded concurrency (`DEPTH_FETCH_CONCURRENCY`).
@@ -205,14 +208,21 @@ dataset_type=funding/
 ### 9.1 Command
 
 ```bash
-python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp --timeframe 1m
+python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp funding --timeframe 1m
+python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp funding --timeframe 1m --plot
 ```
 
 ### 9.2 Silver Output Layout (Monthly)
 
 ```text
 dataset_type=<spot|perp>/
-  exchange=<exchange>/instrument_type=<spot|perp>/symbol=<symbol>/timeframe=1m/month=<YYYY-MM>/data.parquet
+  exchange=<exchange>/symbol=<symbol>/timeframe=1m/month=<YYYY-MM>/data.parquet
+
+dataset_type=funding_observed/
+  exchange=<exchange>/symbol=<symbol>/timeframe=8h/month=<YYYY-MM>/data.parquet
+
+dataset_type=funding_1m_feature/
+  exchange=<exchange>/symbol=<symbol>/timeframe=1m/month=<YYYY-MM>/data.parquet
 ```
 
 ### 9.3 Symbol Report (Full Processed Period)
@@ -221,6 +231,7 @@ Each `silver-build` run writes one aggregated report per symbol:
 
 ```text
 silver/reports/dataset_type=<spot|perp>/exchange=<exchange>/symbol=<symbol>/timeframe=1m/build_report.json
+silver/reports/dataset_type=<funding_observed|funding_1m_feature>/exchange=<exchange>/symbol=<symbol>/timeframe=1m/build_report.json
 ```
 
 Report fields include:
@@ -228,6 +239,21 @@ Report fields include:
 - `invalid_ohlc_rows`, `null_price_rows`
 - `min_timestamp`, `max_timestamp`
 - `period_start`, `period_end`, `months_processed`
+- `columns` (exact output column names for the reported dataset)
+
+### 9.4 Silver Plot Artifacts
+
+When `--plot` is passed, `silver-build` writes one professional plot per built symbol into `samples/`.
+
+Naming convention:
+
+```text
+zone_exchange_symbol.png
+```
+
+Examples:
+- `silver_deribit_BTC-PERPETUAL.png`
+- `silver_deribit_ETH-PERPETUAL.png`
 
 ## 10. Datetime And Sampling
 
@@ -285,6 +311,7 @@ env:
   DEPTH_HTTP_RETRY_BACKOFF_S: 0.5
   DEPTH_SYNC_LOG_DIR: /volume1/Temp/logs
   DEPTH_FETCH_CONCURRENCY: 6
+  DEPTH_FETCH_TASK_TIMEOUT_S: 300
 
 bronze-ingest:
   exchange: deribit

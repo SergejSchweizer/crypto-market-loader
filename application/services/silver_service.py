@@ -1,8 +1,9 @@
-"""Silver transformation service for monthly OHLCV outputs and symbol reports."""
+"""Silver transformation service for monthly outputs and symbol reports."""
 
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -36,6 +37,7 @@ class SilverBuildReport:
     min_timestamp: str | None
     max_timestamp: str | None
     symbols: list[str]
+    columns: list[str]
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -54,7 +56,56 @@ class SilverBuildReport:
             "min_timestamp": self.min_timestamp,
             "max_timestamp": self.max_timestamp,
             "symbols": self.symbols,
+            "columns": self.columns,
         }
+
+
+SILVER_OHLCV_COLUMNS = [
+    "schema_version",
+    "dataset_type",
+    "exchange",
+    "symbol",
+    "instrument_type",
+    "event_time",
+    "ingested_at",
+    "run_id",
+    "source_endpoint",
+    "open_time",
+    "close_time",
+    "timeframe",
+    "open_price",
+    "high_price",
+    "low_price",
+    "close_price",
+    "volume",
+    "quote_volume",
+    "trade_count",
+    "origin_payload",
+]
+SILVER_FUNDING_OBSERVED_COLUMNS = [
+    "funding_time",
+    "exchange",
+    "symbol",
+    "base_asset",
+    "instrument_type",
+    "funding_rate",
+    "funding_interval_hours",
+    "ingested_at_min",
+    "ingested_at_max",
+    "source_row_count",
+    "silver_built_at",
+    "data_quality_status",
+]
+SILVER_FUNDING_FEATURE_COLUMNS = [
+    "timestamp",
+    "exchange",
+    "symbol",
+    "funding_rate_last_known",
+    "funding_observed_at",
+    "minutes_since_funding",
+    "is_funding_observation_minute",
+    "funding_data_available",
+]
 
 
 def _silver_month_path(
@@ -69,9 +120,25 @@ def _silver_month_path(
         Path(silver_root)
         / f"dataset_type={market}"
         / f"exchange={exchange}"
-        / f"instrument_type={market}"
         / f"symbol={symbol}"
         / f"timeframe={timeframe}"
+        / f"month={month}"
+        / "data.parquet"
+    )
+
+
+def _silver_funding_feature_month_path(
+    silver_root: str,
+    exchange: str,
+    symbol: str,
+    month: str,
+) -> Path:
+    return (
+        Path(silver_root)
+        / "dataset_type=funding_1m_feature"
+        / f"exchange={exchange}"
+        / f"symbol={symbol}"
+        / "timeframe=1m"
         / f"month={month}"
         / "data.parquet"
     )
@@ -84,12 +151,14 @@ def _bronze_month_files(
     symbol: str,
     timeframe: str,
     month: str,
+    instrument_type: str | None = None,
 ) -> list[str]:
+    instrument = instrument_type or market
     root = (
         Path(bronze_root)
         / f"dataset_type={market}"
         / f"exchange={exchange}"
-        / f"instrument_type={market}"
+        / f"instrument_type={instrument}"
         / f"symbol={symbol}"
         / f"timeframe={timeframe}"
         / f"month={month}"
@@ -97,14 +166,21 @@ def _bronze_month_files(
     return sorted(str(path) for path in root.glob("date=*/data.parquet"))
 
 
-def discover_symbols(bronze_root: str, market: str, exchange: str, timeframe: str = "1m") -> list[str]:
+def discover_symbols(
+    bronze_root: str,
+    market: str,
+    exchange: str,
+    timeframe: str = "1m",
+    instrument_type: str | None = None,
+) -> list[str]:
     """Discover symbols available in bronze for selected market/exchange/timeframe."""
 
+    instrument = instrument_type or market
     root = (
         Path(bronze_root)
         / f"dataset_type={market}"
         / f"exchange={exchange}"
-        / f"instrument_type={market}"
+        / f"instrument_type={instrument}"
     )
     if not root.exists():
         return []
@@ -120,14 +196,22 @@ def discover_symbols(bronze_root: str, market: str, exchange: str, timeframe: st
     return sorted(set(symbols))
 
 
-def discover_months(bronze_root: str, market: str, exchange: str, symbol: str, timeframe: str = "1m") -> list[str]:
+def discover_months(
+    bronze_root: str,
+    market: str,
+    exchange: str,
+    symbol: str,
+    timeframe: str = "1m",
+    instrument_type: str | None = None,
+) -> list[str]:
     """Discover available bronze months for one symbol."""
 
+    instrument = instrument_type or market
     root = (
         Path(bronze_root)
         / f"dataset_type={market}"
         / f"exchange={exchange}"
-        / f"instrument_type={market}"
+        / f"instrument_type={instrument}"
         / f"symbol={symbol}"
         / f"timeframe={timeframe}"
     )
@@ -258,8 +342,305 @@ def build_silver_for_symbol(
         min_timestamp=_iso_utc(min_timestamp),
         max_timestamp=_iso_utc(max_timestamp),
         symbols=[symbol],
+        columns=SILVER_OHLCV_COLUMNS,
     )
     return report
+
+
+def build_funding_observed_for_symbol(
+    *,
+    bronze_root: str,
+    silver_root: str,
+    exchange: str,
+    symbol: str,
+    timeframe: str = "1m",
+) -> SilverBuildReport:
+    """Build monthly ``funding_observed`` silver outputs and aggregated report."""
+
+    pl = _require_polars()
+    months = discover_months(
+        bronze_root=bronze_root,
+        market="funding",
+        exchange=exchange,
+        symbol=symbol,
+        timeframe=timeframe,
+        instrument_type="perp",
+    )
+    agg_rows_in = 0
+    agg_rows_out = 0
+    agg_duplicates_removed = 0
+    agg_invalid_rows = 0
+    agg_null_rows = 0
+    min_timestamp: datetime | None = None
+    max_timestamp: datetime | None = None
+
+    for month in months:
+        files = _bronze_month_files(
+            bronze_root=bronze_root,
+            market="funding",
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+            month=month,
+            instrument_type="perp",
+        )
+        if not files:
+            continue
+        frame = pl.scan_parquet(files).collect()
+        rows_in = frame.height
+        if rows_in == 0:
+            continue
+
+        frame = frame.with_columns(
+            [
+                pl.col("open_time").cast(pl.Datetime(time_unit="us", time_zone="UTC")).alias("funding_time"),
+                pl.col("funding_rate").cast(pl.Float64),
+                pl.col("symbol").cast(pl.Utf8).alias("symbol"),
+                pl.col("exchange").cast(pl.Utf8).alias("exchange"),
+                pl.col("instrument_type").cast(pl.Utf8).alias("instrument_type"),
+                pl.col("ingested_at").cast(pl.Datetime(time_unit="us", time_zone="UTC")),
+            ]
+        )
+        frame = frame.filter(pl.col("instrument_type") == "perp")
+
+        null_rate_expr = pl.col("funding_rate").is_null()
+        invalid_rate_expr = (~null_rate_expr) & (
+            ~pl.col("funding_rate").is_finite() | (pl.col("funding_rate").abs() > 1.0)
+        )
+        null_rows = frame.select(null_rate_expr.cast(pl.Int64).sum().alias("count")).item()
+        invalid_rows = frame.select(invalid_rate_expr.cast(pl.Int64).sum().alias("count")).item()
+        cleaned = frame.filter(~null_rate_expr & ~invalid_rate_expr)
+
+        observed = (
+            cleaned.group_by(["exchange", "symbol", "funding_time"], maintain_order=True)
+            .agg(
+                [
+                    pl.col("funding_rate").last(),
+                    pl.col("instrument_type").last(),
+                    pl.col("ingested_at").min().alias("ingested_at_min"),
+                    pl.col("ingested_at").max().alias("ingested_at_max"),
+                    pl.len().cast(pl.Int64).alias("source_row_count"),
+                ]
+            )
+            .with_columns(
+                [
+                    pl.col("symbol").str.split("-").list.first().alias("base_asset"),
+                    pl.lit(8).cast(pl.Int64).alias("funding_interval_hours"),
+                    pl.lit(datetime.now(UTC))
+                    .cast(pl.Datetime(time_unit="us", time_zone="UTC"))
+                    .alias("silver_built_at"),
+                    pl.lit("ok").alias("data_quality_status"),
+                ]
+            )
+            .select(
+                [
+                    "funding_time",
+                    "exchange",
+                    "symbol",
+                    "base_asset",
+                    "instrument_type",
+                    "funding_rate",
+                    "funding_interval_hours",
+                    "ingested_at_min",
+                    "ingested_at_max",
+                    "source_row_count",
+                    "silver_built_at",
+                    "data_quality_status",
+                ]
+            )
+            .sort("funding_time")
+        )
+
+        duplicates_removed = cleaned.height - observed.height
+        target = _silver_month_path(
+            silver_root=silver_root,
+            market="funding_observed",
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+            month=month,
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        observed.write_parquet(target)
+
+        month_min = observed.select(pl.col("funding_time").min()).item()
+        month_max = observed.select(pl.col("funding_time").max()).item()
+        if isinstance(month_min, datetime) and (min_timestamp is None or month_min < min_timestamp):
+            min_timestamp = month_min
+        if isinstance(month_max, datetime) and (max_timestamp is None or month_max > max_timestamp):
+            max_timestamp = month_max
+
+        agg_rows_in += rows_in
+        agg_rows_out += observed.height
+        agg_duplicates_removed += int(duplicates_removed)
+        agg_invalid_rows += int(invalid_rows)
+        agg_null_rows += int(null_rows)
+
+    return SilverBuildReport(
+        dataset="funding_observed",
+        exchange=exchange,
+        symbol=symbol,
+        timeframe=timeframe,
+        period_start=months[0] if months else None,
+        period_end=months[-1] if months else None,
+        months_processed=months,
+        rows_in=agg_rows_in,
+        rows_out=agg_rows_out,
+        duplicates_removed=agg_duplicates_removed,
+        invalid_ohlc_rows=agg_invalid_rows,
+        null_price_rows=agg_null_rows,
+        min_timestamp=_iso_utc(min_timestamp),
+        max_timestamp=_iso_utc(max_timestamp),
+        symbols=[symbol],
+        columns=SILVER_FUNDING_OBSERVED_COLUMNS,
+    )
+
+
+def build_funding_1m_feature_for_symbol(
+    *,
+    silver_root: str,
+    exchange: str,
+    symbol: str,
+    observed_timeframe: str = "8h",
+) -> SilverBuildReport:
+    """Build monthly ``funding_1m_feature`` from ``funding_observed`` using backward asof joins."""
+
+    pl = _require_polars()
+    observed_root = (
+        Path(silver_root)
+        / "dataset_type=funding_observed"
+        / f"exchange={exchange}"
+        / f"symbol={symbol}"
+        / f"timeframe={observed_timeframe}"
+    )
+    months = sorted(
+        {
+            path.parent.name.split("=", 1)[1]
+            for path in observed_root.glob("month=*/data.parquet")
+            if path.parent.name.startswith("month=")
+        }
+    )
+    agg_rows_in = 0
+    agg_rows_out = 0
+    min_timestamp: datetime | None = None
+    max_timestamp: datetime | None = None
+
+    for month in months:
+        month_file = observed_root / f"month={month}" / "data.parquet"
+        if not month_file.exists():
+            continue
+        observed = pl.read_parquet(month_file).sort("funding_time")
+        if observed.height == 0:
+            continue
+        month_start = datetime.fromisoformat(f"{month}-01T00:00:00+00:00")
+        if month == "9999-12":
+            continue
+        y, m = month.split("-")
+        year = int(y)
+        mon = int(m)
+        if mon == 12:
+            month_end_dt = datetime(year + 1, 1, 1, tzinfo=UTC)
+        else:
+            month_end_dt = datetime(year, mon + 1, 1, tzinfo=UTC)
+        month_end_exclusive = month_end_dt
+        calendar = pl.DataFrame(
+            {
+                "timestamp": pl.datetime_range(
+                    start=month_start,
+                    end=month_end_exclusive,
+                    interval="1m",
+                    closed="left",
+                    time_zone="UTC",
+                    eager=True,
+                )
+            }
+        )
+        right = observed.select(
+            [
+                pl.col("funding_time"),
+                pl.col("funding_rate").alias("funding_rate_last_known"),
+                pl.col("funding_time").alias("funding_observed_at"),
+            ]
+        )
+        joined = calendar.join_asof(
+            right,
+            left_on="timestamp",
+            right_on="funding_time",
+            strategy="backward",
+        )
+        feature = (
+            joined.with_columns(
+                [
+                    pl.lit(exchange).alias("exchange"),
+                    pl.lit(symbol).alias("symbol"),
+                    (
+                        (pl.col("timestamp") - pl.col("funding_observed_at")).dt.total_minutes().cast(pl.Int64)
+                    ).alias("minutes_since_funding"),
+                    (pl.col("timestamp") == pl.col("funding_observed_at")).fill_null(False).alias(
+                        "is_funding_observation_minute"
+                    ),
+                    pl.col("funding_observed_at").is_not_null().alias("funding_data_available"),
+                ]
+            )
+            .select(
+                [
+                    "timestamp",
+                    "exchange",
+                    "symbol",
+                    "funding_rate_last_known",
+                    "funding_observed_at",
+                    "minutes_since_funding",
+                    "is_funding_observation_minute",
+                    "funding_data_available",
+                ]
+            )
+            .sort("timestamp")
+        )
+
+        # Hard leakage guard.
+        leakage_count = feature.filter(
+            pl.col("funding_observed_at").is_not_null() & (pl.col("funding_observed_at") > pl.col("timestamp"))
+        ).height
+        if leakage_count > 0:
+            raise ValueError(f"Funding leakage detected for {exchange}/{symbol}/{month}: {leakage_count} rows")
+
+        target = _silver_funding_feature_month_path(
+            silver_root=silver_root,
+            exchange=exchange,
+            symbol=symbol,
+            month=month,
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        feature.write_parquet(target)
+
+        month_min = feature.select(pl.col("timestamp").min()).item()
+        month_max = feature.select(pl.col("timestamp").max()).item()
+        if isinstance(month_min, datetime) and (min_timestamp is None or month_min < min_timestamp):
+            min_timestamp = month_min
+        if isinstance(month_max, datetime) and (max_timestamp is None or month_max > max_timestamp):
+            max_timestamp = month_max
+
+        agg_rows_in += observed.height
+        agg_rows_out += feature.height
+
+    return SilverBuildReport(
+        dataset="funding_1m_feature",
+        exchange=exchange,
+        symbol=symbol,
+        timeframe="1m",
+        period_start=months[0] if months else None,
+        period_end=months[-1] if months else None,
+        months_processed=months,
+        rows_in=agg_rows_in,
+        rows_out=agg_rows_out,
+        duplicates_removed=0,
+        invalid_ohlc_rows=0,
+        null_price_rows=0,
+        min_timestamp=_iso_utc(min_timestamp),
+        max_timestamp=_iso_utc(max_timestamp),
+        symbols=[symbol],
+        columns=SILVER_FUNDING_FEATURE_COLUMNS,
+    )
 
 
 def write_symbol_report(*, silver_root: str, market: str, exchange: str, symbol: str, report: SilverBuildReport) -> str:
@@ -277,3 +658,241 @@ def write_symbol_report(*, silver_root: str, market: str, exchange: str, symbol:
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
     return str(target.resolve())
+
+
+def build_samples_plot_filename(zone: str, exchange: str, symbol: str, market: str) -> str:
+    """Build normalized plot filename ``zone_exchange_symbol_market.png``."""
+
+    def _safe(value: str) -> str:
+        return re.sub(r"[^A-Za-z0-9_.-]+", "_", value).strip("_")
+
+    return f"{_safe(zone)}_{_safe(exchange)}_{_safe(symbol)}_{_safe(market)}.png"
+
+
+def _downsample_series(
+    xs: list[object],
+    ys: list[float],
+    *,
+    max_points: int = 3000,
+) -> tuple[list[object], list[float]]:
+    """Downsample paired series to at most ``max_points`` with evenly spaced indices."""
+
+    if max_points <= 0:
+        raise ValueError("max_points must be positive")
+    length = min(len(xs), len(ys))
+    if length <= max_points:
+        return xs[:length], ys[:length]
+    if length == 0:
+        return [], []
+
+    target_points = min(max_points, length)
+    if target_points == 1:
+        sampled_indices = [0]
+    else:
+        sampled_indices = sorted(
+            {
+                int(round(i * (length - 1) / (target_points - 1)))
+                for i in range(target_points)
+            }
+        )
+    return [xs[index] for index in sampled_indices], [ys[index] for index in sampled_indices]
+
+
+def _aggregate_even_buckets(
+    xs: list[object],
+    ys: list[float],
+    volumes: list[float] | None = None,
+    *,
+    max_points: int = 3000,
+) -> tuple[list[object], list[float], list[float] | None]:
+    """Aggregate series into evenly sized buckets to avoid aliasing zigzags."""
+
+    if max_points <= 0:
+        raise ValueError("max_points must be positive")
+    length = min(len(xs), len(ys))
+    if volumes is not None:
+        length = min(length, len(volumes))
+    if length == 0:
+        return [], [], [] if volumes is not None else None
+    if length <= max_points:
+        base_volumes = volumes[:length] if volumes is not None else None
+        return xs[:length], ys[:length], base_volumes
+
+    bucket_count = max_points
+    agg_xs: list[object] = []
+    agg_ys: list[float] = []
+    agg_vols: list[float] | None = [] if volumes is not None else None
+    for i in range(bucket_count):
+        start = int(round(i * length / bucket_count))
+        end = int(round((i + 1) * length / bucket_count))
+        if end <= start:
+            continue
+        chunk_y = ys[start:end]
+        mid = start + ((end - start) // 2)
+        agg_xs.append(xs[mid])
+        agg_ys.append(sum(chunk_y) / len(chunk_y))
+        if agg_vols is not None and volumes is not None:
+            agg_vols.append(sum(volumes[start:end]))
+    return agg_xs, agg_ys, agg_vols
+
+
+def write_symbol_plot(
+    *,
+    silver_root: str,
+    zone: str,
+    exchange: str,
+    symbol: str,
+    timeframe: str,
+    period_start: str | None,
+    period_end: str | None,
+    report: SilverBuildReport | None = None,
+    samples_root: str = "samples",
+) -> str | None:
+    """Render one professional plot per symbol from silver parquet output."""
+
+    try:
+        import matplotlib.pyplot as plt
+        import matplotlib.ticker as mticker
+    except ImportError as exc:
+        raise RuntimeError("matplotlib is required for silver plot generation.") from exc
+
+    pl = _require_polars()
+
+    def _dataset_type_from_report(value: str) -> str:
+        if value in {"spot_1m", "perp_1m"}:
+            return value.split("_", 1)[0]
+        return value
+
+    data_zone = (
+        _dataset_type_from_report(report.dataset)
+        if (zone == "silver" and report is not None)
+        else zone
+    )
+    plot_market = "funding_1m" if data_zone == "funding_1m_feature" else data_zone
+    data_root = (
+        Path(silver_root)
+        / f"dataset_type={data_zone}"
+        / f"exchange={exchange}"
+        / f"symbol={symbol}"
+        / f"timeframe={timeframe}"
+    )
+    files = sorted(data_root.glob("month=*/data.parquet"))
+    if not files:
+        return None
+
+    frame = pl.read_parquet([str(path) for path in files])
+    if frame.height == 0:
+        return None
+
+    if data_zone in {"spot", "perp"}:
+        x_col = "open_time"
+        y_col = "close_price"
+        y_label = "Close Price"
+        title_suffix = "Price"
+    elif data_zone == "funding_observed":
+        x_col = "funding_time"
+        y_col = "funding_rate"
+        y_label = "Funding Rate"
+        title_suffix = "Funding Observed"
+    elif data_zone == "funding_1m_feature":
+        x_col = "timestamp"
+        y_col = "funding_rate_last_known"
+        y_label = "Funding Rate (Last Known)"
+        title_suffix = "Funding 1m Feature"
+    else:
+        return None
+
+    series = frame.select([x_col, y_col]).drop_nulls().sort(x_col)
+    if series.height == 0:
+        return None
+
+    xs = series.get_column(x_col).to_list()
+    ys = series.get_column(y_col).to_list()
+    values = [float(value) for value in ys if value is not None]
+    if not values:
+        return None
+
+    if data_zone in {"spot", "perp"}:
+        if "volume" in frame.columns:
+            volume_series = frame.select([x_col, "volume"]).drop_nulls().sort(x_col)
+            volume_map = {
+                item[0]: float(item[1])
+                for item in volume_series.iter_rows()
+                if item[0] is not None and item[1] is not None
+            }
+            base_volumes = [volume_map.get(x, 0.0) for x in xs]
+        else:
+            base_volumes = [0.0] * len(xs)
+        xs, values, volume_values = _aggregate_even_buckets(xs, values, base_volumes, max_points=3000)
+        if volume_values is None:
+            volume_values = [0.0] * len(xs)
+
+        fig, (price_ax, volume_ax) = plt.subplots(
+            2,
+            1,
+            figsize=(13, 7.2),
+            sharex=True,
+            gridspec_kw={"height_ratios": [7, 3]},
+        )
+        fig.patch.set_facecolor("#ffffff")
+        for axis in (price_ax, volume_ax):
+            axis.set_facecolor("#f8fafc")
+            axis.grid(alpha=0.35, linestyle="--", linewidth=0.8, color="#94a3b8")
+            axis.spines["top"].set_visible(False)
+            axis.spines["right"].set_visible(False)
+
+        price_ax.plot(xs, values, color="#0f4c81", linewidth=2.0)
+        price_ax.fill_between(xs, values, [min(values)] * len(values), color="#93c5fd", alpha=0.25)
+        price_ax.set_title(f"{exchange.upper()} {symbol} {title_suffix}", fontsize=13, fontweight="semibold")
+        price_ax.set_ylabel(y_label)
+        price_ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.2f}"))
+
+        volume_ax.bar(xs, volume_values, color="#60a5fa", alpha=0.8, width=0.0015)
+        volume_ax.set_ylabel("Volume")
+        volume_ax.set_xlabel("Time (UTC)")
+        volume_ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
+        fig.tight_layout()
+    else:
+        xs, values = _downsample_series(xs, values, max_points=3000)
+        fig, ax = plt.subplots(figsize=(13, 6.5))
+        fig.patch.set_facecolor("#ffffff")
+        ax.set_facecolor("#f8fafc")
+        ax.plot(xs, values, color="#0f4c81", linewidth=2.0)
+        ax.fill_between(xs, values, [min(values)] * len(values), color="#93c5fd", alpha=0.25)
+        ax.grid(alpha=0.35, linestyle="--", linewidth=0.8, color="#94a3b8")
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.set_title(f"{exchange.upper()} {symbol} {title_suffix}", fontsize=13, fontweight="semibold")
+        ax.set_xlabel("Time (UTC)")
+        ax.set_ylabel(y_label)
+        ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.6f}" if "Rate" in y_label else "{x:,.2f}"))
+        fig.tight_layout()
+
+    filename = build_samples_plot_filename(zone=zone, exchange=exchange, symbol=symbol, market=plot_market)
+    output_path = Path(samples_root) / filename
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "zone": zone,
+        "exchange": exchange,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "period_start": period_start or "",
+        "period_end": period_end or "",
+    }
+    if report is not None:
+        metadata.update(
+            {
+                "report_dataset": report.dataset,
+                "report_rows_in": str(report.rows_in),
+                "report_rows_out": str(report.rows_out),
+                "report_duplicates_removed": str(report.duplicates_removed),
+                "report_invalid_ohlc_rows": str(report.invalid_ohlc_rows),
+                "report_null_price_rows": str(report.null_price_rows),
+                "report_min_timestamp": report.min_timestamp or "",
+                "report_max_timestamp": report.max_timestamp or "",
+                "report_months_processed": ",".join(report.months_processed),
+            }
+        )
+    fig.savefig(output_path, dpi=180, metadata=metadata)
+    plt.close(fig)
+    return str(output_path.resolve())

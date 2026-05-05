@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,6 +14,7 @@ from ingestion.http_client import HttpClientError, HttpClientHttpError
 from ingestion.spot import Exchange, Market, interval_to_milliseconds, normalize_storage_symbol
 
 DERIBIT_FUNDING_NATIVE_INTERVAL = "8h"
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -110,11 +113,21 @@ def fetch_funding_all_history(
                 ]
             )
 
-        rows = deribit_funding.fetch_funding_all(
-            symbol=normalized_symbol,
-            period=normalized_interval,
-            on_page=_on_page if on_history_chunk is not None else None,
-        )
+        try:
+            rows = deribit_funding.fetch_funding_all(
+                symbol=normalized_symbol,
+                period=normalized_interval,
+                on_page=_on_page if on_history_chunk is not None else None,
+                collect=on_history_chunk is None,
+            )
+        except TypeError as exc:
+            if "collect" not in str(exc):
+                raise
+            rows = deribit_funding.fetch_funding_all(
+                symbol=normalized_symbol,
+                period=normalized_interval,
+                on_page=_on_page if on_history_chunk is not None else None,
+            )
     except HttpClientHttpError as exc:
         # Deribit may return HTTP 400 for unsupported/per-symbol funding history windows.
         # Treat that as "no rows" so one symbol does not fail the full loader run.
@@ -122,6 +135,8 @@ def fetch_funding_all_history(
             return []
         raise
     except HttpClientError:
+        return []
+    if on_history_chunk is not None:
         return []
     parsed = [deribit_funding.parse_funding_row(normalized_symbol, normalized_interval, row) for row in rows]
     return [
@@ -155,6 +170,7 @@ def fetch_funding_range(
         return []
     normalized_interval = normalize_funding_timeframe(exchange=exchange, value=interval)
     normalized_symbol = normalize_storage_symbol(exchange=exchange, symbol=symbol, market=market)
+    started = time.monotonic()
     try:
         rows = deribit_funding.fetch_funding_range(
             symbol=normalized_symbol,
@@ -167,9 +183,18 @@ def fetch_funding_range(
             return []
         raise
     except HttpClientError:
+        logger.warning(
+            "Funding day fetch failed exchange=%s symbol=%s interval=%s start_ms=%s end_ms=%s elapsed_s=%.2f",
+            exchange,
+            normalized_symbol,
+            normalized_interval,
+            start_open_ms,
+            end_open_ms,
+            time.monotonic() - started,
+        )
         return []
     parsed = [deribit_funding.parse_funding_row(normalized_symbol, normalized_interval, row) for row in rows]
-    return [
+    points = [
         FundingPoint(
             exchange=exchange,
             symbol=normalized_symbol,
@@ -182,3 +207,14 @@ def fetch_funding_range(
         )
         for item in parsed
     ]
+    logger.info(
+        "Funding day fetch done exchange=%s symbol=%s interval=%s start_ms=%s end_ms=%s rows=%s elapsed_s=%.2f",
+        exchange,
+        normalized_symbol,
+        normalized_interval,
+        start_open_ms,
+        end_open_ms,
+        len(points),
+        time.monotonic() - started,
+    )
+    return points

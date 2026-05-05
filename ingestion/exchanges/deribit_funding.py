@@ -34,10 +34,34 @@ def fetch_funding_range(
 
     instrument_name = _normalize_funding_instrument(symbol)
     period_ms = _period_to_milliseconds(period)
+    max_window_ms = DERIBIT_FUNDING_MAX_POINTS_PER_REQUEST * period_ms
+
+    # Fast path: small ranges (e.g. one-day delta windows) should be served by one API call.
+    if start_open_ms > 0 and (end_open_ms - start_open_ms + 1) <= max_window_ms:
+        page = _fetch_funding_page(
+            symbol=instrument_name,
+            start_time_ms=start_open_ms,
+            end_time_ms=end_open_ms,
+        )
+        if on_page is not None and page:
+            on_page(page)
+        dedup = {
+            int(cast(Any, row["timestamp"])): row
+            for row in page
+            if start_open_ms <= int(cast(Any, row["timestamp"])) <= end_open_ms
+        }
+        return [dedup[key] for key in sorted(dedup)]
+
     cursor = start_open_ms
     rows: list[dict[str, object]] = []
+    last_cursor: int | None = None
 
     while cursor <= end_open_ms:
+        if last_cursor is not None and cursor <= last_cursor:
+            cursor = last_cursor + period_ms
+            if cursor > end_open_ms:
+                break
+        last_cursor = cursor
         window_end_ms = min(
             end_open_ms,
             cursor + (DERIBIT_FUNDING_MAX_POINTS_PER_REQUEST * period_ms) - 1,
@@ -56,9 +80,6 @@ def fetch_funding_range(
             page_ts = [int(cast(Any, item["timestamp"])) for item in page]
             min_ts = min(page_ts)
             max_ts = max(page_ts)
-            # Some Deribit responses may return only a narrow sub-window inside the
-            # requested range. Advance from the covered region instead of jumping to
-            # ``max_ts + period`` to avoid skipping undiscovered earlier slices.
             if min_ts > cursor:
                 cursor = min_ts
             else:
@@ -76,18 +97,48 @@ def fetch_funding_all(
     symbol: str,
     period: str,
     on_page: Callable[[list[dict[str, object]]], None] | None = None,
+    collect: bool = True,
 ) -> list[dict[str, object]]:
-    """Fetch funding-rate history over broad bounded horizon."""
+    """Fetch all available funding-rate history via backward pagination windows."""
 
-    end_ms = int(datetime.now(UTC).timestamp() * 1000)
-    start_ms = int(datetime(2019, 1, 1, tzinfo=UTC).timestamp() * 1000)
-    return fetch_funding_range(
-        symbol=symbol,
-        period=period,
-        start_open_ms=start_ms,
-        end_open_ms=end_ms,
-        on_page=on_page,
-    )
+    instrument_name = _normalize_funding_instrument(symbol)
+    period_ms = _period_to_milliseconds(period)
+    window_span_ms = DERIBIT_FUNDING_MAX_POINTS_PER_REQUEST * period_ms
+    cursor_end_ms = int(datetime.now(UTC).timestamp() * 1000)
+    previous_cursor_end_ms: int | None = None
+    rows: list[dict[str, object]] = []
+
+    while cursor_end_ms >= 0:
+        if previous_cursor_end_ms is not None and cursor_end_ms >= previous_cursor_end_ms:
+            break
+        previous_cursor_end_ms = cursor_end_ms
+
+        window_start_ms = max(0, cursor_end_ms - window_span_ms + 1)
+        page = _fetch_funding_page(
+            symbol=instrument_name,
+            start_time_ms=window_start_ms,
+            end_time_ms=cursor_end_ms,
+        )
+        if not page:
+            break
+        if on_page is not None:
+            on_page(page)
+        if collect:
+            rows.extend(page)
+
+        page_min_ts = min(int(cast(Any, item["timestamp"])) for item in page)
+        next_cursor_end_ms = page_min_ts - period_ms
+        if next_cursor_end_ms >= cursor_end_ms:
+            next_cursor_end_ms = window_start_ms - 1
+        cursor_end_ms = next_cursor_end_ms
+
+    if not collect:
+        return []
+
+    dedup: dict[int, dict[str, object]] = {}
+    for row in rows:
+        dedup[int(cast(Any, row["timestamp"]))] = row
+    return [dedup[key] for key in sorted(dedup)]
 
 
 def parse_funding_row(symbol: str, period: str, row: dict[str, object]) -> dict[str, object]:

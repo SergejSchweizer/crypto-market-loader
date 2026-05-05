@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import logging
 import random
@@ -126,6 +125,12 @@ def _add_ingest_parser(
         help="Suppress JSON output from bronze-ingest command",
     )
     parser.add_argument(
+        "--tail-delta-only",
+        dest="tail_delta_only",
+        action="store_true",
+        help="Fetch only new tail data after latest stored point (overrides config).",
+    )
+    parser.add_argument(
         "--full-gap-fill",
         dest="tail_delta_only",
         action="store_false",
@@ -245,12 +250,12 @@ def _fetch_symbol_funding(
     )
 
 
-async def _fetch_candle_tasks_parallel(
+def _fetch_candle_tasks_parallel(
     tasks: list[tuple[Exchange, Market, str, str]],
     lake_root: str,
     concurrency: int,
     logger: logging.Logger,
-    shared_semaphore: asyncio.Semaphore | None = None,
+    shared_semaphore: object | None = None,
     on_task_complete: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
     on_task_chunk: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
 ) -> tuple[dict[tuple[Exchange, Market, str, str], list[SpotCandle]], dict[tuple[Exchange, Market, str, str], str]]:
@@ -258,7 +263,7 @@ async def _fetch_candle_tasks_parallel(
         CandleFetchTaskDTO(exchange=exchange, market=market, symbol=symbol, timeframe=timeframe)
         for exchange, market, symbol, timeframe in tasks
     ]
-    result = await fetch_candle_tasks_parallel(
+    result = fetch_candle_tasks_parallel(
         tasks=service_tasks,
         lake_root=lake_root,
         concurrency=concurrency,
@@ -271,12 +276,12 @@ async def _fetch_candle_tasks_parallel(
     return result.rows, result.errors
 
 
-async def _fetch_open_interest_tasks_parallel(
+def _fetch_open_interest_tasks_parallel(
     oi_tasks: list[tuple[Exchange, str, str]],
     lake_root: str,
     concurrency: int,
     logger: logging.Logger,
-    shared_semaphore: asyncio.Semaphore | None = None,
+    shared_semaphore: object | None = None,
     on_task_complete: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
     on_task_chunk: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
 ) -> tuple[dict[tuple[Exchange, str, str], list[OpenInterestPoint]], dict[tuple[Exchange, str, str], str]]:
@@ -284,7 +289,7 @@ async def _fetch_open_interest_tasks_parallel(
         OpenInterestFetchTaskDTO(exchange=exchange, symbol=symbol, timeframe=timeframe)
         for exchange, symbol, timeframe in oi_tasks
     ]
-    result = await fetch_open_interest_tasks_parallel(
+    result = fetch_open_interest_tasks_parallel(
         tasks=service_tasks,
         lake_root=lake_root,
         concurrency=concurrency,
@@ -297,12 +302,12 @@ async def _fetch_open_interest_tasks_parallel(
     return result.rows, result.errors
 
 
-async def _fetch_funding_tasks_parallel(
+def _fetch_funding_tasks_parallel(
     funding_tasks: list[tuple[Exchange, str, str]],
     lake_root: str,
     concurrency: int,
     logger: logging.Logger,
-    shared_semaphore: asyncio.Semaphore | None = None,
+    shared_semaphore: object | None = None,
     on_task_complete: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
     on_task_chunk: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
 ) -> tuple[dict[tuple[Exchange, str, str], list[FundingPoint]], dict[tuple[Exchange, str, str], str]]:
@@ -310,7 +315,7 @@ async def _fetch_funding_tasks_parallel(
         FundingFetchTaskDTO(exchange=exchange, symbol=symbol, timeframe=timeframe)
         for exchange, symbol, timeframe in funding_tasks
     ]
-    result = await fetch_funding_tasks_parallel(
+    result = fetch_funding_tasks_parallel(
         tasks=service_tasks,
         lake_root=lake_root,
         concurrency=concurrency,
@@ -323,7 +328,7 @@ async def _fetch_funding_tasks_parallel(
     return result.rows, result.errors
 
 
-async def _fetch_all_task_groups(
+def _fetch_all_task_groups(
     candle_tasks: list[tuple[Exchange, Market, str, str]],
     oi_tasks: list[tuple[Exchange, str, str]],
     funding_tasks: list[tuple[Exchange, str, str]],
@@ -346,7 +351,7 @@ async def _fetch_all_task_groups(
     dict[tuple[Exchange, str, str], list[FundingPoint]],
     dict[tuple[Exchange, str, str], str],
 ]:
-    """Fetch task groups concurrently for better cross-type scheduling."""
+    """Fetch task groups sequentially across dataset types."""
 
     task_results: dict[tuple[Exchange, Market, str, str], list[SpotCandle]] = {}
     task_errors: dict[tuple[Exchange, Market, str, str], str] = {}
@@ -355,11 +360,8 @@ async def _fetch_all_task_groups(
     funding_results: dict[tuple[Exchange, str, str], list[FundingPoint]] = {}
     funding_errors: dict[tuple[Exchange, str, str], str] = {}
 
-    async def _run_candles() -> tuple[
-        dict[tuple[Exchange, Market, str, str], list[SpotCandle]],
-        dict[tuple[Exchange, Market, str, str], str],
-    ]:
-        return await _fetch_candle_tasks_parallel(
+    if candle_tasks:
+        rows, errors = _fetch_candle_tasks_parallel(
             tasks=candle_tasks,
             lake_root=lake_root,
             concurrency=candle_concurrency,
@@ -367,12 +369,11 @@ async def _fetch_all_task_groups(
             on_task_complete=on_candle_task_complete,
             on_task_chunk=on_candle_task_chunk,
         )
+        task_results.update(rows)
+        task_errors.update(errors)
 
-    async def _run_oi() -> tuple[
-        dict[tuple[Exchange, str, str], list[OpenInterestPoint]],
-        dict[tuple[Exchange, str, str], str],
-    ]:
-        return await _fetch_open_interest_tasks_parallel(
+    if oi_tasks:
+        rows, errors = _fetch_open_interest_tasks_parallel(
             oi_tasks=oi_tasks,
             lake_root=lake_root,
             concurrency=oi_concurrency,
@@ -380,12 +381,11 @@ async def _fetch_all_task_groups(
             on_task_complete=on_oi_task_complete,
             on_task_chunk=on_oi_task_chunk,
         )
+        oi_results.update(rows)
+        oi_errors.update(errors)
 
-    async def _run_funding() -> tuple[
-        dict[tuple[Exchange, str, str], list[FundingPoint]],
-        dict[tuple[Exchange, str, str], str],
-    ]:
-        return await _fetch_funding_tasks_parallel(
+    if funding_tasks:
+        rows, errors = _fetch_funding_tasks_parallel(
             funding_tasks=funding_tasks,
             lake_root=lake_root,
             concurrency=funding_concurrency,
@@ -393,26 +393,8 @@ async def _fetch_all_task_groups(
             on_task_complete=on_funding_task_complete,
             on_task_chunk=on_funding_task_chunk,
         )
-
-    jobs: list[tuple[str, asyncio.Task[object]]] = []
-    if candle_tasks:
-        jobs.append(("candle", asyncio.create_task(_run_candles())))
-    if oi_tasks:
-        jobs.append(("oi", asyncio.create_task(_run_oi())))
-    if funding_tasks:
-        jobs.append(("funding", asyncio.create_task(_run_funding())))
-
-    for task_type, job in jobs:
-        rows_any, errors_any = await job
-        if task_type == "candle":
-            task_results.update(cast(dict[tuple[Exchange, Market, str, str], list[SpotCandle]], rows_any))
-            task_errors.update(cast(dict[tuple[Exchange, Market, str, str], str], errors_any))
-        elif task_type == "oi":
-            oi_results.update(cast(dict[tuple[Exchange, str, str], list[OpenInterestPoint]], rows_any))
-            oi_errors.update(cast(dict[tuple[Exchange, str, str], str], errors_any))
-        else:
-            funding_results.update(cast(dict[tuple[Exchange, str, str], list[FundingPoint]], rows_any))
-            funding_errors.update(cast(dict[tuple[Exchange, str, str], str], errors_any))
+        funding_results.update(rows)
+        funding_errors.update(errors)
 
     return task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors
 
@@ -611,41 +593,39 @@ def run_bronze_ingest(args: argparse.Namespace, logger: logging.Logger) -> None:
                 streamed_funding_tasks.add((task.exchange, task.symbol, task.timeframe))
                 _persist_funding_task(task, rows)
 
-            task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors = asyncio.run(
-                _fetch_all_task_groups(
-                    candle_tasks=tasks,
-                    oi_tasks=oi_tasks,
-                    funding_tasks=funding_tasks,
-                    lake_root=cast(str, args.lake_root),
-                    candle_concurrency=candle_concurrency,
-                    oi_concurrency=oi_concurrency,
-                    funding_concurrency=funding_concurrency,
-                    logger=logger,
-                    on_candle_task_complete=(
-                        lambda task, rows: _persist_candle_task(task, rows)
-                        if (task.exchange, task.market, task.symbol, task.timeframe) not in streamed_candle_tasks
-                        else None
-                    )
-                    if incremental_parquet_on_fetch
-                    else None,
-                    on_oi_task_complete=(
-                        lambda task, rows: _persist_oi_task(task, rows)
-                        if (task.exchange, task.symbol, task.timeframe) not in streamed_oi_tasks
-                        else None
-                    )
-                    if incremental_parquet_on_fetch
-                    else None,
-                    on_funding_task_complete=(
-                        lambda task, rows: _persist_funding_task(task, rows)
-                        if (task.exchange, task.symbol, task.timeframe) not in streamed_funding_tasks
-                        else None
-                    )
-                    if incremental_parquet_on_fetch
-                    else None,
-                    on_candle_task_chunk=_persist_candle_chunk if incremental_parquet_on_fetch else None,
-                    on_oi_task_chunk=_persist_oi_chunk if incremental_parquet_on_fetch else None,
-                    on_funding_task_chunk=_persist_funding_chunk if incremental_parquet_on_fetch else None,
+            task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors = _fetch_all_task_groups(
+                candle_tasks=tasks,
+                oi_tasks=oi_tasks,
+                funding_tasks=funding_tasks,
+                lake_root=cast(str, args.lake_root),
+                candle_concurrency=candle_concurrency,
+                oi_concurrency=oi_concurrency,
+                funding_concurrency=funding_concurrency,
+                logger=logger,
+                on_candle_task_complete=(
+                    lambda task, rows: _persist_candle_task(task, rows)
+                    if (task.exchange, task.market, task.symbol, task.timeframe) not in streamed_candle_tasks
+                    else None
                 )
+                if incremental_parquet_on_fetch
+                else None,
+                on_oi_task_complete=(
+                    lambda task, rows: _persist_oi_task(task, rows)
+                    if (task.exchange, task.symbol, task.timeframe) not in streamed_oi_tasks
+                    else None
+                )
+                if incremental_parquet_on_fetch
+                else None,
+                on_funding_task_complete=(
+                    lambda task, rows: _persist_funding_task(task, rows)
+                    if (task.exchange, task.symbol, task.timeframe) not in streamed_funding_tasks
+                    else None
+                )
+                if incremental_parquet_on_fetch
+                else None,
+                on_candle_task_chunk=_persist_candle_chunk if incremental_parquet_on_fetch else None,
+                on_oi_task_chunk=_persist_oi_chunk if incremental_parquet_on_fetch else None,
+                on_funding_task_chunk=_persist_funding_chunk if incremental_parquet_on_fetch else None,
             )
             ohlcv_success_count = len(task_results)
             ohlcv_error_count = len(task_errors)

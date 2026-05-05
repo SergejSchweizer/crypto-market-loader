@@ -27,7 +27,9 @@ bronze-ingest:
     - SOLUSDT
   save_parquet_lake: false
   lake_root: lake/bronze
-  tail_delta_only: false
+  # Recommended default for daily operations: only fetch new tail data.
+  # Use CLI flag `--full-gap-fill` when you intentionally want deep backfill checks.
+  tail_delta_only: true
   no_json_output: false
 
 silver-build:
@@ -37,6 +39,7 @@ silver-build:
   market:
     - spot
     - perp
+    - funding
   timeframe: 1m
   no_json_output: false
 

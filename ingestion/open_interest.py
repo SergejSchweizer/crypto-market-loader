@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
@@ -98,12 +100,24 @@ def fetch_open_interest_all_history(
         )
 
     try:
-        rows = deribit_open_interest.fetch_open_interest_all(
-            symbol=normalized_symbol,
-            period=normalized_interval,
-            on_page=_on_page if on_history_chunk is not None else None,
-        )
+        try:
+            rows = deribit_open_interest.fetch_open_interest_all(
+                symbol=normalized_symbol,
+                period=normalized_interval,
+                on_page=_on_page if on_history_chunk is not None else None,
+                collect=on_history_chunk is None,
+            )
+        except TypeError as exc:
+            if "collect" not in str(exc):
+                raise
+            rows = deribit_open_interest.fetch_open_interest_all(
+                symbol=normalized_symbol,
+                period=normalized_interval,
+                on_page=_on_page if on_history_chunk is not None else None,
+            )
     except HttpClientError:
+        return []
+    if on_history_chunk is not None:
         return []
     parsed = [
         deribit_open_interest.parse_open_interest_row(normalized_symbol, normalized_interval, row)
@@ -140,6 +154,7 @@ def fetch_open_interest_range(
     parsed: list[dict[str, object]] = []
     if exchange != "deribit":
         return []
+    started = time.monotonic()
     try:
         rows = deribit_open_interest.fetch_open_interest_range(
             symbol=normalized_symbol,
@@ -148,12 +163,21 @@ def fetch_open_interest_range(
             end_open_ms=end_open_ms,
         )
     except HttpClientError:
+        logger.warning(
+            "OI day fetch failed exchange=%s symbol=%s interval=%s start_ms=%s end_ms=%s elapsed_s=%.2f",
+            exchange,
+            normalized_symbol,
+            normalized_interval,
+            start_open_ms,
+            end_open_ms,
+            time.monotonic() - started,
+        )
         return []
     parsed = [
         deribit_open_interest.parse_open_interest_row(normalized_symbol, normalized_interval, row)
         for row in rows
     ]
-    return [
+    points = [
         OpenInterestPoint(
             exchange=exchange,
             symbol=normalized_symbol,
@@ -165,3 +189,15 @@ def fetch_open_interest_range(
         )
         for item in parsed
     ]
+    logger.info(
+        "OI day fetch done exchange=%s symbol=%s interval=%s start_ms=%s end_ms=%s rows=%s elapsed_s=%.2f",
+        exchange,
+        normalized_symbol,
+        normalized_interval,
+        start_open_ms,
+        end_open_ms,
+        len(points),
+        time.monotonic() - started,
+    )
+    return points
+logger = logging.getLogger(__name__)

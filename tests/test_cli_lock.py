@@ -313,7 +313,7 @@ def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.Mon
 
     scheduled_groups: list[str] = []
 
-    async def fake_fetch_candle_tasks_parallel(
+    def fake_fetch_candle_tasks_parallel(
         **kwargs: object,
     ) -> tuple[dict[tuple[object, ...], list[object]], dict[tuple[object, ...], str]]:
         tasks = cast(list[tuple[str, str, str, str]], kwargs["tasks"])
@@ -321,13 +321,13 @@ def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.Mon
             scheduled_groups.append(task[1])
         return {}, {}
 
-    async def fake_fetch_open_interest_tasks_parallel(
+    def fake_fetch_open_interest_tasks_parallel(
         **kwargs: object,
     ) -> tuple[dict[tuple[object, ...], list[object]], dict[tuple[object, ...], str]]:
         scheduled_groups.append("oi")
         return {}, {}
 
-    async def fake_fetch_funding_tasks_parallel(
+    def fake_fetch_funding_tasks_parallel(
         **kwargs: object,
     ) -> tuple[dict[tuple[object, ...], list[object]], dict[tuple[object, ...], str]]:
         scheduled_groups.append("funding")
@@ -367,7 +367,7 @@ def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.Mon
     assert {"funding", "oi", "perp", "spot"}.issubset(set(scheduled_groups))
 
 
-def test_write_loader_samples_writes_grouped_dataframes_without_plots(
+def test_write_loader_samples_does_not_write_csv_or_parquet_without_plots(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -403,8 +403,7 @@ def test_write_loader_samples_writes_grouped_dataframes_without_plots(
     )
 
     sample_files = {path.name for path in (tmp_path / "samples").glob("*")}
-    assert "bronze_spot_deribit_BTCUSDT_1m_sample_10_rows.csv" in sample_files
-    assert "bronze_oi_perp_deribit_BTCUSDT_1m_sample_10_rows.csv" in sample_files
+    assert sample_files == set()
     assert not any(path.suffix == ".png" for path in (tmp_path / "samples").glob("*"))
     assert not any(path.suffix == ".parquet" for path in (tmp_path / "samples").glob("*"))
 
@@ -472,4 +471,3 @@ def test_loader_rejects_removed_timeframe_argument(monkeypatch: pytest.MonkeyPat
     )
     with pytest.raises(SystemExit):
         cli.main()
-

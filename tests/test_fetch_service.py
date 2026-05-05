@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -12,12 +11,29 @@ import pytest
 from application.dto import CandleFetchTaskDTO, OpenInterestFetchTaskDTO
 from application.services.fetch_service import (
     _split_range_into_utc_days,
+    _task_timeout_seconds,
     fetch_candle_tasks_parallel,
     fetch_open_interest_tasks_parallel,
     fetch_symbol_candles,
 )
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import SpotCandle
+
+
+def _sleep_then_empty(**kwargs: object) -> list[SpotCandle]:
+    del kwargs
+    import time
+
+    time.sleep(0.2)
+    return []
+
+
+def _sleep_then_empty_oi(**kwargs: object) -> list[OpenInterestPoint]:
+    del kwargs
+    import time
+
+    time.sleep(0.2)
+    return []
 
 
 def test_fetch_candle_tasks_parallel_splits_success_and_errors() -> None:
@@ -47,14 +63,12 @@ def test_fetch_candle_tasks_parallel_splits_success_and_errors() -> None:
             raise RuntimeError("boom")
         return [candle]
 
-    result = asyncio.run(
-        fetch_candle_tasks_parallel(
-            tasks=[task_ok, task_fail],
-            lake_root="lake/bronze",
-            concurrency=2,
-            logger=logging.getLogger("test"),
-            symbol_fetcher=fake_symbol_fetcher,
-        )
+    result = fetch_candle_tasks_parallel(
+        tasks=[task_ok, task_fail],
+        lake_root="lake/bronze",
+        concurrency=2,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=fake_symbol_fetcher,
     )
 
     assert (task_ok.exchange, task_ok.market, task_ok.symbol, task_ok.timeframe) in result.rows
@@ -83,14 +97,12 @@ def test_fetch_open_interest_tasks_parallel_splits_success_and_errors() -> None:
             raise RuntimeError("boom")
         return [point]
 
-    result = asyncio.run(
-        fetch_open_interest_tasks_parallel(
-            tasks=[task_ok, task_fail],
-            lake_root="lake/bronze",
-            concurrency=2,
-            logger=logging.getLogger("test"),
-            symbol_fetcher=fake_symbol_fetcher,
-        )
+    result = fetch_open_interest_tasks_parallel(
+        tasks=[task_ok, task_fail],
+        lake_root="lake/bronze",
+        concurrency=2,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=fake_symbol_fetcher,
     )
 
     assert (task_ok.exchange, task_ok.symbol, task_ok.timeframe) in result.rows
@@ -168,9 +180,8 @@ def test_fetch_symbol_candles_tail_delta_only_passes_history_chunk_callback() ->
     assert callable(captured["on_history_chunk"])
 
 
-def test_fetch_candle_tasks_parallel_applies_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_fetch_candle_tasks_parallel_records_rows_for_slow_fetcher(monkeypatch: pytest.MonkeyPatch) -> None:
     task = CandleFetchTaskDTO(exchange="deribit", market="spot", symbol="BTCUSDT", timeframe="1m")
-    monkeypatch.setenv("DEPTH_FETCH_TASK_TIMEOUT_S", "0.01")
 
     def _slow_fetcher(exchange: str, market: str, symbol: str, timeframe: str, lake_root: str) -> list[SpotCandle]:
         del exchange, market, symbol, timeframe, lake_root
@@ -179,15 +190,37 @@ def test_fetch_candle_tasks_parallel_applies_timeout(monkeypatch: pytest.MonkeyP
         time.sleep(0.05)
         return []
 
-    result = asyncio.run(
-        fetch_candle_tasks_parallel(
-            tasks=[task],
-            lake_root="lake/bronze",
-            concurrency=1,
-            logger=logging.getLogger("test"),
-            symbol_fetcher=_slow_fetcher,
-        )
+    result = fetch_candle_tasks_parallel(
+        tasks=[task],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=_slow_fetcher,
     )
 
     key = (task.exchange, task.market, task.symbol, task.timeframe)
+    assert key in result.rows
+    assert key not in result.errors
+
+
+def test_task_timeout_seconds_uses_safe_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DEPTH_FETCH_TASK_TIMEOUT_S", raising=False)
+    timeout_s = _task_timeout_seconds()
+    assert timeout_s is None
+
+
+def test_fetch_open_interest_tasks_parallel_times_out_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("DEPTH_FETCH_TASK_TIMEOUT_S", "0.05")
+    task = OpenInterestFetchTaskDTO(exchange="deribit", symbol="BTCUSDT", timeframe="1m")
+
+    result = fetch_open_interest_tasks_parallel(
+        tasks=[task],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=_sleep_then_empty_oi,
+    )
+
+    key = (task.exchange, task.symbol, task.timeframe)
     assert key in result.errors
+    assert "timed out" in result.errors[key]

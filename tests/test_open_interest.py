@@ -184,6 +184,35 @@ def test_fetch_open_interest_all_breaks_on_repeated_continuation(monkeypatch: py
     assert [row["timestamp"] for row in rows] == [2, 3]
 
 
+def test_fetch_open_interest_all_breaks_on_repeated_page_window(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str | None] = []
+
+    def _fake_get_json(url: str, params: dict[str, object] | None = None, **kwargs: object) -> object:
+        del url, kwargs
+        assert params is not None
+        continuation = params.get("continuation")
+        calls.append(str(continuation) if continuation is not None else None)
+        if continuation is None:
+            return {
+                "result": {
+                    "settlements": [{"timestamp": 3, "position": 300.0}, {"timestamp": 2, "position": 200.0}],
+                    "continuation": "token-a",
+                }
+            }
+        return {
+            "result": {
+                "settlements": [{"timestamp": 3, "position": 301.0}, {"timestamp": 2, "position": 201.0}],
+                "continuation": "token-b",
+            }
+        }
+
+    monkeypatch.setattr(deribit_open_interest, "get_json", _fake_get_json)
+
+    rows = deribit_open_interest.fetch_open_interest_all(symbol="BTC-PERPETUAL", period="1m")
+    assert calls == [None, "token-a"]
+    assert [row["timestamp"] for row in rows] == [2, 3]
+
+
 def test_parse_open_interest_row_preserves_raw_timestamp() -> None:
     ts_ms = int(datetime(2026, 4, 28, 12, 8, 34, tzinfo=UTC).timestamp() * 1000)
     parsed = deribit_open_interest.parse_open_interest_row(

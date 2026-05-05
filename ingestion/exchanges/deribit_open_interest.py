@@ -10,6 +10,7 @@ from ingestion.http_client import HttpClientHttpError, get_json
 
 DERIBIT_LAST_SETTLEMENTS_URL = "https://www.deribit.com/api/v2/public/get_last_settlements_by_instrument"
 DERIBIT_MAX_POINTS_PER_REQUEST = 1000
+_OPEN_INTEREST_HISTORY_CACHE: dict[str, list[dict[str, object]]] = {}
 
 
 def _normalize_continuation_token(value: object) -> str | None:
@@ -35,6 +36,7 @@ def fetch_open_interest_all(
     symbol: str,
     period: str,
     on_page: Callable[[list[dict[str, object]]], None] | None = None,
+    collect: bool = True,
 ) -> list[dict[str, object]]:
     """Fetch all available Deribit historical open-interest points."""
 
@@ -43,12 +45,20 @@ def fetch_open_interest_all(
     continuation: str | None = None
     pages: list[list[dict[str, object]]] = []
     seen_continuations: set[str] = set()
+    previous_page_edge: tuple[int, int] | None = None
 
     while True:
         page, next_continuation = _fetch_open_interest_page(symbol=instrument_name, continuation=continuation)
         if not page:
             break
-        pages.append(page)
+        page_first_ts = int(cast(Any, page[0]["timestamp"]))
+        page_last_ts = int(cast(Any, page[-1]["timestamp"]))
+        page_edge = (page_first_ts, page_last_ts)
+        if previous_page_edge == page_edge:
+            break
+        previous_page_edge = page_edge
+        if collect:
+            pages.append(page)
         if on_page is not None:
             on_page(page)
         if next_continuation is None:
@@ -57,6 +67,9 @@ def fetch_open_interest_all(
             break
         seen_continuations.add(next_continuation)
         continuation = next_continuation
+
+    if not collect:
+        return []
 
     rows = [row for page in reversed(pages) for row in page]
     dedup: dict[int, dict[str, object]] = {}
@@ -76,34 +89,16 @@ def fetch_open_interest_range(
     if end_open_ms < start_open_ms:
         return []
 
-    del period
-    instrument_name = _normalize_open_interest_instrument(symbol)
-    continuation: str | None = None
-    rows: list[dict[str, object]] = []
-    seen_continuations: set[str] = set()
-    while True:
-        page, next_continuation = _fetch_open_interest_page(symbol=instrument_name, continuation=continuation)
-        if not page:
-            break
-        rows.extend(
-            [
-                item
-                for item in page
-                if start_open_ms <= int(cast(Any, item["timestamp"])) <= end_open_ms
-            ]
-        )
-        min_ts = min(int(cast(Any, item["timestamp"])) for item in page)
-        if min_ts < start_open_ms or next_continuation is None:
-            break
-        if next_continuation in seen_continuations:
-            break
-        seen_continuations.add(next_continuation)
-        continuation = next_continuation
+    history = _OPEN_INTEREST_HISTORY_CACHE.get(symbol)
+    if history is None:
+        history = fetch_open_interest_all(symbol=symbol, period=period)
+        _OPEN_INTEREST_HISTORY_CACHE[symbol] = history
 
-    dedup: dict[int, dict[str, object]] = {}
-    for row in rows:
-        dedup[int(cast(Any, row["timestamp"]))] = row
-    return [dedup[key] for key in sorted(dedup)]
+    return [
+        item
+        for item in history
+        if start_open_ms <= int(cast(Any, item["timestamp"])) <= end_open_ms
+    ]
 
 
 def parse_open_interest_row(symbol: str, period: str, row: dict[str, object]) -> dict[str, object]:

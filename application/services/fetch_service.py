@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
+import multiprocessing as mp
 import os
 import random
+import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
+from typing import TypeVar
 
 from application.dto import (
     CandleFetchResultDTO,
@@ -45,6 +47,21 @@ from ingestion.spot import (
 )
 
 OI_DATASET_TYPE = dataset_contract("oi").dataset_type
+TTimeout = TypeVar("TTimeout")
+
+
+def _timeout_worker(
+    result_queue: object,
+    fn: Callable[..., object],
+    kwargs: dict[str, object],
+) -> None:
+    """Execute one fetch call in a child process and return result state via queue."""
+
+    queue = result_queue
+    try:
+        queue.put(("ok", fn(**kwargs)))
+    except Exception as exc:  # noqa: BLE001
+        queue.put(("err", (exc.__class__.__name__, str(exc))))
 
 
 def _ranges_in_random_order(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -67,6 +84,21 @@ def _task_timeout_seconds() -> float | None:
         return None
     if value <= 0:
         return None
+    return value
+
+
+def _heartbeat_seconds() -> float:
+    """Return heartbeat interval in seconds for long-running fetch tasks."""
+
+    raw = os.getenv("DEPTH_FETCH_HEARTBEAT_S")
+    if raw is None:
+        return 30.0
+    try:
+        value = float(raw)
+    except ValueError:
+        return 30.0
+    if value <= 0:
+        return 30.0
     return value
 
 
@@ -96,6 +128,66 @@ def _day_windows_in_random_order(start_open_ms: int, end_open_ms: int) -> list[t
     if len(windows) <= 1:
         return windows
     return random.SystemRandom().sample(windows, k=len(windows))
+
+
+def _run_with_optional_timeout(
+    fn: Callable[..., TTimeout],
+    *,
+    timeout_s: float | None,
+    heartbeat_s: float,
+    heartbeat: Callable[[int], None],
+    use_process_timeout: bool = False,
+    **kwargs: object,
+) -> TTimeout:
+    """Run callable in a worker process with optional hard timeout and heartbeat."""
+
+    if timeout_s is None or not use_process_timeout:
+        return fn(**kwargs)
+
+    started = datetime.now(UTC)
+    ctx = mp.get_context("fork")
+    result_queue = ctx.Queue(maxsize=1)
+    process = ctx.Process(target=_timeout_worker, args=(result_queue, fn, kwargs))
+    process.start()
+    deadline = None if timeout_s is None else (time.monotonic() + timeout_s)
+    try:
+        while True:
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    process.terminate()
+                    process.join(timeout=2)
+                    raise TimeoutError(f"Fetch task timed out after {timeout_s:.1f}s")
+                wait_s = min(max(0.1, heartbeat_s), remaining)
+            else:
+                wait_s = max(0.1, heartbeat_s)
+
+            process.join(timeout=wait_s)
+            if process.is_alive():
+                elapsed_s = int((datetime.now(UTC) - started).total_seconds())
+                heartbeat(elapsed_s)
+                continue
+
+            if result_queue.empty():
+                raise RuntimeError(f"Fetch worker exited without result (exitcode={process.exitcode})")
+
+            status, payload = result_queue.get_nowait()
+            if status == "ok":
+                return payload  # type: ignore[return-value]
+            exc_name, exc_message = payload
+            if exc_name == "TypeError":
+                raise TypeError(exc_message)
+            if exc_name == "ValueError":
+                raise ValueError(exc_message)
+            if exc_name == "TimeoutError":
+                raise TimeoutError(exc_message)
+            raise RuntimeError(f"{exc_name}: {exc_message}")
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=2)
+        result_queue.close()
+        result_queue.join_thread()
 
 
 def fetch_symbol_candles(
@@ -366,18 +458,16 @@ def fetch_symbol_funding(
         start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
         if start_open_ms > end_open_ms:
             return []
-        fetched_rows: list[FundingPoint] = []
-        for day_start_ms, day_end_ms in _day_windows_in_random_order(start_open_ms, end_open_ms):
-            fetched_rows.extend(
-                range_fetcher(
-                    exchange=exchange,
-                    symbol=symbol,
-                    interval=normalized_interval,
-                    start_open_ms=day_start_ms,
-                    end_open_ms=day_end_ms,
-                    market=market,
-                )
-            )
+        # Funding is naturally sparse (e.g. 8h on Deribit), so one ranged call is
+        # substantially faster than many day-sized calls that each re-page backend data.
+        fetched_rows = range_fetcher(
+            exchange=exchange,
+            symbol=symbol,
+            interval=normalized_interval,
+            start_open_ms=start_open_ms,
+            end_open_ms=end_open_ms,
+            market=market,
+        )
         unique_by_open_time = {item.open_time: item for item in fetched_rows}
         return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
 
@@ -411,45 +501,42 @@ def fetch_symbol_funding(
 
     fetched: list[FundingPoint] = []
     for start_open_ms, gap_end_ms in _ranges_in_random_order(missing_ranges):
-        for day_start_ms, day_end_ms in _day_windows_in_random_order(start_open_ms, gap_end_ms):
-            fetched.extend(
-                range_fetcher(
-                    exchange=exchange,
-                    symbol=symbol,
-                    interval=normalized_interval,
-                    start_open_ms=day_start_ms,
-                    end_open_ms=day_end_ms,
-                    market=market,
-                )
+        fetched.extend(
+            range_fetcher(
+                exchange=exchange,
+                symbol=symbol,
+                interval=normalized_interval,
+                start_open_ms=start_open_ms,
+                end_open_ms=gap_end_ms,
+                market=market,
             )
+        )
 
     unique_by_open_time = {item.open_time: item for item in fetched}
     return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
 
 
-async def fetch_candle_tasks_parallel(
+def fetch_candle_tasks_parallel(
     tasks: list[CandleFetchTaskDTO],
     lake_root: str,
     concurrency: int,
     logger: logging.Logger,
     symbol_fetcher: Callable[..., list[SpotCandle]] = fetch_symbol_candles,
-    shared_semaphore: asyncio.Semaphore | None = None,
+    shared_semaphore: object | None = None,
     on_task_complete: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
     on_task_chunk: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
 ) -> CandleFetchResultDTO:
-    """Fetch OHLCV tasks with bounded concurrency."""
+    """Fetch OHLCV tasks sequentially."""
 
+    del concurrency, shared_semaphore
     total_tasks = len(tasks)
-    task_timeout_s = _task_timeout_seconds()
     task_results: dict[tuple[Exchange, Market, str, str], list[SpotCandle]] = {}
     task_errors: dict[tuple[Exchange, Market, str, str], str] = {}
-
-    semaphore = shared_semaphore or asyncio.Semaphore(max(1, concurrency))
-    results_lock = asyncio.Lock()
-
-    async def _run_task(idx: int, task: CandleFetchTaskDTO) -> None:
-        logger.debug(
-            "Fetch start [%s/%s] exchange=%s market=%s symbol=%s timeframe=%s mode=%s",
+    task_timeout_s = _task_timeout_seconds()
+    heartbeat_s = _heartbeat_seconds()
+    for idx, task in enumerate(tasks, start=1):
+        logger.info(
+            "Fetch start [%s/%s] type=ohlcv exchange=%s market=%s symbol=%s timeframe=%s mode=%s",
             idx,
             total_tasks,
             task.exchange,
@@ -459,43 +546,60 @@ async def fetch_candle_tasks_parallel(
             "auto-bootstrap-or-gap-fill",
         )
         key = (task.exchange, task.market, task.symbol, task.timeframe)
+        task_started_at = datetime.now(UTC)
+        hb_exchange = task.exchange
+        hb_market = task.market
+        hb_symbol = task.symbol
+        hb_timeframe = task.timeframe
+
+        def _hb_ohlcv(
+            elapsed_s: int,
+            ex: str = hb_exchange,
+            mk: str = hb_market,
+            sy: str = hb_symbol,
+            tf: str = hb_timeframe,
+        ) -> None:
+            logger.info(
+                "Fetch heartbeat type=ohlcv exchange=%s market=%s symbol=%s timeframe=%s elapsed_s=%s",
+                ex,
+                mk,
+                sy,
+                tf,
+                elapsed_s,
+            )
         try:
-            async with semaphore:
-                try:
-                    fetch_call = asyncio.to_thread(
-                        symbol_fetcher,
-                        task.exchange,
-                        task.market,
-                        task.symbol,
-                        task.timeframe,
-                        lake_root,
-                        on_history_chunk=(lambda rows, _task=task: on_task_chunk(_task, rows))
-                        if on_task_chunk is not None
-                        else None,
-                    )
-                    candles = (
-                        await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
-                        if task_timeout_s is not None
-                        else await fetch_call
-                    )
-                except TypeError as exc:
-                    if "on_history_chunk" not in str(exc):
-                        raise
-                    fetch_call = asyncio.to_thread(
-                        symbol_fetcher,
-                        task.exchange,
-                        task.market,
-                        task.symbol,
-                        task.timeframe,
-                        lake_root,
-                    )
-                    candles = (
-                        await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
-                        if task_timeout_s is not None
-                        else await fetch_call
-                    )
-            logger.debug(
-                "Fetch complete [%s/%s] exchange=%s market=%s symbol=%s timeframe=%s candles=%s",
+            try:
+                candles = _run_with_optional_timeout(
+                    symbol_fetcher,
+                    timeout_s=task_timeout_s,
+                    heartbeat_s=heartbeat_s,
+                    heartbeat=_hb_ohlcv,
+                    exchange=task.exchange,
+                    market=task.market,
+                    symbol=task.symbol,
+                    timeframe=task.timeframe,
+                    lake_root=lake_root,
+                    on_history_chunk=(lambda rows, _task=task: on_task_chunk(_task, rows))
+                    if on_task_chunk is not None
+                    else None,
+                )
+            except TypeError as exc:
+                if "on_history_chunk" not in str(exc):
+                    raise
+                candles = _run_with_optional_timeout(
+                    symbol_fetcher,
+                    timeout_s=task_timeout_s,
+                    heartbeat_s=heartbeat_s,
+                    heartbeat=_hb_ohlcv,
+                    exchange=task.exchange,
+                    market=task.market,
+                    symbol=task.symbol,
+                    timeframe=task.timeframe,
+                    lake_root=lake_root,
+                )
+            elapsed_s = int((datetime.now(UTC) - task_started_at).total_seconds())
+            logger.info(
+                "Fetch done [%s/%s] type=ohlcv exchange=%s market=%s symbol=%s timeframe=%s rows=%s elapsed_s=%s",
                 idx,
                 total_tasks,
                 task.exchange,
@@ -503,48 +607,47 @@ async def fetch_candle_tasks_parallel(
                 task.symbol,
                 task.timeframe,
                 len(candles),
+                elapsed_s,
             )
-            async with results_lock:
-                task_results[key] = candles
-                if on_task_complete is not None:
-                    on_task_complete(task, candles)
+            task_results[key] = candles
+            if on_task_complete is not None:
+                on_task_complete(task, candles)
         except Exception as exc:  # noqa: BLE001
+            elapsed_s = int((datetime.now(UTC) - task_started_at).total_seconds())
             logger.exception(
-                "Fetch failed exchange=%s market=%s symbol=%s timeframe=%s",
+                "Fetch error type=ohlcv exchange=%s market=%s symbol=%s timeframe=%s elapsed_s=%s",
                 task.exchange,
                 task.market,
                 task.symbol,
                 task.timeframe,
+                elapsed_s,
             )
-            async with results_lock:
-                task_errors[key] = str(exc)
+            task_errors[key] = str(exc)
 
-    await asyncio.gather(*[_run_task(idx, task) for idx, task in enumerate(tasks, start=1)])
     return CandleFetchResultDTO(rows=task_results, errors=task_errors)
 
 
-async def fetch_open_interest_tasks_parallel(
+def fetch_open_interest_tasks_parallel(
     tasks: list[OpenInterestFetchTaskDTO],
     lake_root: str,
     concurrency: int,
     logger: logging.Logger,
     symbol_fetcher: Callable[..., list[OpenInterestPoint]] = fetch_symbol_open_interest,
-    shared_semaphore: asyncio.Semaphore | None = None,
+    shared_semaphore: object | None = None,
     on_task_complete: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
     on_task_chunk: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
 ) -> OpenInterestFetchResultDTO:
-    """Fetch open-interest tasks with bounded concurrency."""
+    """Fetch open-interest tasks sequentially."""
 
+    del concurrency, shared_semaphore
     total_tasks = len(tasks)
-    task_timeout_s = _task_timeout_seconds()
     task_results: dict[tuple[Exchange, str, str], list[OpenInterestPoint]] = {}
     task_errors: dict[tuple[Exchange, str, str], str] = {}
-    semaphore = shared_semaphore or asyncio.Semaphore(max(1, concurrency))
-    results_lock = asyncio.Lock()
-
-    async def _run_task(idx: int, task: OpenInterestFetchTaskDTO) -> None:
-        logger.debug(
-            "OI fetch start [%s/%s] exchange=%s market=oi symbol=%s timeframe=%s mode=%s",
+    task_timeout_s = _task_timeout_seconds()
+    heartbeat_s = _heartbeat_seconds()
+    for idx, task in enumerate(tasks, start=1):
+        logger.info(
+            "Fetch start [%s/%s] type=oi exchange=%s market=perp symbol=%s timeframe=%s mode=%s",
             idx,
             total_tasks,
             task.exchange,
@@ -553,90 +656,102 @@ async def fetch_open_interest_tasks_parallel(
             "auto-bootstrap-or-gap-fill",
         )
         key = (task.exchange, task.symbol, task.timeframe)
+        task_started_at = datetime.now(UTC)
+        hb_exchange = task.exchange
+        hb_symbol = task.symbol
+        hb_timeframe = task.timeframe
         try:
-            async with semaphore:
-                try:
-                    fetch_call = asyncio.to_thread(
-                        symbol_fetcher,
-                        task.exchange,
-                        "perp",
-                        task.symbol,
-                        task.timeframe,
-                        lake_root,
-                        on_history_chunk=(lambda values, _task=task: on_task_chunk(_task, values))
-                        if on_task_chunk is not None
-                        else None,
-                    )
-                    rows = (
-                        await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
-                        if task_timeout_s is not None
-                        else await fetch_call
-                    )
-                except TypeError as exc:
-                    if "on_history_chunk" not in str(exc):
-                        raise
-                    fetch_call = asyncio.to_thread(
-                        symbol_fetcher,
-                        task.exchange,
-                        "perp",
-                        task.symbol,
-                        task.timeframe,
-                        lake_root,
-                    )
-                    rows = (
-                        await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
-                        if task_timeout_s is not None
-                        else await fetch_call
-                    )
-            logger.debug(
-                "OI fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",
+            try:
+                rows = _run_with_optional_timeout(
+                    symbol_fetcher,
+                    timeout_s=task_timeout_s,
+                    heartbeat_s=heartbeat_s,
+                    use_process_timeout=True,
+                    heartbeat=lambda elapsed_s, ex=hb_exchange, sy=hb_symbol, tf=hb_timeframe: logger.info(
+                        "Fetch heartbeat type=oi exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
+                        ex,
+                        sy,
+                        tf,
+                        elapsed_s,
+                    ),
+                    exchange=task.exchange,
+                    market="perp",
+                    symbol=task.symbol,
+                    timeframe=task.timeframe,
+                    lake_root=lake_root,
+                    on_history_chunk=(lambda values, _task=task: on_task_chunk(_task, values))
+                    if on_task_chunk is not None
+                    else None,
+                )
+            except TypeError as exc:
+                if "on_history_chunk" not in str(exc):
+                    raise
+                rows = _run_with_optional_timeout(
+                    symbol_fetcher,
+                    timeout_s=task_timeout_s,
+                    heartbeat_s=heartbeat_s,
+                    use_process_timeout=True,
+                    heartbeat=lambda elapsed_s, ex=hb_exchange, sy=hb_symbol, tf=hb_timeframe: logger.info(
+                        "Fetch heartbeat type=oi exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
+                        ex,
+                        sy,
+                        tf,
+                        elapsed_s,
+                    ),
+                    exchange=task.exchange,
+                    market="perp",
+                    symbol=task.symbol,
+                    timeframe=task.timeframe,
+                    lake_root=lake_root,
+                )
+            elapsed_s = int((datetime.now(UTC) - task_started_at).total_seconds())
+            logger.info(
+                "Fetch done [%s/%s] type=oi exchange=%s market=perp symbol=%s timeframe=%s rows=%s elapsed_s=%s",
                 idx,
                 total_tasks,
                 task.exchange,
                 task.symbol,
                 task.timeframe,
                 len(rows),
+                elapsed_s,
             )
-            async with results_lock:
-                task_results[key] = rows
-                if on_task_complete is not None:
-                    on_task_complete(task, rows)
+            task_results[key] = rows
+            if on_task_complete is not None:
+                on_task_complete(task, rows)
         except Exception as exc:  # noqa: BLE001
+            elapsed_s = int((datetime.now(UTC) - task_started_at).total_seconds())
             logger.exception(
-                "OI fetch failed exchange=%s symbol=%s timeframe=%s",
+                "Fetch error type=oi exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
                 task.exchange,
                 task.symbol,
                 task.timeframe,
+                elapsed_s,
             )
-            async with results_lock:
-                task_errors[key] = str(exc)
-
-    await asyncio.gather(*[_run_task(idx, task) for idx, task in enumerate(tasks, start=1)])
+            task_errors[key] = str(exc)
     return OpenInterestFetchResultDTO(rows=task_results, errors=task_errors)
 
 
-async def fetch_funding_tasks_parallel(
+def fetch_funding_tasks_parallel(
     tasks: list[FundingFetchTaskDTO],
     lake_root: str,
     concurrency: int,
     logger: logging.Logger,
     symbol_fetcher: Callable[..., list[FundingPoint]] = fetch_symbol_funding,
-    shared_semaphore: asyncio.Semaphore | None = None,
+    shared_semaphore: object | None = None,
     on_task_complete: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
     on_task_chunk: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
 ) -> FundingFetchResultDTO:
-    """Fetch funding tasks with bounded concurrency."""
+    """Fetch funding tasks sequentially."""
 
+    del concurrency, shared_semaphore
     total_tasks = len(tasks)
-    task_timeout_s = _task_timeout_seconds()
     task_results: dict[tuple[Exchange, str, str], list[FundingPoint]] = {}
     task_errors: dict[tuple[Exchange, str, str], str] = {}
-    semaphore = shared_semaphore or asyncio.Semaphore(max(1, concurrency))
-    results_lock = asyncio.Lock()
-
-    async def _run_task(idx: int, task: FundingFetchTaskDTO) -> None:
-        logger.debug(
-            "Funding fetch start [%s/%s] exchange=%s market=funding symbol=%s timeframe=%s mode=%s",
+    task_timeout_s = _task_timeout_seconds()
+    heartbeat_s = _heartbeat_seconds()
+    for idx, task in enumerate(tasks, start=1):
+        logger.info(
+            "Fetch start [%s/%s] type=funding exchange=%s market=perp symbol=%s timeframe=%s mode=%s",
             idx,
             total_tasks,
             task.exchange,
@@ -645,63 +760,76 @@ async def fetch_funding_tasks_parallel(
             "auto-bootstrap-or-gap-fill",
         )
         key = (task.exchange, task.symbol, task.timeframe)
+        task_started_at = datetime.now(UTC)
+        hb_exchange = task.exchange
+        hb_symbol = task.symbol
+        hb_timeframe = task.timeframe
         try:
-            async with semaphore:
-                try:
-                    fetch_call = asyncio.to_thread(
-                        symbol_fetcher,
-                        task.exchange,
-                        "perp",
-                        task.symbol,
-                        task.timeframe,
-                        lake_root,
-                        on_history_chunk=(lambda values, _task=task: on_task_chunk(_task, values))
-                        if on_task_chunk is not None
-                        else None,
-                    )
-                    rows = (
-                        await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
-                        if task_timeout_s is not None
-                        else await fetch_call
-                    )
-                except TypeError as exc:
-                    if "on_history_chunk" not in str(exc):
-                        raise
-                    fetch_call = asyncio.to_thread(
-                        symbol_fetcher,
-                        task.exchange,
-                        "perp",
-                        task.symbol,
-                        task.timeframe,
-                        lake_root,
-                    )
-                    rows = (
-                        await asyncio.wait_for(fetch_call, timeout=task_timeout_s)
-                        if task_timeout_s is not None
-                        else await fetch_call
-                    )
-            logger.debug(
-                "Funding fetch complete [%s/%s] exchange=%s symbol=%s timeframe=%s rows=%s",
+            try:
+                rows = _run_with_optional_timeout(
+                    symbol_fetcher,
+                    timeout_s=task_timeout_s,
+                    heartbeat_s=heartbeat_s,
+                    use_process_timeout=False,
+                    heartbeat=lambda elapsed_s, ex=hb_exchange, sy=hb_symbol, tf=hb_timeframe: logger.info(
+                        "Fetch heartbeat type=funding exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
+                        ex,
+                        sy,
+                        tf,
+                        elapsed_s,
+                    ),
+                    exchange=task.exchange,
+                    market="perp",
+                    symbol=task.symbol,
+                    timeframe=task.timeframe,
+                    lake_root=lake_root,
+                    on_history_chunk=(lambda values, _task=task: on_task_chunk(_task, values))
+                    if on_task_chunk is not None
+                    else None,
+                )
+            except TypeError as exc:
+                if "on_history_chunk" not in str(exc):
+                    raise
+                rows = _run_with_optional_timeout(
+                    symbol_fetcher,
+                    timeout_s=task_timeout_s,
+                    heartbeat_s=heartbeat_s,
+                    use_process_timeout=False,
+                    heartbeat=lambda elapsed_s, ex=hb_exchange, sy=hb_symbol, tf=hb_timeframe: logger.info(
+                        "Fetch heartbeat type=funding exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
+                        ex,
+                        sy,
+                        tf,
+                        elapsed_s,
+                    ),
+                    exchange=task.exchange,
+                    market="perp",
+                    symbol=task.symbol,
+                    timeframe=task.timeframe,
+                    lake_root=lake_root,
+                )
+            elapsed_s = int((datetime.now(UTC) - task_started_at).total_seconds())
+            logger.info(
+                "Fetch done [%s/%s] type=funding exchange=%s market=perp symbol=%s timeframe=%s rows=%s elapsed_s=%s",
                 idx,
                 total_tasks,
                 task.exchange,
                 task.symbol,
                 task.timeframe,
                 len(rows),
+                elapsed_s,
             )
-            async with results_lock:
-                task_results[key] = rows
-                if on_task_complete is not None:
-                    on_task_complete(task, rows)
+            task_results[key] = rows
+            if on_task_complete is not None:
+                on_task_complete(task, rows)
         except Exception as exc:  # noqa: BLE001
+            elapsed_s = int((datetime.now(UTC) - task_started_at).total_seconds())
             logger.exception(
-                "Funding fetch failed exchange=%s symbol=%s timeframe=%s",
+                "Fetch error type=funding exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
                 task.exchange,
                 task.symbol,
                 task.timeframe,
+                elapsed_s,
             )
-            async with results_lock:
-                task_errors[key] = str(exc)
-
-    await asyncio.gather(*[_run_task(idx, task) for idx, task in enumerate(tasks, start=1)])
+            task_errors[key] = str(exc)
     return FundingFetchResultDTO(rows=task_results, errors=task_errors)

@@ -57,6 +57,7 @@ def test_build_bronze_symbol_reports_writes_full_period_report(tmp_path: Path) -
     payload = json.loads(Path(report_files[0]).read_text(encoding="utf-8"))
     assert payload["dataset"] == "spot_1m"
     assert payload["rows_out"] == 2
+    assert payload["columns"][-3:] == ["quote_volume", "trade_count", "origin_payload"]
     assert payload["min_timestamp"] == "2026-05-01T00:00:00Z"
     assert payload["max_timestamp"] == "2026-05-02T00:00:00Z"
     assert payload["symbols"] == ["BTCUSDT"]

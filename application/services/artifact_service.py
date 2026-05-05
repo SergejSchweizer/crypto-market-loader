@@ -5,15 +5,12 @@ from __future__ import annotations
 import logging
 import re
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 from typing import TypeVar
 
-import pandas as pd
-
 from application.dto import ArtifactOptionsDTO, LoaderStorageDTO
 from ingestion.funding import FundingPoint
-from ingestion.lake import candle_record, open_interest_record
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.plotting import save_candle_plots, save_funding_plot, save_open_interest_plot
 from ingestion.spot import Market, SpotCandle
@@ -49,14 +46,11 @@ def write_loader_samples_dto(
     save_open_interest_plot_fn: Callable[..., str] = save_open_interest_plot,
     save_funding_plot_fn: Callable[..., str] = save_funding_plot,
 ) -> None:
-    """Write grouped CSV and full-history plot sample artifacts."""
+    """Write full-history plot sample artifacts."""
 
     resolved_options = options or ArtifactOptionsDTO()
     sample_dir = Path("samples")
     sample_dir.mkdir(parents=True, exist_ok=True)
-
-    run_id = f"sample_{datetime.now(UTC).strftime('%Y%m%dT%H%M%S%fZ')}"
-    ingested_at = datetime.now(UTC)
 
     def _safe_name(value: str) -> str:
         return re.sub(r"[^A-Za-z0-9_.-]+", "_", value)
@@ -73,20 +67,6 @@ def write_loader_samples_dto(
                     f"{layer_name}_{market}_{_safe_name(exchange)}_{_safe_name(symbol_key)}_"
                     f"{_safe_name(timeframe)}_sample_10_rows"
                 )
-                rows = [
-                    candle_record(
-                        candle=item,
-                        market=market,
-                        run_id=run_id,
-                        ingested_at=ingested_at,
-                    )
-                    for item in candles
-                ]
-                frame = pd.DataFrame(rows)
-                sample = frame.sample(n=10, replace=len(frame) < 10, random_state=42)
-                csv_path = sample_dir / f"{base_name}.csv"
-                sample.to_csv(csv_path, index=False)
-                logger.info("Sample CSV written rows=%s path=%s", len(sample), csv_path)
 
                 if resolved_options.generate_plots:
                     sorted_candles = sorted(candles, key=lambda value: value.open_time)
@@ -113,15 +93,6 @@ def write_loader_samples_dto(
                     f"{layer_name}_oi_{market}_{_safe_name(exchange)}_"
                     f"{_safe_name(symbol_key)}_{_safe_name(timeframe)}_sample_10_rows"
                 )
-                rows = [
-                    open_interest_record(item=item, market=market, run_id=run_id, ingested_at=ingested_at)
-                    for item in oi_items
-                ]
-                frame = pd.DataFrame(rows)
-                sample = frame.sample(n=10, replace=len(frame) < 10, random_state=42)
-                csv_path = sample_dir / f"{base_name}.csv"
-                sample.to_csv(csv_path, index=False)
-                logger.info("Sample CSV written rows=%s path=%s", len(sample), csv_path)
 
                 if resolved_options.generate_plots:
                     sorted_items = _downsample_full_period(sorted(oi_items, key=lambda value: value.open_time))
@@ -146,27 +117,6 @@ def write_loader_samples_dto(
                     f"{layer_name}_funding_{market}_{_safe_name(exchange)}_"
                     f"{_safe_name(symbol_key)}_{_safe_name(timeframe)}_sample_10_rows"
                 )
-                rows = [
-                    {
-                        "schema_version": "v1",
-                        "dataset_type": "funding",
-                        "exchange": item.exchange,
-                        "symbol": item.symbol,
-                        "instrument_type": market,
-                        "open_time": item.open_time,
-                        "close_time": item.close_time,
-                        "timeframe": item.interval,
-                        "funding_rate": item.funding_rate,
-                        "index_price": item.index_price,
-                        "mark_price": item.mark_price,
-                    }
-                    for item in funding_items
-                ]
-                frame = pd.DataFrame(rows)
-                sample = frame.sample(n=10, replace=len(frame) < 10, random_state=42)
-                csv_path = sample_dir / f"{base_name}.csv"
-                sample.to_csv(csv_path, index=False)
-                logger.info("Sample CSV written rows=%s path=%s", len(sample), csv_path)
 
                 if resolved_options.generate_plots:
                     funding_sorted_items = _downsample_full_period(sorted(funding_items, key=_funding_open_time))

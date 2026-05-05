@@ -11,6 +11,62 @@ from ingestion.lake import load_funding_from_lake, load_open_interest_from_lake,
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import SpotCandle
 
+BRONZE_SPOT_PERP_COLUMNS = [
+    "schema_version",
+    "dataset_type",
+    "exchange",
+    "symbol",
+    "instrument_type",
+    "event_time",
+    "ingested_at",
+    "run_id",
+    "source_endpoint",
+    "open_time",
+    "close_time",
+    "timeframe",
+    "open_price",
+    "high_price",
+    "low_price",
+    "close_price",
+    "volume",
+    "quote_volume",
+    "trade_count",
+    "origin_payload",
+]
+BRONZE_OI_COLUMNS = [
+    "schema_version",
+    "dataset_type",
+    "exchange",
+    "symbol",
+    "instrument_type",
+    "event_time",
+    "ingested_at",
+    "run_id",
+    "source_endpoint",
+    "open_time",
+    "close_time",
+    "timeframe",
+    "open_interest",
+    "open_interest_value",
+]
+BRONZE_FUNDING_COLUMNS = [
+    "schema_version",
+    "dataset_type",
+    "exchange",
+    "symbol",
+    "instrument_type",
+    "event_time",
+    "ingested_at",
+    "run_id",
+    "source_endpoint",
+    "open_time",
+    "close_time",
+    "timeframe",
+    "funding_rate",
+    "index_price",
+    "mark_price",
+]
+
 
 def _iso_utc(value: datetime | None) -> str | None:
     if value is None:
@@ -56,6 +112,7 @@ def _candle_report_payload(
     timestamps = [row.open_time for row in rows]
     return {
         "dataset": f"{dataset_type}_1m",
+        "columns": BRONZE_SPOT_PERP_COLUMNS,
         "rows_out": len(rows),
         "null_price_rows": null_price_rows,
         "invalid_ohlc_rows": invalid_ohlc_rows,
@@ -72,6 +129,7 @@ def _oi_report_payload(exchange: str, symbol: str, timeframe: str, rows: list[Op
     timestamps = [row.open_time for row in rows]
     return {
         "dataset": "oi",
+        "columns": BRONZE_OI_COLUMNS,
         "rows_out": len(rows),
         "min_timestamp": _iso_utc(min(timestamps) if timestamps else None),
         "max_timestamp": _iso_utc(max(timestamps) if timestamps else None),
@@ -86,6 +144,7 @@ def _funding_report_payload(exchange: str, symbol: str, timeframe: str, rows: li
     timestamps = [row.open_time for row in rows]
     return {
         "dataset": "funding",
+        "columns": BRONZE_FUNDING_COLUMNS,
         "rows_out": len(rows),
         "min_timestamp": _iso_utc(min(timestamps) if timestamps else None),
         "max_timestamp": _iso_utc(max(timestamps) if timestamps else None),
