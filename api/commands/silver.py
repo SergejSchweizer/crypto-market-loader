@@ -9,6 +9,8 @@ from typing import cast
 
 from application.services.silver_service import (
     SilverBuildReport,
+    build_oi_1m_feature_for_symbol,
+    build_oi_observed_for_symbol,
     build_funding_1m_feature_for_symbol,
     build_funding_observed_for_symbol,
     build_silver_for_symbol,
@@ -29,8 +31,8 @@ def add_silver_build_parser(subparsers: argparse._SubParsersAction[argparse.Argu
     parser.add_argument(
         "--market",
         nargs="+",
-        choices=["spot", "perp", "funding"],
-        default=["spot", "perp", "funding"],
+        choices=["spot", "perp", "oi", "funding"],
+        default=["spot", "perp", "oi", "funding"],
     )
     parser.add_argument("--symbols", nargs="+", help="Optional symbol list; auto-discovered when omitted")
     parser.add_argument("--timeframe", default="1m", help="Timeframe to process (default: 1m)")
@@ -57,7 +59,8 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
         )
         report_dict = report.to_dict()
         report_dict["report_path"] = report_path
-        should_plot = bool(getattr(args, "plot", False)) and report_market != "funding_observed"
+        plottable_markets = {"spot", "perp", "funding_1m_feature", "oi_1m_feature"}
+        should_plot = bool(getattr(args, "plot", False)) and report_market in plottable_markets
         if should_plot:
             plot_path = write_symbol_plot(
                 silver_root=silver_root,
@@ -77,7 +80,7 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
     for market in cast(list[str], args.market):
         symbols = cast(list[str] | None, args.symbols)
         bronze_dataset = "funding" if market == "funding" else market
-        bronze_instrument = "perp" if market == "funding" else market
+        bronze_instrument = "perp" if market in {"funding", "oi"} else market
         discovery_timeframe = DERIBIT_FUNDING_NATIVE_INTERVAL if market == "funding" else timeframe
         effective_symbols = symbols or discover_symbols(
             bronze_root=bronze_root,
@@ -107,6 +110,29 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 _append_report("funding_1m_feature", symbol, feature)
                 logger.info(
                     "Silver funding reports written symbol=%s observed_rows=%s feature_rows=%s",
+                    symbol,
+                    observed.rows_out,
+                    feature.rows_out,
+                )
+            elif market == "oi":
+                observed = build_oi_observed_for_symbol(
+                    bronze_root=bronze_root,
+                    silver_root=silver_root,
+                    exchange=exchange,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                )
+                _append_report("oi_observed", symbol, observed)
+
+                feature = build_oi_1m_feature_for_symbol(
+                    silver_root=silver_root,
+                    exchange=exchange,
+                    symbol=symbol,
+                    observed_timeframe=timeframe,
+                )
+                _append_report("oi_1m_feature", symbol, feature)
+                logger.info(
+                    "Silver OI reports written symbol=%s observed_rows=%s feature_rows=%s",
                     symbol,
                     observed.rows_out,
                     feature.rows_out,

@@ -208,8 +208,8 @@ dataset_type=funding/
 ### 9.1 Command
 
 ```bash
-python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp funding --timeframe 1m
-python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp funding --timeframe 1m --plot
+python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp oi funding --timeframe 1m
+python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp oi funding --timeframe 1m --plot
 ```
 
 ### 9.2 Silver Output Layout (Monthly)
@@ -223,6 +223,12 @@ dataset_type=funding_observed/
 
 dataset_type=funding_1m_feature/
   exchange=<exchange>/symbol=<symbol>/timeframe=1m/month=<YYYY-MM>/data.parquet
+
+dataset_type=oi_observed/
+  exchange=<exchange>/symbol=<symbol>/timeframe=1m/month=<YYYY-MM>/data.parquet
+
+dataset_type=oi_1m_feature/
+  exchange=<exchange>/symbol=<symbol>/timeframe=1m/month=<YYYY-MM>/data.parquet
 ```
 
 ### 9.3 Symbol Report (Full Processed Period)
@@ -232,6 +238,7 @@ Each `silver-build` run writes one aggregated report per symbol:
 ```text
 silver/reports/dataset_type=<spot|perp>/exchange=<exchange>/symbol=<symbol>/timeframe=1m/build_report.json
 silver/reports/dataset_type=<funding_observed|funding_1m_feature>/exchange=<exchange>/symbol=<symbol>/timeframe=1m/build_report.json
+silver/reports/dataset_type=<oi_observed|oi_1m_feature>/exchange=<exchange>/symbol=<symbol>/timeframe=1m/build_report.json
 ```
 
 Report fields include:
@@ -244,6 +251,8 @@ Report fields include:
 ### 9.4 Silver Plot Artifacts
 
 When `--plot` is passed, `silver-build` writes one professional plot per built symbol into `samples/`.
+Plotted silver datasets are: `spot`, `perp`, `funding_1m_feature`, `oi_1m_feature`.
+Observed-only datasets (`funding_observed`, `oi_observed`) are not plotted.
 
 Naming convention:
 
@@ -260,6 +269,8 @@ Examples:
 ### 9.1 Datetime Semantics
 - `open_time`, `close_time`, `event_time` are UTC timestamps
 - for `oi` and `funding`, raw source event timestamps are preserved
+- `oi_observed` stores only real observed OI points (no synthetic 1m rows)
+- `oi_1m_feature` is a derived minute grid with `oi_is_observed` / `oi_is_ffill` and observation lag fields
 - for OHLCV, interval alignment is preserved
 - `ingested_at` is UTC write timestamp
 

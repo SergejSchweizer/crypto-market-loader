@@ -106,6 +106,26 @@ SILVER_FUNDING_FEATURE_COLUMNS = [
     "is_funding_observation_minute",
     "funding_data_available",
 ]
+SILVER_OI_OBSERVED_COLUMNS = [
+    "timestamp",
+    "exchange",
+    "symbol",
+    "open_interest",
+    "oi_source_timestamp",
+    "ingested_at",
+    "source_endpoint",
+]
+SILVER_OI_M1_FEATURE_COLUMNS = [
+    "timestamp_m1",
+    "exchange",
+    "symbol",
+    "open_interest",
+    "oi_is_observed",
+    "oi_is_ffill",
+    "minutes_since_oi_observation",
+    "oi_observation_lag_sec",
+    "oi_source_timestamp",
+]
 
 
 def _silver_month_path(
@@ -136,6 +156,23 @@ def _silver_funding_feature_month_path(
     return (
         Path(silver_root)
         / "dataset_type=funding_1m_feature"
+        / f"exchange={exchange}"
+        / f"symbol={symbol}"
+        / "timeframe=1m"
+        / f"month={month}"
+        / "data.parquet"
+    )
+
+
+def _silver_oi_feature_month_path(
+    silver_root: str,
+    exchange: str,
+    symbol: str,
+    month: str,
+) -> Path:
+    return (
+        Path(silver_root)
+        / "dataset_type=oi_1m_feature"
         / f"exchange={exchange}"
         / f"symbol={symbol}"
         / "timeframe=1m"
@@ -230,6 +267,17 @@ def _iso_utc(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _normalize_symbol_expr(pl: Any, col_name: str = "symbol") -> Any:
+    return (
+        pl.col(col_name)
+        .cast(pl.Utf8)
+        .str.strip_chars()
+        .str.to_uppercase()
+        .str.replace_all(r"[\s/]+", "-")
+        .str.replace_all("_", "-")
+    )
 
 
 def build_silver_for_symbol(
@@ -643,6 +691,280 @@ def build_funding_1m_feature_for_symbol(
     )
 
 
+def build_oi_observed_for_symbol(
+    *,
+    bronze_root: str,
+    silver_root: str,
+    exchange: str,
+    symbol: str,
+    timeframe: str = "1m",
+) -> SilverBuildReport:
+    """Build monthly ``oi_observed`` silver outputs from bronze OI observations."""
+
+    pl = _require_polars()
+    months = discover_months(
+        bronze_root=bronze_root,
+        market="oi",
+        exchange=exchange,
+        symbol=symbol,
+        timeframe=timeframe,
+        instrument_type="perp",
+    )
+    agg_rows_in = 0
+    agg_rows_out = 0
+    agg_duplicates_removed = 0
+    agg_invalid_rows = 0
+    min_timestamp: datetime | None = None
+    max_timestamp: datetime | None = None
+
+    for month in months:
+        files = _bronze_month_files(
+            bronze_root=bronze_root,
+            market="oi",
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+            month=month,
+            instrument_type="perp",
+        )
+        if not files:
+            continue
+        frame = pl.scan_parquet(files).collect()
+        rows_in = frame.height
+        if rows_in == 0:
+            continue
+
+        frame = frame.with_columns(
+            [
+                pl.col("open_time").cast(pl.Datetime(time_unit="us", time_zone="UTC")).alias("timestamp"),
+                pl.col("open_interest").cast(pl.Float64).alias("open_interest"),
+                _normalize_symbol_expr(pl, "symbol").alias("symbol"),
+                pl.col("exchange").cast(pl.Utf8).str.strip_chars().str.to_lowercase().alias("exchange"),
+                pl.col("ingested_at").cast(pl.Datetime(time_unit="us", time_zone="UTC")).alias("ingested_at"),
+                pl.col("source_endpoint").cast(pl.Utf8).alias("source_endpoint"),
+            ]
+        )
+        if "oi_is_observed" in frame.columns:
+            frame = frame.filter(pl.col("oi_is_observed").fill_null(False))
+
+        invalid_expr = (
+            pl.col("timestamp").is_null()
+            | pl.col("symbol").is_null()
+            | (pl.col("symbol").str.len_chars() == 0)
+            | pl.col("open_interest").is_null()
+            | (~pl.col("open_interest").is_finite())
+            | (pl.col("open_interest") < 0.0)
+        )
+        invalid_rows = frame.select(invalid_expr.cast(pl.Int64).sum().alias("count")).item()
+        cleaned = frame.filter(~invalid_expr)
+        observed = (
+            cleaned.unique(
+                subset=["exchange", "symbol", "timestamp", "open_interest"],
+                keep="last",
+                maintain_order=True,
+            )
+            .sort(["exchange", "symbol", "timestamp"])
+            .with_columns(pl.col("timestamp").alias("oi_source_timestamp"))
+            .select(
+                [
+                    "timestamp",
+                    "exchange",
+                    "symbol",
+                    "open_interest",
+                    "oi_source_timestamp",
+                    "ingested_at",
+                    "source_endpoint",
+                ]
+            )
+        )
+        duplicates_removed = cleaned.height - observed.height
+
+        target = _silver_month_path(
+            silver_root=silver_root,
+            market="oi_observed",
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+            month=month,
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        observed.write_parquet(target)
+
+        month_min = observed.select(pl.col("timestamp").min()).item()
+        month_max = observed.select(pl.col("timestamp").max()).item()
+        if isinstance(month_min, datetime) and (min_timestamp is None or month_min < min_timestamp):
+            min_timestamp = month_min
+        if isinstance(month_max, datetime) and (max_timestamp is None or month_max > max_timestamp):
+            max_timestamp = month_max
+
+        agg_rows_in += rows_in
+        agg_rows_out += observed.height
+        agg_duplicates_removed += int(duplicates_removed)
+        agg_invalid_rows += int(invalid_rows)
+
+    return SilverBuildReport(
+        dataset="oi_observed",
+        exchange=exchange,
+        symbol=symbol,
+        timeframe=timeframe,
+        period_start=months[0] if months else None,
+        period_end=months[-1] if months else None,
+        months_processed=months,
+        rows_in=agg_rows_in,
+        rows_out=agg_rows_out,
+        duplicates_removed=agg_duplicates_removed,
+        invalid_ohlc_rows=agg_invalid_rows,
+        null_price_rows=0,
+        min_timestamp=_iso_utc(min_timestamp),
+        max_timestamp=_iso_utc(max_timestamp),
+        symbols=[symbol],
+        columns=SILVER_OI_OBSERVED_COLUMNS,
+    )
+
+
+def build_oi_1m_feature_for_symbol(
+    *,
+    silver_root: str,
+    exchange: str,
+    symbol: str,
+    observed_timeframe: str = "1m",
+) -> SilverBuildReport:
+    """Build monthly ``oi_1m_feature`` from ``oi_observed`` using backward asof join."""
+
+    pl = _require_polars()
+    observed_root = (
+        Path(silver_root)
+        / "dataset_type=oi_observed"
+        / f"exchange={exchange}"
+        / f"symbol={symbol}"
+        / f"timeframe={observed_timeframe}"
+    )
+    months = sorted(
+        {
+            path.parent.name.split("=", 1)[1]
+            for path in observed_root.glob("month=*/data.parquet")
+            if path.parent.name.startswith("month=")
+        }
+    )
+    agg_rows_in = 0
+    agg_rows_out = 0
+    min_timestamp: datetime | None = None
+    max_timestamp: datetime | None = None
+
+    for month in months:
+        month_file = observed_root / f"month={month}" / "data.parquet"
+        if not month_file.exists():
+            continue
+        observed = pl.read_parquet(month_file).sort("timestamp")
+        if observed.height == 0:
+            continue
+
+        month_start = datetime.fromisoformat(f"{month}-01T00:00:00+00:00")
+        y, m = month.split("-")
+        year = int(y)
+        mon = int(m)
+        month_end_exclusive = datetime(year + 1, 1, 1, tzinfo=UTC) if mon == 12 else datetime(year, mon + 1, 1, tzinfo=UTC)
+        calendar = pl.DataFrame(
+            {
+                "timestamp_m1": pl.datetime_range(
+                    start=month_start,
+                    end=month_end_exclusive,
+                    interval="1m",
+                    closed="left",
+                    time_zone="UTC",
+                    eager=True,
+                )
+            }
+        )
+        right = observed.select(
+            [
+                pl.col("timestamp").alias("oi_source_timestamp"),
+                pl.col("open_interest").alias("open_interest_observed"),
+            ]
+        )
+        joined = calendar.join_asof(
+            right.sort("oi_source_timestamp"),
+            left_on="timestamp_m1",
+            right_on="oi_source_timestamp",
+            strategy="backward",
+        )
+        feature = (
+            joined.with_columns(
+                [
+                    pl.lit(exchange).alias("exchange"),
+                    pl.lit(symbol).alias("symbol"),
+                    pl.col("open_interest_observed").alias("open_interest"),
+                    (pl.col("timestamp_m1") == pl.col("oi_source_timestamp")).fill_null(False).alias("oi_is_observed"),
+                    (pl.col("timestamp_m1") != pl.col("oi_source_timestamp")).fill_null(True).alias("oi_is_ffill"),
+                    ((pl.col("timestamp_m1") - pl.col("oi_source_timestamp")).dt.total_minutes().cast(pl.Int64)).alias(
+                        "minutes_since_oi_observation"
+                    ),
+                    ((pl.col("timestamp_m1") - pl.col("oi_source_timestamp")).dt.total_seconds().cast(pl.Int64)).alias(
+                        "oi_observation_lag_sec"
+                    ),
+                ]
+            )
+            .select(
+                [
+                    "timestamp_m1",
+                    "exchange",
+                    "symbol",
+                    "open_interest",
+                    "oi_is_observed",
+                    "oi_is_ffill",
+                    "minutes_since_oi_observation",
+                    "oi_observation_lag_sec",
+                    "oi_source_timestamp",
+                ]
+            )
+            .sort("timestamp_m1")
+        )
+
+        leakage_count = feature.filter(
+            pl.col("oi_source_timestamp").is_not_null() & (pl.col("oi_source_timestamp") > pl.col("timestamp_m1"))
+        ).height
+        if leakage_count > 0:
+            raise ValueError(f"OI leakage detected for {exchange}/{symbol}/{month}: {leakage_count} rows")
+
+        target = _silver_oi_feature_month_path(
+            silver_root=silver_root,
+            exchange=exchange,
+            symbol=symbol,
+            month=month,
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        feature.write_parquet(target)
+
+        month_min = feature.select(pl.col("timestamp_m1").min()).item()
+        month_max = feature.select(pl.col("timestamp_m1").max()).item()
+        if isinstance(month_min, datetime) and (min_timestamp is None or month_min < min_timestamp):
+            min_timestamp = month_min
+        if isinstance(month_max, datetime) and (max_timestamp is None or month_max > max_timestamp):
+            max_timestamp = month_max
+
+        agg_rows_in += observed.height
+        agg_rows_out += feature.height
+
+    return SilverBuildReport(
+        dataset="oi_1m_feature",
+        exchange=exchange,
+        symbol=symbol,
+        timeframe="1m",
+        period_start=months[0] if months else None,
+        period_end=months[-1] if months else None,
+        months_processed=months,
+        rows_in=agg_rows_in,
+        rows_out=agg_rows_out,
+        duplicates_removed=0,
+        invalid_ohlc_rows=0,
+        null_price_rows=0,
+        min_timestamp=_iso_utc(min_timestamp),
+        max_timestamp=_iso_utc(max_timestamp),
+        symbols=[symbol],
+        columns=SILVER_OI_M1_FEATURE_COLUMNS,
+    )
+
+
 def write_symbol_report(*, silver_root: str, market: str, exchange: str, symbol: str, report: SilverBuildReport) -> str:
     """Write aggregated symbol report JSON and return absolute path."""
 
@@ -769,6 +1091,8 @@ def write_symbol_plot(
         else zone
     )
     plot_market = "funding_1m" if data_zone == "funding_1m_feature" else data_zone
+    if data_zone == "oi_1m_feature":
+        plot_market = "oi_m1_feature"
     data_root = (
         Path(silver_root)
         / f"dataset_type={data_zone}"
@@ -784,21 +1108,24 @@ def write_symbol_plot(
     if frame.height == 0:
         return None
 
+    if data_zone in {"funding_observed", "oi_observed"}:
+        return None
+
     if data_zone in {"spot", "perp"}:
         x_col = "open_time"
         y_col = "close_price"
         y_label = "Close Price"
         title_suffix = "Price"
-    elif data_zone == "funding_observed":
-        x_col = "funding_time"
-        y_col = "funding_rate"
-        y_label = "Funding Rate"
-        title_suffix = "Funding Observed"
     elif data_zone == "funding_1m_feature":
         x_col = "timestamp"
         y_col = "funding_rate_last_known"
         y_label = "Funding Rate (Last Known)"
         title_suffix = "Funding 1m Feature"
+    elif data_zone == "oi_1m_feature":
+        x_col = "timestamp_m1"
+        y_col = "open_interest"
+        y_label = "Open Interest"
+        title_suffix = "OI M1 Feature"
     else:
         return None
 

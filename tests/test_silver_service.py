@@ -9,9 +9,12 @@ from pathlib import Path
 import pytest
 
 from application.services.silver_service import (
+    SilverBuildReport,
     _downsample_series,
     build_funding_1m_feature_for_symbol,
     build_funding_observed_for_symbol,
+    build_oi_1m_feature_for_symbol,
+    build_oi_observed_for_symbol,
     build_samples_plot_filename,
     build_silver_for_symbol,
     discover_months,
@@ -301,6 +304,177 @@ def test_build_funding_observed_and_1m_feature(tmp_path: Path) -> None:
     assert "is_funding_observation_minute" in feature.columns
 
 
+def test_build_oi_observed_and_1m_feature(tmp_path: Path) -> None:
+    bronze = tmp_path / "bronze"
+    silver = tmp_path / "silver"
+    symbol = "btc_perpetual"
+    rows = [
+        {
+            "schema_version": "v1",
+            "dataset_type": "oi",
+            "exchange": "Deribit",
+            "symbol": symbol,
+            "instrument_type": "perp",
+            "event_time": datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+            "ingested_at": datetime(2026, 5, 1, 0, 0, 30, tzinfo=UTC),
+            "run_id": "r1",
+            "source_endpoint": "public_open_interest",
+            "open_time": datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+            "close_time": datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+            "timeframe": "1m",
+            "open_interest": 1000.0,
+            "open_interest_value": 0.0,
+        },
+        {
+            "schema_version": "v1",
+            "dataset_type": "oi",
+            "exchange": "Deribit",
+            "symbol": symbol,
+            "instrument_type": "perp",
+            "event_time": datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+            "ingested_at": datetime(2026, 5, 1, 0, 0, 35, tzinfo=UTC),
+            "run_id": "r2",
+            "source_endpoint": "public_open_interest",
+            "open_time": datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+            "close_time": datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+            "timeframe": "1m",
+            "open_interest": 1000.0,
+            "open_interest_value": 0.0,
+        },
+        {
+            "schema_version": "v1",
+            "dataset_type": "oi",
+            "exchange": "Deribit",
+            "symbol": symbol,
+            "instrument_type": "perp",
+            "event_time": datetime(2026, 5, 1, 0, 2, tzinfo=UTC),
+            "ingested_at": datetime(2026, 5, 1, 0, 2, 30, tzinfo=UTC),
+            "run_id": "r3",
+            "source_endpoint": "public_open_interest",
+            "open_time": datetime(2026, 5, 1, 0, 2, tzinfo=UTC),
+            "close_time": datetime(2026, 5, 1, 0, 2, tzinfo=UTC),
+            "timeframe": "1m",
+            "open_interest": 1025.0,
+            "open_interest_value": 0.0,
+        },
+        {
+            "schema_version": "v1",
+            "dataset_type": "oi",
+            "exchange": "Deribit",
+            "symbol": None,
+            "instrument_type": "perp",
+            "event_time": datetime(2026, 5, 1, 0, 3, tzinfo=UTC),
+            "ingested_at": datetime(2026, 5, 1, 0, 3, 30, tzinfo=UTC),
+            "run_id": "r4",
+            "source_endpoint": "public_open_interest",
+            "open_time": datetime(2026, 5, 1, 0, 3, tzinfo=UTC),
+            "close_time": datetime(2026, 5, 1, 0, 3, tzinfo=UTC),
+            "timeframe": "1m",
+            "open_interest": 1030.0,
+            "open_interest_value": 0.0,
+        },
+        {
+            "schema_version": "v1",
+            "dataset_type": "oi",
+            "exchange": "Deribit",
+            "symbol": symbol,
+            "instrument_type": "perp",
+            "event_time": datetime(2026, 5, 1, 0, 4, tzinfo=UTC),
+            "ingested_at": datetime(2026, 5, 1, 0, 4, 30, tzinfo=UTC),
+            "run_id": "r5",
+            "source_endpoint": "public_open_interest",
+            "open_time": None,
+            "close_time": datetime(2026, 5, 1, 0, 4, tzinfo=UTC),
+            "timeframe": "1m",
+            "open_interest": 1035.0,
+            "open_interest_value": 0.0,
+        },
+        {
+            "schema_version": "v1",
+            "dataset_type": "oi",
+            "exchange": "Deribit",
+            "symbol": symbol,
+            "instrument_type": "perp",
+            "event_time": datetime(2026, 5, 1, 0, 5, tzinfo=UTC),
+            "ingested_at": datetime(2026, 5, 1, 0, 5, 30, tzinfo=UTC),
+            "run_id": "r6",
+            "source_endpoint": "public_open_interest",
+            "open_time": datetime(2026, 5, 1, 0, 5, tzinfo=UTC),
+            "close_time": datetime(2026, 5, 1, 0, 5, tzinfo=UTC),
+            "timeframe": "1m",
+            "open_interest": -1.0,
+            "open_interest_value": 0.0,
+        },
+    ]
+    _write_bronze_day_file(
+        bronze,
+        market="oi",
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        day="2026-05-01",
+        rows=rows,
+        dataset_type="oi",
+        instrument_type="perp",
+    )
+
+    observed_report = build_oi_observed_for_symbol(
+        bronze_root=str(bronze),
+        silver_root=str(silver),
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+    )
+    assert observed_report.rows_in == 6
+    assert observed_report.rows_out == 2
+    assert observed_report.duplicates_removed == 1
+    assert observed_report.invalid_ohlc_rows == 3
+    assert "oi_source_timestamp" in observed_report.columns
+
+    feature_report = build_oi_1m_feature_for_symbol(
+        silver_root=str(silver),
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        observed_timeframe="1m",
+    )
+    assert feature_report.rows_out > 0
+    assert "oi_is_observed" in feature_report.columns
+    assert "minutes_since_oi_observation" in feature_report.columns
+
+    observed_file = (
+        silver
+        / "dataset_type=oi_observed"
+        / "exchange=deribit"
+        / "symbol=BTC-PERPETUAL"
+        / "timeframe=1m"
+        / "month=2026-05"
+        / "data.parquet"
+    )
+    observed = pl.read_parquet(observed_file)
+    assert observed["symbol"].to_list() == ["BTC-PERPETUAL", "BTC-PERPETUAL"]
+
+    feature_file = (
+        silver
+        / "dataset_type=oi_1m_feature"
+        / "exchange=deribit"
+        / "symbol=BTC-PERPETUAL"
+        / "timeframe=1m"
+        / "month=2026-05"
+        / "data.parquet"
+    )
+    feature = pl.read_parquet(feature_file)
+    minute_0 = feature.filter(pl.col("timestamp_m1") == datetime(2026, 5, 1, 0, 0, tzinfo=UTC))
+    minute_1 = feature.filter(pl.col("timestamp_m1") == datetime(2026, 5, 1, 0, 1, tzinfo=UTC))
+    minute_2 = feature.filter(pl.col("timestamp_m1") == datetime(2026, 5, 1, 0, 2, tzinfo=UTC))
+    assert minute_0.select("oi_is_observed").item() is True
+    assert minute_0.select("oi_is_ffill").item() is False
+    assert minute_1.select("oi_is_observed").item() is False
+    assert minute_1.select("oi_is_ffill").item() is True
+    assert minute_1.select("minutes_since_oi_observation").item() == 1
+    assert minute_2.select("oi_is_observed").item() is True
+
+
 def test_build_samples_plot_filename_uses_required_schema() -> None:
     file_name = build_samples_plot_filename(
         zone="silver",
@@ -345,6 +519,115 @@ def test_write_symbol_plot_writes_png_under_samples(tmp_path: Path) -> None:
     assert path is not None
     assert Path(path).exists()
     assert Path(path).name == "perp_deribit_BTC-PERPETUAL_perp.png"
+
+
+def test_write_symbol_plot_skips_funding_observed(tmp_path: Path) -> None:
+    silver = tmp_path / "silver"
+    samples = tmp_path / "samples"
+    symbol = "BTC-PERPETUAL"
+    month_file = (
+        silver
+        / "dataset_type=funding_observed"
+        / "exchange=deribit"
+        / f"symbol={symbol}"
+        / "timeframe=1m"
+        / "month=2026-05"
+        / "data.parquet"
+    )
+    month_file.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "funding_time": [datetime(2026, 5, 1, 0, 0, tzinfo=UTC)],
+            "funding_rate": [0.001],
+        }
+    ).write_parquet(month_file)
+
+    report = SilverBuildReport(
+        dataset="funding_observed",
+        exchange="deribit",
+        symbol=symbol,
+        timeframe="1m",
+        period_start="2026-05",
+        period_end="2026-05",
+        months_processed=["2026-05"],
+        rows_in=1,
+        rows_out=1,
+        duplicates_removed=0,
+        invalid_ohlc_rows=0,
+        null_price_rows=0,
+        min_timestamp="2026-05-01T00:00:00Z",
+        max_timestamp="2026-05-01T00:00:00Z",
+        symbols=[symbol],
+        columns=["funding_time", "funding_rate"],
+    )
+
+    path = write_symbol_plot(
+        silver_root=str(silver),
+        zone="silver",
+        exchange="deribit",
+        symbol=symbol,
+        timeframe="1m",
+        period_start="2026-05",
+        period_end="2026-05",
+        report=report,
+        samples_root=str(samples),
+    )
+    assert path is None
+
+
+def test_write_symbol_plot_writes_png_for_oi_1m_feature(tmp_path: Path) -> None:
+    silver = tmp_path / "silver"
+    samples = tmp_path / "samples"
+    symbol = "BTC-PERPETUAL"
+    month_file = (
+        silver
+        / "dataset_type=oi_1m_feature"
+        / "exchange=deribit"
+        / f"symbol={symbol}"
+        / "timeframe=1m"
+        / "month=2026-05"
+        / "data.parquet"
+    )
+    month_file.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(
+        {
+            "timestamp_m1": [datetime(2026, 5, 1, 0, 0, tzinfo=UTC), datetime(2026, 5, 1, 0, 1, tzinfo=UTC)],
+            "open_interest": [1000.0, 1002.0],
+        }
+    ).write_parquet(month_file)
+
+    report = SilverBuildReport(
+        dataset="oi_1m_feature",
+        exchange="deribit",
+        symbol=symbol,
+        timeframe="1m",
+        period_start="2026-05",
+        period_end="2026-05",
+        months_processed=["2026-05"],
+        rows_in=2,
+        rows_out=2,
+        duplicates_removed=0,
+        invalid_ohlc_rows=0,
+        null_price_rows=0,
+        min_timestamp="2026-05-01T00:00:00Z",
+        max_timestamp="2026-05-01T00:01:00Z",
+        symbols=[symbol],
+        columns=["timestamp_m1", "open_interest"],
+    )
+    path = write_symbol_plot(
+        silver_root=str(silver),
+        zone="silver",
+        exchange="deribit",
+        symbol=symbol,
+        timeframe="1m",
+        period_start="2026-05",
+        period_end="2026-05",
+        report=report,
+        samples_root=str(samples),
+    )
+    assert path is not None
+    assert Path(path).exists()
+    assert Path(path).name == "silver_deribit_BTC-PERPETUAL_oi_m1_feature.png"
 
 
 def test_downsample_series_caps_to_max_points() -> None:
