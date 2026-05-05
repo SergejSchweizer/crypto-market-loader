@@ -145,7 +145,7 @@ If repository path changes, recreate `.venv` so entrypoint shebangs stay valid.
 - `mypy`: static typing checks
 - `pytest`: tests
 
-## 7. Running The Loader
+## 7. Running Bronze Ingest
 
 ### 7.1 Canonical Commands
 
@@ -163,10 +163,10 @@ python3 main.py bronze-ingest --exchange deribit --market spot perp oi funding -
 
 
 ### 7.2 Ingestion Policy
-- Loader CLI has no timeframe parameter; cadence is fixed by datatype:
-- Effective persisted cadence:
-  - `spot`, `perp`, `oi`: `1m`
-  - `funding`: `8h`
+- `bronze-ingest` has no timeframe CLI parameter; scheduling uses fixed `1m`.
+- Stored timestamp semantics:
+  - `spot`, `perp`: interval-aligned OHLCV bars (`1m`)
+  - `oi`, `funding`: raw source event timestamps (no bucket aggregation)
 
 ### 7.3 Delta Behavior
 Default mode is delta-first:
@@ -175,8 +175,9 @@ Default mode is delta-first:
 - optional `--full-gap-fill` performs historical internal gap checks
 
 ### 7.4 Concurrency Behavior
-- Fetch execution is sequential to reduce Deribit blocking risk
-- Parquet partition writing remains parallelized
+- Fetch execution uses bounded concurrency (`DEPTH_FETCH_CONCURRENCY`).
+- Time-range fetches are split into UTC day windows and processed in randomized order.
+- Parquet partition writing remains parallelized.
 
 ## 8. Storage Design
 
@@ -199,17 +200,18 @@ dataset_type=funding/
 ### 8.2 Architecture/Storage Tradeoffs
 - Parquet lake: cheap historical storage, partition-friendly batch reads, reproducibility
 
-## 9. Datetime, Sampling, And Plot Nuances
+## 9. Datetime And Sampling
 
 ### 9.1 Datetime Semantics
 - `open_time`, `close_time`, `event_time` are UTC timestamps
-- for OI, raw source event timestamps are preserved; OHLCV remains interval-aligned
+- for `oi` and `funding`, raw source event timestamps are preserved
+- for OHLCV, interval alignment is preserved
 - `ingested_at` is UTC write timestamp
 
-### 9.2 Samples And Plots
+### 9.2 Samples
 - CSV samples are random across full available series (`random_state=42`)
 - if series length `< 10`, sampling uses replacement (duplicates are expected)
-- sample artifact output is CSV-only for bronze ingestion
+- sample artifact output is CSV-only for bronze ingestion (plot generation is disabled)
 
 ## 10. Testing And Quality Gates
 
@@ -249,11 +251,19 @@ global:
   no_json_output: false
 
 env:
-  bronze-ingest:
+  DEPTH_HTTP_TIMEOUT_S: 8
+  DEPTH_HTTP_MAX_RETRIES: 2
+  DEPTH_HTTP_RETRY_BACKOFF_S: 0.5
+  DEPTH_SYNC_LOG_DIR: /volume1/Temp/logs
+  DEPTH_FETCH_CONCURRENCY: 6
+
+bronze-ingest:
   exchange: deribit
   market: [funding]
   symbols: [BTC, ETH]
   save_parquet_lake: true
+  lake_root: lake/bronze
+  tail_delta_only: true
 
 export-descriptive-stats:
   start_time: "2026-01-01T00:00:00+00:00"

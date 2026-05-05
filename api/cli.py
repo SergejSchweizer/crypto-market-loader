@@ -253,7 +253,7 @@ def main() -> None:
 
     if args.command == "bronze-ingest":
         _sync_loader_runtime_overrides()
-        loader_cmd.run_loader(args=args, logger=logger)
+        loader_cmd.run_bronze_ingest(args=args, logger=logger)
     elif args.command == "list-spot-timeframes":
         run_list_spot_timeframes(args=args, logger=logger)
     elif args.command == "export-descriptive-stats":

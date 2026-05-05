@@ -49,8 +49,8 @@ class FundingPoint:
 def normalize_funding_timeframe(exchange: Exchange, value: str) -> str:
     """Normalize funding timeframe by exchange.
 
-    Deribit funding is stored in native 8h cadence regardless of requested loader
-    timeframe to preserve original exchange granularity.
+    Deribit funding retrieval uses native 8h endpoint windows while bronze storage
+    preserves source event timestamps without additional bucket aggregation.
     """
 
     if exchange != "deribit":

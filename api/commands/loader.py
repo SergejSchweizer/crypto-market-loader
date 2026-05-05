@@ -67,7 +67,7 @@ from ingestion.spot import (
 DataType = Literal["spot", "perp", "oi", "funding"]
 _TAIL_DELTA_ONLY = True
 OI_DATASET_TYPE = dataset_contract("oi").dataset_type
-LOADER_FIXED_TIMEFRAME = "1m"
+BRONZE_FIXED_TIMEFRAME = "1m"
 T = TypeVar("T")
 
 
@@ -433,7 +433,7 @@ def _write_loader_samples(
     )
 
 
-def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
+def run_bronze_ingest(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run bronze-ingest command."""
 
     global _TAIL_DELTA_ONLY
@@ -461,7 +461,7 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
             for exchange in exchanges:
                 exchange_output: dict[str, object] = {}
                 output[exchange] = exchange_output
-                normalized_timeframe = normalize_timeframe(exchange=exchange, value=LOADER_FIXED_TIMEFRAME)
+                normalized_timeframe = normalize_timeframe(exchange=exchange, value=BRONZE_FIXED_TIMEFRAME)
                 for market in cast(list[Market], ohlcv_markets):
                     for symbol in randomized_symbols:
                         task = (exchange, market, symbol, normalized_timeframe)
@@ -781,3 +781,9 @@ def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
     except SingleInstanceError as exc:
         logger.warning("Single-instance lock active")
         raise SystemExit(str(exc)) from exc
+
+
+def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
+    """Backward-compatible alias for bronze ingest execution."""
+
+    run_bronze_ingest(args=args, logger=logger)

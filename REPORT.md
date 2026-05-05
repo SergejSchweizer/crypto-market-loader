@@ -1,9 +1,9 @@
 # Deribit Market Data Ingestion Baseline for Crypto Research Pipelines
 
 ## Abstract
-This report presents a production-oriented baseline for cryptocurrency market-data ingestion designed to support downstream quantitative research. The problem addressed is the lack of reproducible, maintainable ingestion layers in early-stage quant projects, where exchange-specific scripts and schema drift frequently undermine empirical validity. We implement a typed, modular ingestion pipeline with adapter abstractions for Deribit, command-line interfaces for deterministic execution, and partitioned parquet-lake storage. Data are sourced from public exchange REST endpoints and normalized into canonical OHLCV, open-interest, and funding schemas with metadata fields for run traceability. The main finding is engineering-focused: the system provides deterministic normalization, supports backward pagination and gap-fill synchronization for historical series, enforces 1-minute OHLCV/OI policy with native 8h funding cadence, and preserves idempotent persistence via natural-key partition merges. The contribution is a maintainable ingestion foundation suitable for subsequent market microstructure, regime, and forecasting studies, with explicit reproducibility controls (strict typing, tests, linting, config-driven runs, and stable execution commands).
+This report presents a production-oriented baseline for cryptocurrency market-data ingestion designed to support downstream quantitative research. The problem addressed is the lack of reproducible, maintainable ingestion layers in early-stage quant projects, where exchange-specific scripts and schema drift frequently undermine empirical validity. We implement a typed, modular ingestion pipeline with adapter abstractions for Deribit, command-line interfaces for deterministic execution, and partitioned parquet-lake storage. Data are sourced from public exchange REST endpoints and normalized into canonical OHLCV, open-interest, and funding schemas with metadata fields for run traceability. The main finding is engineering-focused: the system provides deterministic normalization, supports backward pagination and gap-fill synchronization for historical series, preserves raw source event timestamps for OI and funding, and preserves idempotent persistence via natural-key partition merges. The contribution is a maintainable ingestion foundation suitable for subsequent market microstructure, regime, and forecasting studies, with explicit reproducibility controls (strict typing, tests, linting, config-driven runs, and stable execution commands).
 
-Canonical data-type naming in this project is fixed as `spot`, `perp`, `oi`, and `funding` across CLI and code. The parquet storage label for OI raw rows is `dataset_type=oi`. OHLCV is `1m`; OI is raw event-time, while funding is stored in native Deribit `8h` cadence.
+Canonical data-type naming in this project is fixed as `spot`, `perp`, `oi`, and `funding` across CLI and code. The parquet storage label for OI raw rows is `dataset_type=oi`. OHLCV is `1m`; OI and funding are stored at raw event timestamps.
 
 ## Introduction
 Reliable market-data ingestion is a prerequisite for valid quantitative inference in crypto research.
@@ -22,7 +22,7 @@ Within crypto-specific empirical work, market microstructure studies and liquidi
 
 ## Dataset
 - Source: Deribit `/api/v2/public/get_tradingview_chart_data`, `/api/v2/public/get_last_settlements_by_instrument`, `/api/v2/public/get_funding_rate_history`.
-- Sample period: user-configurable runtime period determined by symbols, markets, and existing parquet coverage; OHLCV/OI are stored at `1m`, funding is stored at native Deribit `8h`.
+- Sample period: user-configurable runtime period determined by symbols, markets, and existing parquet coverage; OHLCV is stored at `1m` while OI/funding preserve raw source event timestamps.
 - Number of observations: runtime-dependent on symbol/timeframe scope and auto bootstrap vs gap-fill behavior.
 - Variables: `open_time`, `close_time`, `open`, `high`, `low`, `close`, `volume`, `quote_volume`, `trade_count` plus provenance metadata.
 - Additional perp feature set: `open_interest`, `open_interest_value`, and funding-rate fields.
@@ -75,11 +75,11 @@ Within crypto-specific empirical work, market microstructure studies and liquidi
 - Field construction logic:
   - OI ingestion is gated to `perp` context; non-perp requests return empty results by design.
   - `open_time` derives from exchange timestamp and is UTC-normalized.
-  - `close_time` is computed as `open_time + timeframe_ms - 1`.
+  - `close_time` equals `open_time` in bronze raw mode.
   - `open_interest` is mapped from exchange OI position-size field.
   - `open_interest_value` is populated when the source returns a notional/value metric; else `0.0`.
-  -   -   - - Exchange-specific mapping:
-  - Deribit: settlement `timestamp` is bucketed to the requested timeframe prior to interval construction; `open_interest <- position`, `open_interest_value <- 0.0`.
+  - Exchange-specific mapping:
+  - Deribit: settlement `timestamp` is preserved as event time; `open_interest <- position`, `open_interest_value <- 0.0`.
 
 ## Methodology
 ### System Design
@@ -114,18 +114,19 @@ Upsert policy enforces idempotency:
 \]
 
 ### Optimization Logic
-- Loader operates in exactly two modes:
+- Bronze ingest operates in exactly two modes:
   1. `fetch all history` for symbol/timeframe partitions that do not yet exist in parquet.
   2. `fill gaps` for existing partitions by recovering missing internal intervals and tail intervals.
 - Bounded HTTP retries with exponential backoff for transient failures (default runtime profile: timeout `8s`, retries `2`, backoff `0.5s`).
 - Pagination for exchange request limits.
 - Gap-fill computes missing intervals from stored open-time sets.
-- Fetch execution is sequential to reduce exchange-side blocking/rate-limit pressure.
+- Fetch execution uses bounded concurrency with task-level isolation.
+- Time-range fetches are split into UTC day windows and processed in randomized order.
 - Fetch orchestration and task error isolation are handled in a dedicated service layer (`application/services/fetch_service.py`) rather than directly in CLI command code.
 - Parquet reads/writes process data in batches to bound memory usage.
 
 ## Results
-All figures in this report are generated from repository pipeline outputs (agent-generated plot artifacts), not notebook exports.
+This stage reports ingestion robustness and descriptive statistics; bronze sample generation is CSV-only.
 
 ### Descriptive Statistics Table
 Descriptive statistics are exported with a fixed, reproducible configuration via:
@@ -158,26 +159,8 @@ No predictive or regime models are trained in this stage.
 | Service-layer gap-fill utility tests | Closed-candle timestamp and missing-range logic | Passed (`tests/test_gapfill_service.py`) |
 | Service-layer storage orchestration tests | Parquet side-effect routing | Passed (`tests/test_storage_service.py`) |
 | Canonical schema contract tests | CLI datatype to storage contract mapping | Passed (`tests/test_schema_contract.py`) |
-| Loader sample artifacts | Per market/exchange/symbol/timeframe CSV | Passed with deterministic naming || OI integration | Deribit perp dataset_type=oi | Passed for all-history and gap-fill paths |
-
-### Figures
-Figure 1. OHLCV Spot series (Deribit BTCUSDT 1m).
-
-![Figure 1: Deribit BTCUSDT 1m close](docs/figures/plot_outputs/deribit_BTCUSDT_1m_close.png)
-
-Interpretation: Figure 1 shows coherent minute-level sequencing for spot OHLCV after normalization and plotting.
-
-Figure 2. OHLCV Perp series (Deribit ETHUSDT 1m).
-
-![Figure 2: Deribit ETHUSDT 1m close](docs/figures/plot_outputs/deribit_ETHUSDT_1m_close.png)
-
-Interpretation: Figure 2 indicates perp candle compatibility within the same normalized OHLCV pipeline.
-
-Figure 3. Open Interest time-series (Deribit BTCUSDT 1m).
-
-![Figure 3: Open Interest plot artifact](docs/figures/plot_outputs/deribit_BTCUSDT_1m_open_interest.png)
-
-Interpretation: Figure 3 tracks derivatives positioning dynamics and complements OHLCV bars for perp context analysis.
+| Loader sample artifacts | Per market/exchange/symbol/timeframe CSV | Passed with deterministic naming |
+| OI integration | Deribit perp dataset_type=oi | Passed for all-history and gap-fill paths |
 
 ## Discussion
 Business implications: a reliable ingestion substrate lowers operational risk for strategy research and accelerates feature engineering, backtesting, and monitoring deployment.
