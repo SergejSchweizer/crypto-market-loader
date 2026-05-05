@@ -11,7 +11,8 @@ from typing import Any, cast
 
 from api.commands import loader as loader_cmd
 from api.commands import stats as stats_cmd
-from api.commands.loader import add_bronze_ingest_parser
+from api.commands.gold import add_gold_build_parser, run_gold_build
+from api.commands.loader import add_bronze_build_parser
 from api.commands.silver import add_silver_build_parser, run_silver_build
 from api.commands.stats import add_export_descriptive_stats_parser, run_export_descriptive_stats
 from api.commands.timeframes import add_list_spot_timeframes_parser, run_list_spot_timeframes
@@ -116,8 +117,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    add_bronze_ingest_parser(subparsers)
+    add_bronze_build_parser(subparsers)
     add_silver_build_parser(subparsers)
+    add_gold_build_parser(subparsers)
     add_list_spot_timeframes_parser(subparsers)
     add_export_descriptive_stats_parser(subparsers)
 
@@ -208,7 +210,9 @@ def _apply_yaml_defaults(
                 continue
             setattr(args, key, value)
     command_config = config.get(command)
-    if not isinstance(command_config, dict) and command == "bronze-ingest":
+    if not isinstance(command_config, dict) and command == "bronze-build":
+        command_config = config.get("bronze-ingest")
+    if not isinstance(command_config, dict) and command == "bronze-build":
         command_config = config.get("loader")
     if isinstance(command_config, dict):
         for key, value in command_config.items():
@@ -244,8 +248,13 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     command = cast(str, args.command)
-    if command == "bronze-ingest" and "bronze-ingest" not in config_data and "loader" not in config_data:
-        raise ValueError("config.yaml missing required section: bronze-ingest")
+    if (
+        command == "bronze-build"
+        and "bronze-build" not in config_data
+        and "bronze-ingest" not in config_data
+        and "loader" not in config_data
+    ):
+        raise ValueError("config.yaml missing required section: bronze-build")
     command_parser = _subparser_for_command(parser, command)
     if command_parser is not None:
         explicit = _collect_explicit_cli_dests(command_parser, sys.argv[1:])
@@ -253,11 +262,13 @@ def main() -> None:
     logger = configure_logging(module_name=str(args.command))
     logger.info("Command start: %s", args.command)
 
-    if args.command == "bronze-ingest":
+    if args.command == "bronze-build":
         _sync_loader_runtime_overrides()
-        loader_cmd.run_bronze_ingest(args=args, logger=logger)
+        loader_cmd.run_bronze_build(args=args, logger=logger)
     elif args.command == "silver-build":
         run_silver_build(args=args, logger=logger)
+    elif args.command == "gold-build":
+        run_gold_build(args=args, logger=logger)
     elif args.command == "list-spot-timeframes":
         run_list_spot_timeframes(args=args, logger=logger)
     elif args.command == "export-descriptive-stats":

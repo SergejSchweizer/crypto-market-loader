@@ -966,7 +966,7 @@ def build_oi_1m_feature_for_symbol(
 
 
 def write_symbol_report(*, silver_root: str, market: str, exchange: str, symbol: str, report: SilverBuildReport) -> str:
-    """Write aggregated symbol report JSON and return absolute path."""
+    """Write aggregated symbol manifest JSON and return absolute path."""
 
     target = (
         Path(silver_root)
@@ -975,7 +975,7 @@ def write_symbol_report(*, silver_root: str, market: str, exchange: str, symbol:
         / f"exchange={exchange}"
         / f"symbol={symbol}"
         / f"timeframe={report.timeframe}"
-        / "build_report.json"
+        / "manifest.json"
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
@@ -1073,6 +1073,7 @@ def write_symbol_plot(
     """Render one professional plot per symbol from silver parquet output."""
 
     try:
+        import matplotlib.dates as mdates
         import matplotlib.pyplot as plt
         import matplotlib.ticker as mticker
     except ImportError as exc:
@@ -1172,6 +1173,7 @@ def write_symbol_plot(
             figsize=(13, 7.2),
             sharex=True,
             gridspec_kw={"height_ratios": [7, 3]},
+            constrained_layout=True,
         )
         fig.patch.set_facecolor("#0b1220")
         for axis in (price_ax, volume_ax):
@@ -1185,9 +1187,25 @@ def write_symbol_plot(
 
         price_ax.plot(xs, values, color="#38bdf8", linewidth=2.0)
         price_ax.fill_between(xs, values, [min(values)] * len(values), color="#0ea5e9", alpha=0.22)
-        price_ax.set_title(f"{exchange.upper()} {symbol} {title_suffix}", fontsize=13, fontweight="semibold", color="#e2e8f0")
+        price_ax.set_title(
+            f"{exchange.upper()} {symbol} {title_suffix}",
+            fontsize=13.5,
+            fontweight="semibold",
+            color="#e2e8f0",
+            pad=10,
+        )
         price_ax.set_ylabel(y_label, color="#cbd5e1")
         price_ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.2f}"))
+        price_ax.legend(
+            [f"{title_suffix}"],
+            loc="upper left",
+            frameon=True,
+            framealpha=0.78,
+            facecolor="#111827",
+            edgecolor="#334155",
+            labelcolor="#e2e8f0",
+            fontsize=8.5,
+        )
         legend_lines = _report_legend_lines()
         if legend_lines:
             price_ax.text(
@@ -1207,10 +1225,12 @@ def write_symbol_plot(
         volume_ax.set_ylabel("Volume", color="#cbd5e1")
         volume_ax.set_xlabel("Time (UTC)", color="#cbd5e1")
         volume_ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.0f}"))
-        fig.tight_layout()
+        volume_ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        volume_ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+        fig.autofmt_xdate(rotation=0, ha="center")
     else:
         xs, values = _downsample_series(xs, values, max_points=3000)
-        fig, ax = plt.subplots(figsize=(13, 6.5))
+        fig, ax = plt.subplots(figsize=(13, 6.5), constrained_layout=True)
         fig.patch.set_facecolor("#0b1220")
         ax.set_facecolor("#0f172a")
         ax.plot(xs, values, color="#22d3ee", linewidth=2.0)
@@ -1221,10 +1241,28 @@ def write_symbol_plot(
         ax.spines["left"].set_color("#64748b")
         ax.spines["bottom"].set_color("#64748b")
         ax.tick_params(colors="#cbd5e1")
-        ax.set_title(f"{exchange.upper()} {symbol} {title_suffix}", fontsize=13, fontweight="semibold", color="#e2e8f0")
+        ax.set_title(
+            f"{exchange.upper()} {symbol} {title_suffix}",
+            fontsize=13.5,
+            fontweight="semibold",
+            color="#e2e8f0",
+            pad=10,
+        )
         ax.set_xlabel("Time (UTC)", color="#cbd5e1")
         ax.set_ylabel(y_label, color="#cbd5e1")
         ax.yaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.6f}" if "Rate" in y_label else "{x:,.2f}"))
+        ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+        ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
+        ax.legend(
+            [y_label],
+            loc="upper left",
+            frameon=True,
+            framealpha=0.78,
+            facecolor="#111827",
+            edgecolor="#334155",
+            labelcolor="#e2e8f0",
+            fontsize=8.5,
+        )
         legend_lines = _report_legend_lines()
         if legend_lines:
             ax.text(
@@ -1238,7 +1276,7 @@ def write_symbol_plot(
                 color="#e2e8f0",
                 bbox={"facecolor": "#111827", "alpha": 0.82, "edgecolor": "#334155"},
             )
-        fig.tight_layout()
+        fig.autofmt_xdate(rotation=0, ha="center")
 
     filename = build_samples_plot_filename(zone=zone, exchange=exchange, symbol=symbol, market=plot_market)
     output_path = Path(samples_root) / filename

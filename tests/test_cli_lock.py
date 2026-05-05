@@ -135,7 +135,7 @@ def test_main_loader_command_still_uses_single_instance_lock(
             del lock_path
 
         def __enter__(self) -> None:
-            raise SingleInstanceError("bronze-ingest already running")
+            raise SingleInstanceError("bronze-build already running")
 
         def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
             del exc_type, exc, tb
@@ -145,7 +145,7 @@ def test_main_loader_command_still_uses_single_instance_lock(
         "sys.argv",
         [
             "main.py",
-            "bronze-ingest",
+            "bronze-build",
             "--exchange",
             "deribit",
             "--market",
@@ -156,7 +156,7 @@ def test_main_loader_command_still_uses_single_instance_lock(
         ],
     )
 
-    with pytest.raises(SystemExit, match="bronze-ingest already running"):
+    with pytest.raises(SystemExit, match="bronze-build already running"):
         cli.main()
 
 
@@ -193,7 +193,7 @@ def test_main_loader_randomizes_symbol_schedule(monkeypatch: pytest.MonkeyPatch)
         "sys.argv",
         [
             "main.py",
-            "bronze-ingest",
+            "bronze-build",
             "--exchange",
             "deribit",
             "--market",
@@ -237,7 +237,7 @@ def test_main_bronze_ingest_command_uses_loader_runtime(monkeypatch: pytest.Monk
         "sys.argv",
         [
             "main.py",
-            "bronze-ingest",
+            "bronze-build",
             "--exchange",
             "deribit",
             "--market",
@@ -283,7 +283,7 @@ def test_main_loader_randomizes_market_schedule(monkeypatch: pytest.MonkeyPatch)
         "sys.argv",
         [
             "main.py",
-            "bronze-ingest",
+            "bronze-build",
             "--exchange",
             "deribit",
             "--market",
@@ -348,7 +348,7 @@ def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.Mon
         "sys.argv",
         [
             "main.py",
-            "bronze-ingest",
+            "bronze-build",
             "--exchange",
             "deribit",
             "--market",
@@ -457,7 +457,7 @@ def test_loader_rejects_removed_timeframe_argument(monkeypatch: pytest.MonkeyPat
         "argv",
         [
             "main.py",
-            "bronze-ingest",
+            "bronze-build",
             "--exchange",
             "deribit",
             "--market",

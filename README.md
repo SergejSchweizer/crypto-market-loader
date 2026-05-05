@@ -14,7 +14,7 @@ Scope in this repository:
 - Exchange: `deribit`
 - Datatypes: `spot`, `perp`, `oi`, `funding`
 - Symbols: `BTC`, `ETH`, `SOL`
-- Ingestion policy: `1m` bronze-ingest timeframe (funding remains native `8h`)
+- Ingestion policy: `1m` bronze-build timeframe (funding remains native `8h`)
 - Storage target: Parquet lake
 
 ## 2. End-to-End Flow
@@ -146,25 +146,25 @@ If repository path changes, recreate `.venv` so entrypoint shebangs stay valid.
 - `mypy`: static typing checks
 - `pytest`: tests
 
-## 7. Running Bronze Ingest
+## 7. Running Bronze Build
 
 ### 7.1 Canonical Commands
 
 Spot:
 
 ```bash
-python3 main.py bronze-ingest --exchange deribit --market spot --symbols BTC ETH SOL
+python3 main.py bronze-build --exchange deribit --market spot --symbols BTC ETH SOL
 ```
 
 All datatypes:
 
 ```bash
-python3 main.py bronze-ingest --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --save-parquet-lake --lake-root lake/bronze
+python3 main.py bronze-build --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --save-parquet-lake --lake-root lake/bronze
 ```
 
 
 ### 7.2 Ingestion Policy
-- `bronze-ingest` has no timeframe CLI parameter; scheduling uses fixed `1m`.
+- `bronze-build` has no timeframe CLI parameter; scheduling uses fixed `1m`.
 - Stored timestamp semantics:
   - `spot`, `perp`: interval-aligned OHLCV bars (`1m`)
   - `oi`, `funding`: raw source event timestamps (no bucket aggregation)
@@ -233,12 +233,13 @@ dataset_type=oi_1m_feature/
 
 ### 9.3 Symbol Report (Full Processed Period)
 
-Each `silver-build` run writes one aggregated report per symbol:
+Each `silver-build` run writes one aggregated manifest per symbol:
 
 ```text
-silver/reports/dataset_type=<spot|perp>/exchange=<exchange>/symbol=<symbol>/timeframe=1m/build_report.json
-silver/reports/dataset_type=<funding_observed|funding_1m_feature>/exchange=<exchange>/symbol=<symbol>/timeframe=1m/build_report.json
-silver/reports/dataset_type=<oi_observed|oi_1m_feature>/exchange=<exchange>/symbol=<symbol>/timeframe=1m/build_report.json
+silver/reports/dataset_type=<spot|perp>/exchange=<exchange>/symbol=<symbol>/timeframe=1m/manifest.json
+silver/reports/dataset_type=funding_observed/exchange=<exchange>/symbol=<symbol>/timeframe=8h/manifest.json
+silver/reports/dataset_type=funding_1m_feature/exchange=<exchange>/symbol=<symbol>/timeframe=1m/manifest.json
+silver/reports/dataset_type=<oi_observed|oi_1m_feature>/exchange=<exchange>/symbol=<symbol>/timeframe=1m/manifest.json
 ```
 
 Report fields include:
@@ -257,16 +258,22 @@ Observed-only datasets (`funding_observed`, `oi_observed`) are not plotted.
 Naming convention:
 
 ```text
-zone_exchange_symbol.png
+zone_exchange_symbol_market.png
 ```
 
 Examples:
-- `silver_deribit_BTC-PERPETUAL.png`
-- `silver_deribit_ETH-PERPETUAL.png`
+- `silver_deribit_BTC-PERPETUAL_perp.png`
+- `silver_deribit_BTC-PERPETUAL_funding_1m.png`
+- `silver_deribit_BTC-PERPETUAL_oi_m1_feature.png`
+
+Plot content notes:
+- all plot outputs use the unified dark schema
+- observed-only datasets are not rendered as plots
+- silver plots include key report metadata as on-chart annotation (`rows_in/out`, duplicates removed, invalid/null counts, month span, timestamp range)
 
 ## 10. Datetime And Sampling
 
-### 9.1 Datetime Semantics
+### 10.1 Datetime Semantics
 - `open_time`, `close_time`, `event_time` are UTC timestamps
 - for `oi` and `funding`, raw source event timestamps are preserved
 - `oi_observed` stores only real observed OI points (no synthetic 1m rows)
@@ -274,12 +281,52 @@ Examples:
 - for OHLCV, interval alignment is preserved
 - `ingested_at` is UTC write timestamp
 
-### 9.2 Samples
-- CSV samples are random across full available series (`random_state=42`)
-- if series length `< 10`, sampling uses replacement (duplicates are expected)
-- sample artifact output is CSV-only for bronze ingestion (plot generation is disabled)
+### 10.2 Samples
+- `silver-build --plot` writes PNG files under `samples/` using the naming schema above
+- bronze-build CSV sampling behavior is separate from silver plot generation
 
-## 11. Testing And Quality Gates
+## 11. Gold Transformation
+
+### 11.1 Command
+
+```bash
+python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit
+python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL
+python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL --plot
+python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --json-output
+```
+
+### 11.2 Gold Output Contract
+
+For each base-asset symbol (`BTC`, `ETH`, `SOL`), gold writes:
+
+```text
+lake/gold/<symbol>_<jsonhash_gitcommithash>.parquet
+lake/gold/<symbol>_<jsonhash_gitcommithash>.json
+lake/gold/<symbol>_<jsonhash_gitcommithash>.png
+```
+
+The `.png` artifact is generated only when `--plot` is provided.
+
+`jsonhash` is derived from the canonical gold JSON metadata payload.
+`gitcommithash` is resolved via `git rev-parse --short HEAD` (fallback: `nogit`).
+The PNG plot is generated with the same basename and contains all numeric features as rows:
+- left panel (80% width): feature line plot with metadata legend
+- right panel (20% width): feature distribution histogram
+
+Each symbol parquet is built by combining silver datasets:
+- `spot` (`timeframe=1m`)
+- `perp` (`timeframe=1m`)
+- `oi_1m_feature` (`timeframe=1m`)
+- `funding_1m_feature` (`timeframe=1m`)
+
+The JSON metadata file contains dataset-level and feature-level metadata, including:
+- hash string, build timestamp (UTC), row/column stats and timestamp bounds
+- source silver dataset summaries (columns, row counts, source symbols)
+- per-feature metadata (`dtype`, null counts, and numeric distribution stats such as mean/std/min/max)
+- no filesystem paths are stored in the JSON
+
+## 12. Testing And Quality Gates
 
 Run all checks:
 
@@ -295,7 +342,7 @@ Equivalent:
 .venv/bin/python -m mypy .
 ```
 
-## 12. Deployment And Operations
+## 13. Deployment And Operations
 
 Current mode:
 - local CLI execution
@@ -324,7 +371,7 @@ env:
   DEPTH_FETCH_CONCURRENCY: 6
   DEPTH_FETCH_TASK_TIMEOUT_S: 300
 
-bronze-ingest:
+bronze-build:
   exchange: deribit
   market: [funding]
   symbols: [BTC, ETH]
@@ -340,7 +387,7 @@ export-descriptive-stats:
 Use non-default config path:
 
 ```bash
-python3 main.py --config /path/to/config.yaml bronze-ingest
+python3 main.py --config /path/to/config.yaml bronze-build
 ```
 
 Bootstrap local config:

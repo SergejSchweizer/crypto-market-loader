@@ -1,4 +1,4 @@
-"""Bronze ingest command implementation."""
+"""Bronze build command implementation."""
 
 from __future__ import annotations
 
@@ -122,7 +122,7 @@ def _add_ingest_parser(
     parser.add_argument(
         "--no-json-output",
         action="store_true",
-        help="Suppress JSON output from bronze-ingest command",
+        help="Suppress JSON output from bronze-build command",
     )
     parser.add_argument(
         "--tail-delta-only",
@@ -138,12 +138,12 @@ def _add_ingest_parser(
     )
 
 
-def add_bronze_ingest_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
-    """Register canonical ``bronze-ingest`` parser."""
+def add_bronze_build_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
+    """Register canonical ``bronze-build`` parser."""
 
     _add_ingest_parser(
         subparsers,
-        command_name="bronze-ingest",
+        command_name="bronze-build",
         help_text="Bronze medallion ingest from supported exchanges",
     )
 
@@ -416,8 +416,8 @@ def _write_loader_samples(
     )
 
 
-def run_bronze_ingest(args: argparse.Namespace, logger: logging.Logger) -> None:
-    """Run bronze-ingest command."""
+def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
+    """Run bronze-build command."""
 
     global _TAIL_DELTA_ONLY
     _TAIL_DELTA_ONLY = bool(args.tail_delta_only)
@@ -781,13 +781,7 @@ def run_bronze_ingest(args: argparse.Namespace, logger: logging.Logger) -> None:
 
             if not args.no_json_output:
                 print(json.dumps(output, indent=2))
-            logger.info("Command complete: bronze-ingest")
+            logger.info("Command complete: bronze-build")
     except SingleInstanceError as exc:
         logger.warning("Single-instance lock active")
         raise SystemExit(str(exc)) from exc
-
-
-def run_loader(args: argparse.Namespace, logger: logging.Logger) -> None:
-    """Backward-compatible alias for bronze ingest execution."""
-
-    run_bronze_ingest(args=args, logger=logger)

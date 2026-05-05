@@ -1,4 +1,4 @@
-"""Tests for bronze-ingest storage orchestration service."""
+"""Tests for bronze-build storage orchestration service."""
 
 from __future__ import annotations
 

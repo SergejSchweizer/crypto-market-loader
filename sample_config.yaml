@@ -12,7 +12,7 @@ env:
   DEPTH_FETCH_CONCURRENCY: 6
   DEPTH_FETCH_TASK_TIMEOUT_S: 45
 
-bronze-ingest:
+bronze-build:
   exchange: deribit
   exchanges:
     - deribit

@@ -82,7 +82,7 @@ def _report_path(lake_root: str, dataset_type: str, exchange: str, symbol: str, 
         / f"exchange={exchange}"
         / f"symbol={symbol}"
         / f"timeframe={timeframe}"
-        / "build_report.json"
+        / "manifest.json"
     )
 
 

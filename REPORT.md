@@ -1,7 +1,7 @@
 # Deribit Market Data Ingestion Baseline for Crypto Research Pipelines
 
 ## Abstract
-This report presents a production-oriented baseline for cryptocurrency market-data ingestion designed to support downstream quantitative research. The problem addressed is the lack of reproducible, maintainable ingestion layers in early-stage quant projects, where exchange-specific scripts and schema drift frequently undermine empirical validity. We implement a typed, modular ingestion pipeline with adapter abstractions for Deribit, command-line interfaces for deterministic execution, and partitioned parquet-lake storage. Data are sourced from public exchange REST endpoints and normalized into canonical OHLCV, open-interest, and funding schemas with metadata fields for run traceability. The main finding is engineering-focused: the system provides deterministic normalization, supports backward pagination and gap-fill synchronization for historical series, preserves raw source event timestamps for OI and funding, and preserves idempotent persistence via natural-key partition merges. The contribution is a maintainable ingestion foundation suitable for subsequent market microstructure, regime, and forecasting studies, with explicit reproducibility controls (strict typing, tests, linting, config-driven runs, and stable execution commands).
+This report presents a production-oriented baseline for cryptocurrency market-data ingestion designed to support downstream quantitative research. The problem addressed is the lack of reproducible, maintainable ingestion layers in early-stage quant projects, where exchange-specific scripts and schema drift frequently undermine empirical validity. We implement a typed, modular ingestion pipeline with adapter abstractions for Deribit, command-line interfaces for deterministic execution, and partitioned parquet-lake storage. Data are sourced from public exchange REST endpoints and normalized into canonical OHLCV, open-interest, and funding schemas with metadata fields for run traceability. The main finding is engineering-focused: the system provides deterministic normalization, supports backward pagination and gap-fill synchronization for historical series, preserves raw source event timestamps for OI and funding, and preserves idempotent persistence via natural-key partition merges. The current codebase also includes a silver-to-gold per-symbol build path that combines spot/perp/OI/funding silver features into one hashed gold artifact with symbol-level manifest metadata. The contribution is a maintainable ingestion foundation suitable for subsequent market microstructure, regime, and forecasting studies, with explicit reproducibility controls (strict typing, tests, linting, config-driven runs, and stable execution commands).
 
 Canonical data-type naming in this project is fixed as `spot`, `perp`, `oi`, and `funding` across CLI and code. The parquet storage label for OI raw rows is `dataset_type=oi`. OHLCV is `1m`; OI and funding are stored at raw event timestamps.
 
@@ -114,7 +114,7 @@ Upsert policy enforces idempotency:
 \]
 
 ### Optimization Logic
-- Bronze ingest operates in exactly two modes:
+- Bronze build operates in exactly two modes:
   1. `fetch all history` for symbol/timeframe partitions that do not yet exist in parquet.
   2. `fill gaps` for existing partitions by recovering missing internal intervals and tail intervals.
 - Bounded HTTP retries with exponential backoff for transient failures (default runtime profile: timeout `8s`, retries `2`, backoff `0.5s`).
