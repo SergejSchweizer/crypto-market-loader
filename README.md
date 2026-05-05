@@ -209,7 +209,6 @@ dataset_type=funding/
 
 ```bash
 python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp oi funding --timeframe 1m
-python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp oi funding --timeframe 1m --plot
 ```
 
 ### 9.2 Silver Output Layout (Monthly)
@@ -249,28 +248,6 @@ Report fields include:
 - `period_start`, `period_end`, `months_processed`
 - `columns` (exact output column names for the reported dataset)
 
-### 9.4 Silver Plot Artifacts
-
-When `--plot` is passed, `silver-build` writes one professional plot per built symbol into `samples/`.
-Plotted silver datasets are: `spot`, `perp`, `funding_1m_feature`, `oi_1m_feature`.
-Observed-only datasets (`funding_observed`, `oi_observed`) are not plotted.
-
-Naming convention:
-
-```text
-zone_exchange_symbol_market.png
-```
-
-Examples:
-- `silver_deribit_BTC-PERPETUAL_perp.png`
-- `silver_deribit_BTC-PERPETUAL_funding_1m.png`
-- `silver_deribit_BTC-PERPETUAL_oi_m1_feature.png`
-
-Plot content notes:
-- all plot outputs use the unified dark schema
-- observed-only datasets are not rendered as plots
-- silver plots include key report metadata as on-chart annotation (`rows_in/out`, duplicates removed, invalid/null counts, month span, timestamp range)
-
 ## 10. Datetime And Sampling
 
 ### 10.1 Datetime Semantics
@@ -282,8 +259,7 @@ Plot content notes:
 - `ingested_at` is UTC write timestamp
 
 ### 10.2 Samples
-- `silver-build --plot` writes PNG files under `samples/` using the naming schema above
-- bronze-build CSV sampling behavior is separate from silver plot generation
+- bronze-build CSV sampling behavior is separate from silver transformation
 
 ## 11. Gold Transformation
 
@@ -293,7 +269,7 @@ Plot content notes:
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL --plot
-python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --json-output
+python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --no-json-output
 ```
 
 ### 11.2 Gold Output Contract
@@ -373,11 +349,23 @@ env:
 
 bronze-build:
   exchange: deribit
-  market: [funding]
+  market: [spot, perp, oi, funding]
   symbols: [BTC, ETH]
   save_parquet_lake: true
   lake_root: lake/bronze
   tail_delta_only: true
+
+silver-build:
+  bronze_root: lake/bronze
+  silver_root: lake/silver
+  market: [spot, perp, oi, funding]
+
+gold-build:
+  silver_root: lake/silver
+  gold_root: lake/gold
+  symbols: [BTC, ETH]
+  plot: true
+  no_json_output: false
 
 export-descriptive-stats:
   start_time: "2026-01-01T00:00:00+00:00"

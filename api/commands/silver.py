@@ -15,7 +15,6 @@ from application.services.silver_service import (
     build_funding_observed_for_symbol,
     build_silver_for_symbol,
     discover_symbols,
-    write_symbol_plot,
     write_symbol_report,
 )
 from ingestion.funding import DERIBIT_FUNDING_NATIVE_INTERVAL
@@ -36,7 +35,6 @@ def add_silver_build_parser(subparsers: argparse._SubParsersAction[argparse.Argu
     )
     parser.add_argument("--symbols", nargs="+", help="Optional symbol list; auto-discovered when omitted")
     parser.add_argument("--timeframe", default="1m", help="Timeframe to process (default: 1m)")
-    parser.add_argument("--plot", action="store_true", help="Generate per-symbol plots under samples/")
     parser.add_argument("--no-json-output", action="store_true", help="Suppress JSON output")
 
 
@@ -59,22 +57,6 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
         )
         report_dict = report.to_dict()
         report_dict["report_path"] = report_path
-        plottable_markets = {"spot", "perp", "funding_1m_feature", "oi_1m_feature"}
-        should_plot = bool(getattr(args, "plot", False)) and report_market in plottable_markets
-        if should_plot:
-            plot_path = write_symbol_plot(
-                silver_root=silver_root,
-                zone="silver",
-                exchange=exchange,
-                symbol=symbol_value,
-                timeframe=report.timeframe,
-                period_start=report.period_start,
-                period_end=report.period_end,
-                report=report,
-                samples_root="samples",
-            )
-            if plot_path is not None:
-                report_dict["plot_path"] = plot_path
         reports.append(report_dict)
 
     for market in cast(list[str], args.market):

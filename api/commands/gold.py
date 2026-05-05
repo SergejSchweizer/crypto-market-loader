@@ -19,7 +19,7 @@ def add_gold_build_parser(subparsers: argparse._SubParsersAction[argparse.Argume
     parser.add_argument("--exchange", choices=["deribit"], default="deribit")
     parser.add_argument("--symbols", nargs="+", help="Optional symbol list; auto-discovered when omitted")
     parser.add_argument("--plot", action="store_true", help="Generate gold feature distribution plot PNG")
-    parser.add_argument("--json-output", action="store_true", help="Enable JSON output (disabled by default)")
+    parser.add_argument("--no-json-output", action="store_true", help="Suppress JSON output")
 
 
 def run_gold_build(args: argparse.Namespace, logger: logging.Logger) -> None:
@@ -48,6 +48,6 @@ def run_gold_build(args: argparse.Namespace, logger: logging.Logger) -> None:
         reports.append(report.to_dict())
         logger.info("Gold report written symbol=%s rows_out=%s path=%s", symbol, report.rows_out, report.parquet_path)
 
-    if bool(args.json_output):
+    if not bool(args.no_json_output):
         print(json.dumps({"reports": reports}, indent=2))
     logger.info("Command complete: gold-build reports=%s", len(reports))

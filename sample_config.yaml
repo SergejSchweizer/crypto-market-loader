@@ -39,8 +39,20 @@ silver-build:
   market:
     - spot
     - perp
+    - oi
     - funding
   timeframe: 1m
+  no_json_output: false
+
+gold-build:
+  silver_root: lake/silver
+  gold_root: lake/gold
+  exchange: deribit
+  symbols:
+    - BTC
+    - ETH
+    - SOL
+  plot: false
   no_json_output: false
 
 export-descriptive-stats:
