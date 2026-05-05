@@ -22,6 +22,7 @@ from application.dto import (
 )
 from application.schema import dataset_contract
 from application.services.artifact_service import write_loader_samples_dto
+from application.services.bronze_report_service import build_bronze_symbol_reports
 from application.services.fetch_service import (
     fetch_candle_tasks_parallel,
     fetch_funding_tasks_parallel,
@@ -760,6 +761,29 @@ def run_bronze_ingest(args: argparse.Namespace, logger: logging.Logger) -> None:
                     logger.exception("Parquet lake write failed")
             elif incremental_parquet_on_fetch:
                 output["_parquet_files"] = incremental_parquet_files
+                spot_report_symbols: set[tuple[str, str, str]] = {
+                    (exchange, symbol.upper(), timeframe)
+                    for exchange, market, symbol, timeframe in tasks
+                    if market == "spot"
+                }
+                perp_report_symbols: set[tuple[str, str, str]] = {
+                    (exchange, symbol.upper(), timeframe)
+                    for exchange, market, symbol, timeframe in tasks
+                    if market == "perp"
+                }
+                oi_report_symbols: set[tuple[str, str, str]] = {
+                    (exchange, symbol.upper(), timeframe) for exchange, symbol, timeframe in oi_tasks
+                }
+                funding_report_symbols: set[tuple[str, str, str]] = {
+                    (exchange, symbol.upper(), timeframe) for exchange, symbol, timeframe in funding_tasks
+                }
+                output["_bronze_reports"] = build_bronze_symbol_reports(
+                    lake_root=cast(str, args.lake_root),
+                    spot_symbols=spot_report_symbols,
+                    perp_symbols=perp_report_symbols,
+                    oi_symbols=oi_report_symbols,
+                    funding_symbols=funding_report_symbols,
+                )
 
             artifact_candles: dict[Market, dict[str, dict[str, list[SpotCandle]]]] = candles_for_storage
             artifact_oi: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = open_interest_for_storage

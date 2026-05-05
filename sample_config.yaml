@@ -30,6 +30,16 @@ bronze-ingest:
   tail_delta_only: false
   no_json_output: false
 
+silver-build:
+  bronze_root: lake/bronze
+  silver_root: lake/silver
+  exchange: deribit
+  market:
+    - spot
+    - perp
+  timeframe: 1m
+  no_json_output: false
+
 export-descriptive-stats:
   lake_root: lake/bronze
   output_csv: docs/tables/descriptive_stats_baseline.csv

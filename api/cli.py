@@ -12,6 +12,7 @@ from typing import Any, cast
 from api.commands import loader as loader_cmd
 from api.commands import stats as stats_cmd
 from api.commands.loader import add_bronze_ingest_parser
+from api.commands.silver import add_silver_build_parser, run_silver_build
 from api.commands.stats import add_export_descriptive_stats_parser, run_export_descriptive_stats
 from api.commands.timeframes import add_list_spot_timeframes_parser, run_list_spot_timeframes
 from application.services.gapfill_service import _last_closed_open_ms, _missing_ranges_ms
@@ -116,6 +117,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     add_bronze_ingest_parser(subparsers)
+    add_silver_build_parser(subparsers)
     add_list_spot_timeframes_parser(subparsers)
     add_export_descriptive_stats_parser(subparsers)
 
@@ -254,6 +256,8 @@ def main() -> None:
     if args.command == "bronze-ingest":
         _sync_loader_runtime_overrides()
         loader_cmd.run_bronze_ingest(args=args, logger=logger)
+    elif args.command == "silver-build":
+        run_silver_build(args=args, logger=logger)
     elif args.command == "list-spot-timeframes":
         run_list_spot_timeframes(args=args, logger=logger)
     elif args.command == "export-descriptive-stats":

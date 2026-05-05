@@ -200,7 +200,36 @@ dataset_type=funding/
 ### 8.2 Architecture/Storage Tradeoffs
 - Parquet lake: cheap historical storage, partition-friendly batch reads, reproducibility
 
-## 9. Datetime And Sampling
+## 9. Silver Transformation
+
+### 9.1 Command
+
+```bash
+python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp --timeframe 1m
+```
+
+### 9.2 Silver Output Layout (Monthly)
+
+```text
+dataset_type=<spot|perp>/
+  exchange=<exchange>/instrument_type=<spot|perp>/symbol=<symbol>/timeframe=1m/month=<YYYY-MM>/data.parquet
+```
+
+### 9.3 Symbol Report (Full Processed Period)
+
+Each `silver-build` run writes one aggregated report per symbol:
+
+```text
+silver/reports/dataset_type=<spot|perp>/exchange=<exchange>/symbol=<symbol>/timeframe=1m/build_report.json
+```
+
+Report fields include:
+- `rows_in`, `rows_out`, `duplicates_removed`
+- `invalid_ohlc_rows`, `null_price_rows`
+- `min_timestamp`, `max_timestamp`
+- `period_start`, `period_end`, `months_processed`
+
+## 10. Datetime And Sampling
 
 ### 9.1 Datetime Semantics
 - `open_time`, `close_time`, `event_time` are UTC timestamps
@@ -213,7 +242,7 @@ dataset_type=funding/
 - if series length `< 10`, sampling uses replacement (duplicates are expected)
 - sample artifact output is CSV-only for bronze ingestion (plot generation is disabled)
 
-## 10. Testing And Quality Gates
+## 11. Testing And Quality Gates
 
 Run all checks:
 
@@ -229,7 +258,7 @@ Equivalent:
 .venv/bin/python -m mypy .
 ```
 
-## 11. Deployment And Operations
+## 12. Deployment And Operations
 
 Current mode:
 - local CLI execution
@@ -285,12 +314,12 @@ chmod 600 config.yaml
 
 Runtime configuration variables are provided in `config.yaml` under `env:` and injected into the process environment at CLI start.
 
-## 12. Known Limitations
+## 13. Known Limitations
 - Deribit-only integration
 - no exchange failover routing
 - no trade-level ingestion in current scope
 
-## 13. Future Improvements
+## 14. Future Improvements
 - scheduled parquet compaction and retention
 - multi-exchange adapter expansion
 - schema/version migration utilities
