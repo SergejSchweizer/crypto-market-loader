@@ -54,6 +54,11 @@ gold-build:
     - BTC
     - ETH
     - SOL
+  # Optional: explicit dataset_id; when omitted CLI builds all supported gold datasets.
+  # dataset_id: gold.market.full.m1
+  dataset_version: v1.0.0
+  auto_version: false
+  version_base: v1.0.0
   manifest: false
   plot: false
   no_json_output: false

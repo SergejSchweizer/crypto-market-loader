@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -11,6 +12,12 @@ from pathlib import Path
 from typing import Any
 
 MAX_PLOT_POINTS = 3_000
+SUPPORTED_GOLD_DATASET_IDS = {
+    "gold.market.core.m1",
+    "gold.market.core_funding.m1",
+    "gold.market.perp_funding.m1",
+    "gold.market.full.m1",
+}
 
 
 def _require_polars() -> Any:
@@ -35,6 +42,14 @@ class GoldBuildReport:
     manifest_path: str | None
     plot_path: str | None
     hash_string: str
+    dataset_id: str
+    dataset_version: str
+    feature_set_hash: str
+    source_data_hash: str
+    git_commit_hash: str
+    version_bump_level: str
+    version_bump_reason: str
+    previous_version: str | None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -48,6 +63,14 @@ class GoldBuildReport:
             "manifest_path": self.manifest_path,
             "plot_path": self.plot_path,
             "hash_string": self.hash_string,
+            "dataset_id": self.dataset_id,
+            "dataset_version": self.dataset_version,
+            "feature_set_hash": self.feature_set_hash,
+            "source_data_hash": self.source_data_hash,
+            "git_commit_hash": self.git_commit_hash,
+            "version_bump_level": self.version_bump_level,
+            "version_bump_reason": self.version_bump_reason,
+            "previous_version": self.previous_version,
         }
 
 
@@ -63,6 +86,111 @@ def _git_commit_short() -> str:
         return out or "nogit"
     except Exception:
         return "nogit"
+
+
+def _git_commit_hash() -> str:
+    try:
+        out = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+        return out or "nogit"
+    except Exception:
+        return "nogit"
+
+
+_SEMVER_RE = re.compile(r"^v(\d+)\.(\d+)\.(\d+)$")
+
+
+def _parse_semver(version: str) -> tuple[int, int, int]:
+    match = _SEMVER_RE.fullmatch(version)
+    if match is None:
+        raise ValueError(f"Invalid semantic version '{version}'. Expected format like v1.0.0")
+    return int(match.group(1)), int(match.group(2)), int(match.group(3))
+
+
+def _format_semver(major: int, minor: int, patch: int) -> str:
+    return f"v{major}.{minor}.{patch}"
+
+
+def _bump_semver(version: str, level: str) -> str:
+    major, minor, patch = _parse_semver(version)
+    if level == "major":
+        return _format_semver(major + 1, 0, 0)
+    if level == "minor":
+        return _format_semver(major, minor + 1, 0)
+    if level == "patch":
+        return _format_semver(major, minor, patch + 1)
+    if level == "none":
+        return version
+    raise ValueError(f"Unsupported semver bump level: {level}")
+
+
+def _latest_manifest_for_dataset(gold_root: Path, symbol: str, dataset_id: str) -> dict[str, object] | None:
+    latest_payload: dict[str, object] | None = None
+    latest_mtime = -1.0
+    for path in gold_root.glob(f"{symbol}_*.json"):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if payload.get("dataset_id") != dataset_id:
+            continue
+        mtime = path.stat().st_mtime
+        if mtime > latest_mtime:
+            latest_mtime = mtime
+            latest_payload = payload
+    return latest_payload
+
+
+def _contract_bump_level(
+    previous: dict[str, object],
+    current_contract: dict[str, object],
+    *,
+    previous_source_data_hash: str,
+    current_source_data_hash: str,
+) -> tuple[str, str]:
+    prev_contract = previous.get("contract_signature")
+    if not isinstance(prev_contract, dict):
+        # Backward-compatible fallback for older manifests.
+        prev_contract = {
+            "columns": previous.get("columns"),
+            "join_policy": "full_outer_coalesce",
+            "source_dataset_keys": sorted((previous.get("source_silver_datasets") or {}).keys())
+            if isinstance(previous.get("source_silver_datasets"), dict)
+            else [],
+        }
+
+    prev_columns = prev_contract.get("columns")
+    curr_columns = current_contract.get("columns")
+    if not isinstance(prev_columns, list) or not isinstance(curr_columns, list):
+        return "major", "invalid_contract_signature"
+
+    prev_join = prev_contract.get("join_policy")
+    curr_join = current_contract.get("join_policy")
+    if prev_join != curr_join:
+        return "major", "join_policy_changed"
+
+    prev_keys = prev_contract.get("source_dataset_keys")
+    curr_keys = current_contract.get("source_dataset_keys")
+    if not isinstance(prev_keys, list) or not isinstance(curr_keys, list):
+        return "major", "invalid_source_dataset_keys"
+    prev_set = set(str(item) for item in prev_keys)
+    curr_set = set(str(item) for item in curr_keys)
+    if not prev_set.issubset(curr_set):
+        return "major", "source_dataset_removed"
+    if curr_set != prev_set:
+        return "minor", "source_dataset_added"
+
+    prev_set_cols = set(str(item) for item in prev_columns)
+    curr_set_cols = set(str(item) for item in curr_columns)
+    if not prev_set_cols.issubset(curr_set_cols):
+        return "major", "column_removed_or_renamed"
+    if curr_set_cols != prev_set_cols:
+        return "minor", "column_added"
+    if [str(item) for item in prev_columns] != [str(item) for item in curr_columns]:
+        return "major", "column_order_changed"
+
+    if previous_source_data_hash != current_source_data_hash:
+        return "patch", "source_data_changed"
+    return "none", "no_change"
 
 
 def normalize_symbol(value: str) -> str:
@@ -105,6 +233,18 @@ def discover_gold_symbols(silver_root: str, exchange: str) -> list[str]:
     return sorted({normalize_symbol(item) for item in set.intersection(*by_dataset)})
 
 
+def _dataset_requirements(dataset_id: str) -> list[tuple[str, str]]:
+    if dataset_id == "gold.market.core.m1":
+        return [("spot", "1m"), ("perp", "1m")]
+    if dataset_id == "gold.market.core_funding.m1":
+        return [("spot", "1m"), ("perp", "1m"), ("funding_1m_feature", "1m")]
+    if dataset_id == "gold.market.perp_funding.m1":
+        return [("perp", "1m"), ("funding_1m_feature", "1m")]
+    if dataset_id == "gold.market.full.m1":
+        return [("spot", "1m"), ("perp", "1m"), ("oi_1m_feature", "1m"), ("funding_1m_feature", "1m")]
+    raise ValueError(f"Unsupported dataset_id: {dataset_id}")
+
+
 def _read_dataset_frame(
     *,
     silver_root: str,
@@ -124,7 +264,7 @@ def _read_dataset_frame(
         raw_symbol = sym_segment.split("=", 1)[1]
         if normalize_symbol(raw_symbol) != symbol:
             continue
-        files.extend(sorted(sym_dir.glob(f"{raw_symbol}_*.parquet")))
+        files.extend(sorted(sym_dir.glob("**/*.parquet")))
     if not files:
         raise ValueError(f"Missing silver dataset for symbol={symbol}: {dataset_type}")
     frame = pl.read_parquet([str(path) for path in files])
@@ -232,7 +372,7 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
             if idx not in seen:
                 seen.add(idx)
                 deduped_indices.append(idx)
-        frame = frame.take(deduped_indices)
+        frame = frame[deduped_indices]
 
     numeric_cols = [col for col, dtype in zip(frame.columns, frame.dtypes, strict=False) if dtype.is_numeric()]
     if not numeric_cols:
@@ -376,6 +516,10 @@ def build_gold_for_symbol(
     gold_root: str,
     exchange: str,
     symbol: str,
+    dataset_id: str = "gold.market.full.m1",
+    dataset_version: str = "v1.0.0",
+    auto_version: bool = False,
+    version_base: str = "v1.0.0",
     manifest: bool = False,
     plot: bool = False,
 ) -> GoldBuildReport:
@@ -383,51 +527,102 @@ def build_gold_for_symbol(
 
     pl = _require_polars()
     symbol = normalize_symbol(symbol)
-    spot_raw = _read_dataset_frame(
-        silver_root=silver_root,
-        exchange=exchange,
-        symbol=symbol,
-        dataset_type="spot",
-        timeframe="1m",
-    )
-    perp_raw = _read_dataset_frame(
-        silver_root=silver_root,
-        exchange=exchange,
-        symbol=symbol,
-        dataset_type="perp",
-        timeframe="1m",
-    )
-    oi_raw = _read_dataset_frame(
-        silver_root=silver_root,
-        exchange=exchange,
-        symbol=symbol,
-        dataset_type="oi_1m_feature",
-        timeframe="1m",
-    )
-    funding_raw = _read_dataset_frame(
-        silver_root=silver_root,
-        exchange=exchange,
-        symbol=symbol,
-        dataset_type="funding_1m_feature",
-        timeframe="1m",
-    )
+    required = _dataset_requirements(dataset_id)
+    raw_by_dataset: dict[str, Any] = {}
+    for dataset_type, timeframe in required:
+        raw_by_dataset[dataset_type] = _read_dataset_frame(
+            silver_root=silver_root,
+            exchange=exchange,
+            symbol=symbol,
+            dataset_type=dataset_type,
+            timeframe=timeframe,
+        )
 
-    spot = _prepare_spot_or_perp(pl, spot_raw, "spot", symbol)
-    perp = _prepare_spot_or_perp(pl, perp_raw, "perp", symbol)
-    oi = _prepare_oi(pl, oi_raw, symbol)
-    funding = _prepare_funding(pl, funding_raw, symbol)
-
+    prepared: list[Any] = []
+    if "spot" in raw_by_dataset:
+        prepared.append(_prepare_spot_or_perp(pl, raw_by_dataset["spot"], "spot", symbol))
+    if "perp" in raw_by_dataset:
+        prepared.append(_prepare_spot_or_perp(pl, raw_by_dataset["perp"], "perp", symbol))
+    if "oi_1m_feature" in raw_by_dataset:
+        prepared.append(_prepare_oi(pl, raw_by_dataset["oi_1m_feature"], symbol))
+    if "funding_1m_feature" in raw_by_dataset:
+        prepared.append(_prepare_funding(pl, raw_by_dataset["funding_1m_feature"], symbol))
+    if not prepared:
+        raise ValueError(f"No prepared datasets for symbol={symbol} dataset_id={dataset_id}")
     key_cols = ["timestamp_m1", "exchange", "symbol"]
-    merged = spot.join(perp, on=key_cols, how="full", coalesce=True)
-    merged = merged.join(oi, on=key_cols, how="full", coalesce=True)
-    merged = merged.join(funding, on=key_cols, how="full", coalesce=True)
+    merged = prepared[0]
+    for frame in prepared[1:]:
+        merged = merged.join(frame, on=key_cols, how="full", coalesce=True)
     merged = merged.sort("timestamp_m1")
 
     cols = merged.columns
     min_ts = merged.select(pl.col("timestamp_m1").min()).item()
     max_ts = merged.select(pl.col("timestamp_m1").max()).item()
-    manifest = {
+    source_silver_datasets: dict[str, dict[str, object]] = {}
+    for dataset_type, raw in raw_by_dataset.items():
+        source_key = f"{dataset_type}_1m" if dataset_type in {"spot", "perp"} else dataset_type
+        source_silver_datasets[source_key] = {
+            "columns": raw.columns,
+            "rows": raw.height,
+            "source_symbols": sorted(set(raw.get_column("symbol").cast(pl.Utf8).to_list())) if "symbol" in raw.columns else [],
+        }
+    source_data_hash = _json_payload_hash({"source_silver_datasets": source_silver_datasets})
+    contract_signature: dict[str, object] = {
+        "columns": cols,
+        "join_policy": "full_outer_coalesce",
+        "source_dataset_keys": sorted(source_silver_datasets.keys()),
+    }
+    feature_set_hash = _json_payload_hash(
+        {
+            "dataset_id": dataset_id,
+            "contract_signature": contract_signature,
+        }
+    )
+    git_hash = _git_commit_hash()
+    git_short = git_hash[:8] if git_hash != "nogit" else "nogit"
+    root = Path(gold_root)
+    root.mkdir(parents=True, exist_ok=True)
+    resolved_version = dataset_version
+    previous_version: str | None = None
+    version_bump_level = "manual"
+    version_bump_reason = "manual_version"
+    if auto_version:
+        _parse_semver(version_base)
+        previous_manifest = _latest_manifest_for_dataset(root, symbol, dataset_id)
+        if previous_manifest is None:
+            resolved_version = version_base
+            version_bump_level = "initial"
+            version_bump_reason = "no_previous_manifest"
+        else:
+            previous_version_value = previous_manifest.get("dataset_version")
+            previous_version = str(previous_version_value) if isinstance(previous_version_value, str) else version_base
+            _parse_semver(previous_version)
+            bump_level, bump_reason = _contract_bump_level(
+                previous_manifest,
+                contract_signature,
+                previous_source_data_hash=str(previous_manifest.get("source_data_hash", "")),
+                current_source_data_hash=source_data_hash,
+            )
+            resolved_version = _bump_semver(previous_version, bump_level)
+            version_bump_level = bump_level
+            version_bump_reason = bump_reason
+    else:
+        _parse_semver(dataset_version)
+
+    build_id = f"{feature_set_hash}_{source_data_hash}_{git_short}"
+
+    manifest_payload = {
         "dataset": "gold_symbol_dataset",
+        "dataset_id": dataset_id,
+        "dataset_version": resolved_version,
+        "feature_set_hash": feature_set_hash,
+        "source_data_hash": source_data_hash,
+        "git_commit_hash": git_hash,
+        "build_id": build_id,
+        "contract_signature": contract_signature,
+        "version_bump_level": version_bump_level,
+        "version_bump_reason": version_bump_reason,
+        "previous_version": previous_version,
         "exchange": exchange,
         "symbol": symbol,
         "build_date_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -436,54 +631,22 @@ def build_gold_for_symbol(
         "columns": cols,
         "min_timestamp": _iso_utc(min_ts if isinstance(min_ts, datetime) else None),
         "max_timestamp": _iso_utc(max_ts if isinstance(max_ts, datetime) else None),
-        "source_silver_datasets": {
-            "spot_1m": {
-                "columns": spot_raw.columns,
-                "rows": spot_raw.height,
-                "source_symbols": sorted(set(spot_raw.get_column("symbol").cast(pl.Utf8).to_list()))
-                if "symbol" in spot_raw.columns
-                else [],
-            },
-            "perp_1m": {
-                "columns": perp_raw.columns,
-                "rows": perp_raw.height,
-                "source_symbols": sorted(set(perp_raw.get_column("symbol").cast(pl.Utf8).to_list()))
-                if "symbol" in perp_raw.columns
-                else [],
-            },
-            "oi_1m_feature": {
-                "columns": oi_raw.columns,
-                "rows": oi_raw.height,
-                "source_symbols": sorted(set(oi_raw.get_column("symbol").cast(pl.Utf8).to_list()))
-                if "symbol" in oi_raw.columns
-                else [],
-            },
-            "funding_1m_feature": {
-                "columns": funding_raw.columns,
-                "rows": funding_raw.height,
-                "source_symbols": sorted(set(funding_raw.get_column("symbol").cast(pl.Utf8).to_list()))
-                if "symbol" in funding_raw.columns
-                else [],
-            },
-        },
+        "source_silver_datasets": source_silver_datasets,
         "feature_metadata": _feature_metadata(pl, merged, exchange),
     }
-    json_hash = _json_payload_hash(manifest)
-    git_hash = _git_commit_short()
-    hash_string = f"{json_hash}_{git_hash}"
-    root = Path(gold_root)
-    root.mkdir(parents=True, exist_ok=True)
-    parquet_path = root / f"{symbol}_{hash_string}.parquet"
+    hash_string = build_id
+    safe_dataset_id = dataset_id.replace(".", "-")
+    parquet_path = root / f"{symbol}_{safe_dataset_id}_{resolved_version}_{hash_string}.parquet"
     merged.write_parquet(parquet_path)
     written_plot: str | None = None
     if plot:
-        plot_path = root / f"{symbol}_{hash_string}.png"
+        plot_path = root / f"{symbol}_{safe_dataset_id}_{resolved_version}_{hash_string}.png"
         written_plot = _write_feature_distribution_plot(merged, plot_path)
     written_manifest: str | None = None
     if manifest:
-        manifest["plot_generated"] = written_plot is not None
-        manifest_path = root / f"{symbol}_{hash_string}.json"
-        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        manifest_payload["plot_generated"] = written_plot is not None
+        manifest_path = root / f"{symbol}_{safe_dataset_id}_{resolved_version}_{hash_string}.json"
+        manifest_path.write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
         written_manifest = str(manifest_path.resolve())
 
     return GoldBuildReport(
@@ -491,10 +654,18 @@ def build_gold_for_symbol(
         symbol=symbol,
         rows_out=merged.height,
         columns=cols,
-        min_timestamp=manifest["min_timestamp"],
-        max_timestamp=manifest["max_timestamp"],
+        min_timestamp=manifest_payload["min_timestamp"],
+        max_timestamp=manifest_payload["max_timestamp"],
         parquet_path=str(parquet_path.resolve()),
         manifest_path=written_manifest,
         plot_path=written_plot,
         hash_string=hash_string,
+        dataset_id=dataset_id,
+        dataset_version=resolved_version,
+        feature_set_hash=feature_set_hash,
+        source_data_hash=source_data_hash,
+        git_commit_hash=git_hash,
+        version_bump_level=version_bump_level,
+        version_bump_reason=version_bump_reason,
+        previous_version=previous_version,
     )

@@ -140,6 +140,8 @@ If repository path changes, recreate `.venv` so entrypoint shebangs stay valid.
 ### 6.3 Core Dependencies
 - `pyarrow`: parquet I/O
 - `pandas`, `numpy`: dataframe and numerical operations
+- `polars`: fast dataframe transformations for silver/gold workflows
+- `duckdb`: SQL analytics over parquet datasets
 
 ### 6.4 Tooling Dependencies
 - `ruff`: lint/style checks
@@ -273,27 +275,41 @@ Report fields include:
 ```bash
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL
+python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --dataset-id gold.market.full.m1 --dataset-version v1.0.0
+python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --dataset-id gold.market.full.m1 --auto-version --version-base v1.0.0
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL --manifest
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL --plot
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL --manifest --plot
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --no-json-output
 ```
 
+Default behavior: when `--dataset-id` is omitted, `gold-build` attempts all supported dataset variants and skips unavailable symbol/dataset combinations.
+
+Automatic versioning:
+- `--auto-version` enables semantic version bumping by comparing the current contract to the latest manifest for the same `dataset_id` + `symbol`.
+- `--version-base` is used when no prior manifest exists (initial release).
+- bump policy:
+  - `major`: breaking contract change (removed/renamed columns, join policy/source dataset removals, incompatible column-order change)
+  - `minor`: additive contract change (new columns/source datasets)
+  - `patch`: same contract, changed source data
+  - `none`: no contract/data change
+
 ### 11.2 Gold Output Contract
 
 For each base-asset symbol (`BTC`, `ETH`, `SOL`), gold writes:
 
 ```text
-lake/gold/<symbol>_<jsonhash_gitcommithash>.parquet
-lake/gold/<symbol>_<jsonhash_gitcommithash>.json
-lake/gold/<symbol>_<jsonhash_gitcommithash>.png
+lake/gold/<symbol>_<datasetid>_<datasetversion>_<featuresethash>_<sourcedatahash>_<gitshort>.parquet
+lake/gold/<symbol>_<datasetid>_<datasetversion>_<featuresethash>_<sourcedatahash>_<gitshort>.json
+lake/gold/<symbol>_<datasetid>_<datasetversion>_<featuresethash>_<sourcedatahash>_<gitshort>.png
 ```
 
 The `.json` artifact is generated only when `--manifest` is provided.
 The `.png` artifact is generated only when `--plot` is provided.
 
-`jsonhash` is derived from the canonical gold JSON metadata payload.
-`gitcommithash` is resolved via `git rev-parse --short HEAD` (fallback: `nogit`).
+`featuresethash` is derived from dataset contract inputs (dataset id/version, columns, join policy).
+`sourcedatahash` is derived from source silver dataset summaries.
+`gitshort` is resolved from `git rev-parse HEAD` (first 8 chars, fallback: `nogit`).
 The PNG plot is generated with the same basename and contains all numeric features as rows:
 - left panel (80% width): feature line plot with metadata legend
 - right panel (20% width): feature distribution histogram
@@ -305,7 +321,8 @@ Each symbol parquet is built by combining silver datasets:
 - `funding_1m_feature` (`timeframe=1m`)
 
 The JSON metadata file contains dataset-level and feature-level metadata, including:
-- hash string, build timestamp (UTC), row/column stats and timestamp bounds
+- dataset id/version + build provenance: `feature_set_hash`, `source_data_hash`, `git_commit_hash`, `build_id`
+- build timestamp (UTC), row/column stats and timestamp bounds
 - source silver dataset summaries (columns, row counts, source symbols)
 - per-feature metadata (`dtype`, null counts, and numeric distribution stats such as mean/std/min/max)
 - no filesystem paths are stored in the JSON
