@@ -42,6 +42,8 @@ silver-build:
     - oi
     - funding
   timeframe: 1m
+  manifest: false
+  plot: false
   no_json_output: false
 
 gold-build:
@@ -52,6 +54,7 @@ gold-build:
     - BTC
     - ETH
     - SOL
+  manifest: false
   plot: false
   no_json_output: false
 

@@ -30,8 +30,7 @@ def _write_silver_month(
         / f"exchange={exchange}"
         / f"symbol={symbol}"
         / f"timeframe={timeframe}"
-        / f"month={month}"
-        / "data.parquet"
+        / f"{symbol}_{month.replace('-', '_')}.parquet"
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(rows).write_parquet(target)
@@ -101,6 +100,7 @@ def test_build_gold_for_symbol_writes_hashed_parquet_and_manifest(tmp_path: Path
         gold_root=str(gold),
         exchange=exchange,
         symbol=symbol,
+        manifest=True,
     )
 
     parquet_name = Path(report.parquet_path).name
@@ -162,3 +162,4 @@ def test_build_gold_for_symbol_normalizes_input_symbol(tmp_path: Path) -> None:
         symbol="btc_perpetual",
     )
     assert Path(report.parquet_path).parent == gold
+    assert report.manifest_path is None

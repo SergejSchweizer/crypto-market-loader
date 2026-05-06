@@ -209,36 +209,41 @@ dataset_type=funding/
 
 ```bash
 python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp oi funding --timeframe 1m
+python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp oi funding --timeframe 1m --plot
 ```
 
 ### 9.2 Silver Output Layout (Monthly)
 
 ```text
 dataset_type=<spot|perp>/
-  exchange=<exchange>/symbol=<symbol>/timeframe=1m/month=<YYYY-MM>/data.parquet
+  exchange=<exchange>/symbol=<symbol>/timeframe=1m/year=<YYYY>/month=<YYYY-MM>/<SYMBOL>-<YYYY-MM>.parquet
 
 dataset_type=funding_observed/
-  exchange=<exchange>/symbol=<symbol>/timeframe=8h/month=<YYYY-MM>/data.parquet
+  exchange=<exchange>/symbol=<symbol>/timeframe=8h/year=<YYYY>/month=<YYYY-MM>/<SYMBOL>-<YYYY-MM>.parquet
 
 dataset_type=funding_1m_feature/
-  exchange=<exchange>/symbol=<symbol>/timeframe=1m/month=<YYYY-MM>/data.parquet
+  exchange=<exchange>/symbol=<symbol>/timeframe=1m/year=<YYYY>/month=<YYYY-MM>/<SYMBOL>-<YYYY-MM>.parquet
 
 dataset_type=oi_observed/
-  exchange=<exchange>/symbol=<symbol>/timeframe=1m/month=<YYYY-MM>/data.parquet
+  exchange=<exchange>/symbol=<symbol>/timeframe=1m/year=<YYYY>/month=<YYYY-MM>/<SYMBOL>-<YYYY-MM>.parquet
 
 dataset_type=oi_1m_feature/
-  exchange=<exchange>/symbol=<symbol>/timeframe=1m/month=<YYYY-MM>/data.parquet
+  exchange=<exchange>/symbol=<symbol>/timeframe=1m/year=<YYYY>/month=<YYYY-MM>/<SYMBOL>-<YYYY-MM>.parquet
 ```
 
-### 9.3 Symbol Report (Full Processed Period)
+### 9.3 Silver Sidecars
 
-Each `silver-build` run writes one aggregated manifest per symbol:
+Silver does not write `silver/reports/...` aggregated report artifacts.  
+When `--manifest` is provided, silver writes per-month manifest sidecars next to each monthly parquet:
 
 ```text
-silver/reports/dataset_type=<spot|perp>/exchange=<exchange>/symbol=<symbol>/timeframe=1m/manifest.json
-silver/reports/dataset_type=funding_observed/exchange=<exchange>/symbol=<symbol>/timeframe=8h/manifest.json
-silver/reports/dataset_type=funding_1m_feature/exchange=<exchange>/symbol=<symbol>/timeframe=1m/manifest.json
-silver/reports/dataset_type=<oi_observed|oi_1m_feature>/exchange=<exchange>/symbol=<symbol>/timeframe=1m/manifest.json
+.../<SYMBOL>-<YYYY-MM>.json
+```
+
+When `--plot` is provided, silver writes per-month plot sidecars:
+
+```text
+.../<SYMBOL>-<YYYY-MM>.png
 ```
 
 Report fields include:
@@ -268,7 +273,9 @@ Report fields include:
 ```bash
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL
+python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL --manifest
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL --plot
+python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL --manifest --plot
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --no-json-output
 ```
 
@@ -282,6 +289,7 @@ lake/gold/<symbol>_<jsonhash_gitcommithash>.json
 lake/gold/<symbol>_<jsonhash_gitcommithash>.png
 ```
 
+The `.json` artifact is generated only when `--manifest` is provided.
 The `.png` artifact is generated only when `--plot` is provided.
 
 `jsonhash` is derived from the canonical gold JSON metadata payload.
@@ -359,11 +367,14 @@ silver-build:
   bronze_root: lake/bronze
   silver_root: lake/silver
   market: [spot, perp, oi, funding]
+  manifest: false
+  plot: false
 
 gold-build:
   silver_root: lake/silver
   gold_root: lake/gold
   symbols: [BTC, ETH]
+  manifest: false
   plot: true
   no_json_output: false
 

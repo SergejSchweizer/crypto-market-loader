@@ -8,6 +8,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from application.services.gold_service import _feature_hash, _feature_metadata, _write_feature_distribution_plot
+
 
 def _require_polars() -> Any:
     try:
@@ -135,14 +137,17 @@ def _silver_month_path(
     timeframe: str,
     month: str,
 ) -> Path:
+    year = month.split("-", 1)[0]
+    stem = f"{symbol}-{month}"
     return (
         Path(silver_root)
         / f"dataset_type={market}"
         / f"exchange={exchange}"
         / f"symbol={symbol}"
         / f"timeframe={timeframe}"
+        / f"year={year}"
         / f"month={month}"
-        / "data.parquet"
+        / f"{stem}.parquet"
     )
 
 
@@ -152,14 +157,17 @@ def _silver_funding_feature_month_path(
     symbol: str,
     month: str,
 ) -> Path:
+    year = month.split("-", 1)[0]
+    stem = f"{symbol}-{month}"
     return (
         Path(silver_root)
         / "dataset_type=funding_1m_feature"
         / f"exchange={exchange}"
         / f"symbol={symbol}"
         / "timeframe=1m"
+        / f"year={year}"
         / f"month={month}"
-        / "data.parquet"
+        / f"{stem}.parquet"
     )
 
 
@@ -169,14 +177,17 @@ def _silver_oi_feature_month_path(
     symbol: str,
     month: str,
 ) -> Path:
+    year = month.split("-", 1)[0]
+    stem = f"{symbol}-{month}"
     return (
         Path(silver_root)
         / "dataset_type=oi_1m_feature"
         / f"exchange={exchange}"
         / f"symbol={symbol}"
         / "timeframe=1m"
+        / f"year={year}"
         / f"month={month}"
-        / "data.parquet"
+        / f"{stem}.parquet"
     )
 
 
@@ -266,6 +277,24 @@ def _iso_utc(value: datetime | None) -> str | None:
     if value is None:
         return None
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _write_silver_plot(frame: Any, output_path: Path) -> str | None:
+    pl = _require_polars()
+    ts_col = next((candidate for candidate in ("timestamp_m1", "open_time", "timestamp") if candidate in frame.columns), None)
+    if ts_col is None:
+        return None
+    if ts_col != "timestamp_m1":
+        frame = frame.with_columns(pl.col(ts_col).alias("timestamp_m1"))
+    return _write_feature_distribution_plot(frame, output_path)
+
+
+def _with_timestamp_m1(frame: Any) -> Any:
+    pl = _require_polars()
+    ts_col = next((candidate for candidate in ("timestamp_m1", "open_time", "timestamp") if candidate in frame.columns), None)
+    if ts_col is None or ts_col == "timestamp_m1":
+        return frame
+    return frame.with_columns(pl.col(ts_col).alias("timestamp_m1"))
 
 
 def _normalize_symbol_expr(pl: Any, col_name: str = "symbol") -> Any:
@@ -563,7 +592,7 @@ def build_funding_1m_feature_for_symbol(
     months = sorted(
         {
             path.parent.name.split("=", 1)[1]
-            for path in observed_root.glob("month=*/data.parquet")
+            for path in observed_root.glob("year=*/month=*/*.parquet")
             if path.parent.name.startswith("month=")
         }
     )
@@ -573,7 +602,8 @@ def build_funding_1m_feature_for_symbol(
     max_timestamp: datetime | None = None
 
     for month in months:
-        month_file = observed_root / f"month={month}" / "data.parquet"
+        year = month.split("-", 1)[0]
+        month_file = observed_root / f"year={year}" / f"month={month}" / f"{symbol}-{month}.parquet"
         if not month_file.exists():
             continue
         observed = pl.read_parquet(month_file).sort("funding_time")
@@ -841,7 +871,7 @@ def build_oi_1m_feature_for_symbol(
     months = sorted(
         {
             path.parent.name.split("=", 1)[1]
-            for path in observed_root.glob("month=*/data.parquet")
+            for path in observed_root.glob("year=*/month=*/*.parquet")
             if path.parent.name.startswith("month=")
         }
     )
@@ -851,7 +881,8 @@ def build_oi_1m_feature_for_symbol(
     max_timestamp: datetime | None = None
 
     for month in months:
-        month_file = observed_root / f"month={month}" / "data.parquet"
+        year = month.split("-", 1)[0]
+        month_file = observed_root / f"year={year}" / f"month={month}" / f"{symbol}-{month}.parquet"
         if not month_file.exists():
             continue
         observed = pl.read_parquet(month_file).sort("timestamp")
@@ -980,3 +1011,77 @@ def write_symbol_report(*, silver_root: str, market: str, exchange: str, symbol:
     target.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
     return str(target.resolve())
 
+
+def write_monthly_sidecars(
+    *,
+    silver_root: str,
+    market: str,
+    exchange: str,
+    symbol: str,
+    report: SilverBuildReport,
+    write_manifest: bool = True,
+    plot: bool = False,
+) -> tuple[list[str], list[str]]:
+    """Write per-month manifest and plot sidecars next to silver monthly parquet files."""
+
+    pl = _require_polars()
+    base_root = (
+        Path(silver_root)
+        / f"dataset_type={market}"
+        / f"exchange={exchange}"
+        / f"symbol={symbol}"
+        / f"timeframe={report.timeframe}"
+    )
+    manifest_paths: list[str] = []
+    plot_paths: list[str] = []
+
+    for month in report.months_processed:
+        year = month.split("-", 1)[0]
+        stem = f"{symbol}-{month}"
+        parquet_path = base_root / f"year={year}" / f"month={month}" / f"{stem}.parquet"
+        if not parquet_path.exists():
+            continue
+        frame = pl.read_parquet(parquet_path)
+        frame_for_gold = _with_timestamp_m1(frame)
+        plotted: str | None = None
+
+        if plot:
+            plotted = _write_silver_plot(frame_for_gold, parquet_path.with_suffix(".png"))
+            if plotted is not None:
+                plot_paths.append(plotted)
+
+        if write_manifest:
+            min_ts: datetime | None = None
+            max_ts: datetime | None = None
+            if "timestamp_m1" in frame_for_gold.columns and frame_for_gold.height > 0:
+                min_v = frame_for_gold.select(pl.col("timestamp_m1").min()).item()
+                max_v = frame_for_gold.select(pl.col("timestamp_m1").max()).item()
+                min_ts = min_v if isinstance(min_v, datetime) else None
+                max_ts = max_v if isinstance(max_v, datetime) else None
+            payload = {
+                "dataset": report.dataset,
+                "exchange": report.exchange,
+                "symbol": report.symbol,
+                "build_date_utc": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                "column_hash": _feature_hash(frame.columns),
+                "rows_out": frame.height,
+                "columns": frame.columns,
+                "min_timestamp": _iso_utc(min_ts),
+                "max_timestamp": _iso_utc(max_ts),
+                "source_silver_datasets": {
+                    report.dataset: {
+                        "columns": frame.columns,
+                        "rows": frame.height,
+                        "source_symbols": sorted(set(frame.get_column("symbol").cast(pl.Utf8).to_list()))
+                        if "symbol" in frame.columns
+                        else [report.symbol],
+                    }
+                },
+                "feature_metadata": _feature_metadata(pl, frame_for_gold, report.exchange),
+                "plot_generated": plotted is not None,
+            }
+            manifest_path = parquet_path.with_suffix(".json")
+            manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            manifest_paths.append(str(manifest_path.resolve()))
+
+    return manifest_paths, plot_paths

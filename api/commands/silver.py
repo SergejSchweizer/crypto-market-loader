@@ -15,7 +15,7 @@ from application.services.silver_service import (
     build_funding_observed_for_symbol,
     build_silver_for_symbol,
     discover_symbols,
-    write_symbol_report,
+    write_monthly_sidecars,
 )
 from ingestion.funding import DERIBIT_FUNDING_NATIVE_INTERVAL
 
@@ -35,6 +35,8 @@ def add_silver_build_parser(subparsers: argparse._SubParsersAction[argparse.Argu
     )
     parser.add_argument("--symbols", nargs="+", help="Optional symbol list; auto-discovered when omitted")
     parser.add_argument("--timeframe", default="1m", help="Timeframe to process (default: 1m)")
+    parser.add_argument("--manifest", action="store_true", help="Generate monthly silver manifest sidecars")
+    parser.add_argument("--plot", action="store_true", help="Generate monthly silver plot PNG sidecars")
     parser.add_argument("--no-json-output", action="store_true", help="Suppress JSON output")
 
 
@@ -48,15 +50,29 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
     reports: list[dict[str, object]] = []
 
     def _append_report(report_market: str, symbol_value: str, report: SilverBuildReport) -> None:
-        report_path = write_symbol_report(
-            silver_root=silver_root,
-            market=report_market,
-            exchange=exchange,
-            symbol=symbol_value,
-            report=report,
-        )
+        manifest_path: str | None = None
+        manifest_paths: list[str] = []
+        plot_path: str | None = None
+        plot_paths: list[str] = []
+        want_manifest = bool(getattr(args, "manifest", False))
+        want_plot = bool(getattr(args, "plot", False))
+        if want_manifest or want_plot:
+            manifest_paths, plot_paths = write_monthly_sidecars(
+                silver_root=silver_root,
+                market=report_market,
+                exchange=exchange,
+                symbol=symbol_value,
+                report=report,
+                write_manifest=want_manifest,
+                plot=want_plot,
+            )
+            manifest_path = manifest_paths[0] if manifest_paths else None
+            plot_path = plot_paths[0] if plot_paths else None
         report_dict = report.to_dict()
-        report_dict["report_path"] = report_path
+        report_dict["manifest_path"] = manifest_path
+        report_dict["manifest_paths"] = manifest_paths
+        report_dict["plot_path"] = plot_path
+        report_dict["plot_paths"] = plot_paths
         reports.append(report_dict)
 
     for market in cast(list[str], args.market):
@@ -130,12 +146,11 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 )
                 _append_report(market, symbol, report)
                 logger.info(
-                    "Silver report written market=%s symbol=%s rows_in=%s rows_out=%s path=%s",
+                    "Silver dataset built market=%s symbol=%s rows_in=%s rows_out=%s",
                     market,
                     symbol,
                     report.rows_in,
                     report.rows_out,
-                    reports[-1]["report_path"],
                 )
 
     if not bool(args.no_json_output):

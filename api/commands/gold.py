@@ -18,6 +18,7 @@ def add_gold_build_parser(subparsers: argparse._SubParsersAction[argparse.Argume
     parser.add_argument("--gold-root", default="lake/gold", help="Gold lake root")
     parser.add_argument("--exchange", choices=["deribit"], default="deribit")
     parser.add_argument("--symbols", nargs="+", help="Optional symbol list; auto-discovered when omitted")
+    parser.add_argument("--manifest", action="store_true", help="Generate gold manifest JSON")
     parser.add_argument("--plot", action="store_true", help="Generate gold feature distribution plot PNG")
     parser.add_argument("--no-json-output", action="store_true", help="Suppress JSON output")
 
@@ -43,6 +44,7 @@ def run_gold_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             gold_root=gold_root,
             exchange=exchange,
             symbol=symbol,
+            manifest=bool(getattr(args, "manifest", False)),
             plot=bool(getattr(args, "plot", False)),
         )
         reports.append(report.to_dict())

@@ -17,6 +17,7 @@ from application.services.silver_service import (
     build_silver_for_symbol,
     discover_months,
     discover_symbols,
+    write_monthly_sidecars,
     write_symbol_report,
 )
 
@@ -173,8 +174,9 @@ def test_build_silver_for_symbol_writes_monthly_parquet_and_aggregated_report(tm
         / "exchange=deribit"
         / f"symbol={symbol}"
         / "timeframe=1m"
+        / "year=2026"
         / "month=2026-05"
-        / "data.parquet"
+        / f"{symbol}-2026-05.parquet"
     )
     assert silver_file.exists()
     written = pl.read_parquet(silver_file)
@@ -191,6 +193,27 @@ def test_build_silver_for_symbol_writes_monthly_parquet_and_aggregated_report(tm
     assert payload["rows_out"] == 2
     assert payload["dataset"] == "perp_1m"
     assert "columns" in payload
+
+    manifest_paths, plot_paths = write_monthly_sidecars(
+        silver_root=str(silver),
+        market="perp",
+        exchange="deribit",
+        symbol=symbol,
+        report=report,
+        write_manifest=True,
+        plot=False,
+    )
+    assert len(manifest_paths) == 1
+    assert plot_paths == []
+    monthly_manifest_path = Path(manifest_paths[0])
+    assert monthly_manifest_path.exists()
+    assert monthly_manifest_path.name == f"{symbol}-2026-05.json"
+    monthly_payload = json.loads(monthly_manifest_path.read_text(encoding="utf-8"))
+    assert monthly_payload["dataset"] == "perp_1m"
+    assert "column_hash" in monthly_payload
+    assert "source_silver_datasets" in monthly_payload
+    assert "feature_metadata" in monthly_payload
+    assert "plot_generated" in monthly_payload
 
 
 def test_build_funding_observed_and_1m_feature(tmp_path: Path) -> None:
@@ -290,8 +313,9 @@ def test_build_funding_observed_and_1m_feature(tmp_path: Path) -> None:
         / "exchange=deribit"
         / f"symbol={symbol}"
         / "timeframe=1m"
+        / "year=2026"
         / "month=2026-05"
-        / "data.parquet"
+        / f"{symbol}-2026-05.parquet"
     )
     assert feature_file.exists()
     feature = pl.read_parquet(feature_file)
@@ -445,8 +469,9 @@ def test_build_oi_observed_and_1m_feature(tmp_path: Path) -> None:
         / "exchange=deribit"
         / "symbol=BTC-PERPETUAL"
         / "timeframe=1m"
+        / "year=2026"
         / "month=2026-05"
-        / "data.parquet"
+        / "BTC-PERPETUAL-2026-05.parquet"
     )
     observed = pl.read_parquet(observed_file)
     assert observed["symbol"].to_list() == ["BTC-PERPETUAL", "BTC-PERPETUAL"]
@@ -457,8 +482,9 @@ def test_build_oi_observed_and_1m_feature(tmp_path: Path) -> None:
         / "exchange=deribit"
         / "symbol=BTC-PERPETUAL"
         / "timeframe=1m"
+        / "year=2026"
         / "month=2026-05"
-        / "data.parquet"
+        / "BTC-PERPETUAL-2026-05.parquet"
     )
     feature = pl.read_parquet(feature_file)
     minute_0 = feature.filter(pl.col("timestamp_m1") == datetime(2026, 5, 1, 0, 0, tzinfo=UTC))
@@ -470,4 +496,3 @@ def test_build_oi_observed_and_1m_feature(tmp_path: Path) -> None:
     assert minute_1.select("oi_is_ffill").item() is True
     assert minute_1.select("minutes_since_oi_observation").item() == 1
     assert minute_2.select("oi_is_observed").item() is True
-

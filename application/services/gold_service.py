@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+MAX_PLOT_POINTS = 3_000
+
 
 def _require_polars() -> Any:
     try:
@@ -30,7 +32,7 @@ class GoldBuildReport:
     min_timestamp: str | None
     max_timestamp: str | None
     parquet_path: str
-    manifest_path: str
+    manifest_path: str | None
     plot_path: str | None
     hash_string: str
 
@@ -122,7 +124,7 @@ def _read_dataset_frame(
         raw_symbol = sym_segment.split("=", 1)[1]
         if normalize_symbol(raw_symbol) != symbol:
             continue
-        files.extend(sorted(sym_dir.glob("month=*/data.parquet")))
+        files.extend(sorted(sym_dir.glob(f"{raw_symbol}_*.parquet")))
     if not files:
         raise ValueError(f"Missing silver dataset for symbol={symbol}: {dataset_type}")
     frame = pl.read_parquet([str(path) for path in files])
@@ -217,6 +219,20 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
         import matplotlib.pyplot as plt
     except ImportError:
         return None
+
+    if "timestamp_m1" in frame.columns and frame.height > MAX_PLOT_POINTS:
+        # Evenly sample across the full time range so the plot represents the whole series.
+        step = (frame.height - 1) / float(MAX_PLOT_POINTS - 1)
+        indices = [int(round(i * step)) for i in range(MAX_PLOT_POINTS)]
+        indices[0] = 0
+        indices[-1] = frame.height - 1
+        seen: set[int] = set()
+        deduped_indices: list[int] = []
+        for idx in indices:
+            if idx not in seen:
+                seen.add(idx)
+                deduped_indices.append(idx)
+        frame = frame.take(deduped_indices)
 
     numeric_cols = [col for col, dtype in zip(frame.columns, frame.dtypes, strict=False) if dtype.is_numeric()]
     if not numeric_cols:
@@ -360,6 +376,7 @@ def build_gold_for_symbol(
     gold_root: str,
     exchange: str,
     symbol: str,
+    manifest: bool = False,
     plot: bool = False,
 ) -> GoldBuildReport:
     """Build one gold parquet dataset + manifest for a symbol."""
@@ -462,9 +479,12 @@ def build_gold_for_symbol(
     if plot:
         plot_path = root / f"{symbol}_{hash_string}.png"
         written_plot = _write_feature_distribution_plot(merged, plot_path)
-    manifest["plot_generated"] = written_plot is not None
-    manifest_path = root / f"{symbol}_{hash_string}.json"
-    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+    written_manifest: str | None = None
+    if manifest:
+        manifest["plot_generated"] = written_plot is not None
+        manifest_path = root / f"{symbol}_{hash_string}.json"
+        manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+        written_manifest = str(manifest_path.resolve())
 
     return GoldBuildReport(
         exchange=exchange,
@@ -474,7 +494,7 @@ def build_gold_for_symbol(
         min_timestamp=manifest["min_timestamp"],
         max_timestamp=manifest["max_timestamp"],
         parquet_path=str(parquet_path.resolve()),
-        manifest_path=str(manifest_path.resolve()),
+        manifest_path=written_manifest,
         plot_path=written_plot,
         hash_string=hash_string,
     )

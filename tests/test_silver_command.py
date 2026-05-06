@@ -47,7 +47,7 @@ def test_run_silver_build_uses_native_funding_timeframe_for_symbol_discovery(
         "build_oi_1m_feature_for_symbol",
         lambda **kwargs: _report("oi_1m_feature"),
     )
-    monkeypatch.setattr(silver_cmd, "write_symbol_report", lambda **kwargs: "/tmp/report.json")
+    monkeypatch.setattr(silver_cmd, "write_monthly_sidecars", lambda **kwargs: ([], []))
 
     args = argparse.Namespace(
         bronze_root="lake/bronze",
@@ -56,6 +56,8 @@ def test_run_silver_build_uses_native_funding_timeframe_for_symbol_discovery(
         market=["funding"],
         symbols=None,
         timeframe="1m",
+        manifest=False,
+        plot=False,
         no_json_output=True,
     )
     silver_cmd.run_silver_build(args=args, logger=logging.getLogger("test"))
