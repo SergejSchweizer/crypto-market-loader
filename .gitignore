@@ -21,12 +21,6 @@
 !application/**
 !ingestion/
 !ingestion/**
-!preprocessing/
-!preprocessing/**
-!modeling/
-!modeling/**
-!evaluation/
-!evaluation/**
 !infra/
 !infra/**
 !tests/
@@ -35,10 +29,6 @@
 # Documentation and figures.
 !docs/
 !docs/**
-
-# Keep generated sample artifacts.
-!samples/
-!samples/**
 
 # Explicitly ignore local-only runtime/build/cache artifacts.
 .venv/

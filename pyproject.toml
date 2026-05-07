@@ -35,9 +35,6 @@ include = [
   "ingestion*",
   "api*",
   "infra*",
-  "preprocessing*",
-  "modeling*",
-  "evaluation*",
 ]
 exclude = ["tests*", "notebooks*"]
 

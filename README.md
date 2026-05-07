@@ -202,6 +202,25 @@ Gold dataset feature matrix:
 | `gold.market.full.m1` | `spot`, `perp`, `oi_1m_feature`, `funding_1m_feature` | core + `oi_open_interest`, `oi_is_observed`, `oi_is_ffill`, `minutes_since_oi_observation`, `oi_observation_lag_sec` + funding features |
 | `gold.hybrid.full_l2.m1` | `spot`, `perp`, `oi_1m_feature`, `funding_1m_feature`, latest L2 | full-market features + all L2 columns prefixed with `l2_` (for example `l2_snapshot_count`, `l2_coverage_ratio`) |
 
+### High-Importance Inputs For Market-Neutral (Self-Financing) Strategies
+
+Recommended primary dataset:
+- `gold.market.full.m1` (or `gold.hybrid.full_l2.m1` when reliable L2 is available)
+
+High-importance feature groups:
+- Relative-value spread basis:
+  `perp_close - spot_close` (and normalized variants such as ratio/z-score).
+- Funding carry state:
+  `funding_rate_last_known`, `minutes_since_funding`, `is_funding_observation_minute`, `funding_data_available`.
+- Positioning/crowding pressure:
+  `oi_open_interest`, `oi_is_observed`, `oi_is_ffill`, `minutes_since_oi_observation`, `oi_observation_lag_sec`.
+- Liquidity/execution context:
+  `spot_volume`, `perp_volume` (and, for hybrid dataset, `l2_snapshot_count`, `l2_coverage_ratio` and other `l2_` features).
+
+Practical note:
+- For self-financing market-neutral designs, build signals from cross-market relationships
+  (spot vs perp spread/carry/positioning) rather than absolute directional price level.
+
 Gold artifacts:
 
 ```text

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import fcntl
-import logging
 import sys
 from datetime import UTC, datetime
 from pathlib import Path
@@ -14,7 +13,6 @@ import pytest
 
 from api import cli
 from api.cli import SingleInstanceError, SingleInstanceLock
-from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import SpotCandle
 
 
@@ -188,7 +186,6 @@ def test_main_loader_randomizes_symbol_schedule(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(cli.loader_cmd, "_items_in_random_order", fake_random_order)
     monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
     monkeypatch.setattr(cli, "fetch_candles_all_history", fake_fetch_candles_all_history)
-    monkeypatch.setattr(cli, "_write_loader_samples", lambda **kwargs: None)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -232,7 +229,6 @@ def test_main_bronze_ingest_command_uses_loader_runtime(monkeypatch: pytest.Monk
     monkeypatch.setattr(cli, "SingleInstanceLock", NoopLock)
     monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
     monkeypatch.setattr(cli, "fetch_candles_all_history", fake_fetch_candles_all_history)
-    monkeypatch.setattr(cli, "_write_loader_samples", lambda **kwargs: None)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -278,7 +274,6 @@ def test_main_loader_randomizes_market_schedule(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(cli.loader_cmd, "_items_in_random_order", fake_random_order)
     monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
     monkeypatch.setattr(cli, "fetch_candles_all_history", fake_fetch_candles_all_history)
-    monkeypatch.setattr(cli, "_write_loader_samples", lambda **kwargs: None)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -343,7 +338,6 @@ def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.Mon
     monkeypatch.setattr(cli.loader_cmd, "_fetch_candle_tasks_parallel", fake_fetch_candle_tasks_parallel)
     monkeypatch.setattr(cli.loader_cmd, "_fetch_open_interest_tasks_parallel", fake_fetch_open_interest_tasks_parallel)
     monkeypatch.setattr(cli.loader_cmd, "_fetch_funding_tasks_parallel", fake_fetch_funding_tasks_parallel)
-    monkeypatch.setattr(cli, "_write_loader_samples", lambda **kwargs: None)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -365,47 +359,6 @@ def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.Mon
     cli.main()
 
     assert {"funding", "oi", "perp", "spot"}.issubset(set(scheduled_groups))
-
-
-def test_write_loader_samples_does_not_write_csv_or_parquet_without_plots(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    monkeypatch.chdir(tmp_path)
-    candle = SpotCandle(
-        exchange="deribit",
-        symbol="BTCUSDT",
-        interval="1m",
-        open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
-        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
-        open_price=100.0,
-        high_price=101.0,
-        low_price=99.0,
-        close_price=100.5,
-        volume=10.0,
-        quote_volume=1000.0,
-        trade_count=10,
-    )
-    oi_point = OpenInterestPoint(
-        exchange="deribit",
-        symbol="BTCUSDT",
-        interval="1m",
-        open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
-        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
-        open_interest=123.0,
-        open_interest_value=456.0,
-    )
-
-    cli._write_loader_samples(
-        candles_for_storage={"spot": {"deribit": {"BTCUSDT": [candle]}}},
-        open_interest_for_storage={"perp": {"deribit": {"BTCUSDT": [oi_point]}}},
-        logger=logging.getLogger("test_loader_samples"),
-    )
-
-    sample_files = {path.name for path in (tmp_path / "samples").glob("*")}
-    assert sample_files == set()
-    assert not any(path.suffix == ".png" for path in (tmp_path / "samples").glob("*"))
-    assert not any(path.suffix == ".parquet" for path in (tmp_path / "samples").glob("*"))
 
 
 def test_export_descriptive_stats_writes_csv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

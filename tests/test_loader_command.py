@@ -76,7 +76,6 @@ def test_run_bronze_build_emits_manifest_and_plot_file_lists(
         lambda **kwargs: PersistResultDTO([str(parquet_path)]),
     )
     monkeypatch.setattr(loader_cmd, "ensure_bronze_sidecars", lambda **kwargs: [])
-    monkeypatch.setattr(loader_cmd, "_write_loader_samples", lambda **kwargs: None)
 
     args = argparse.Namespace(
         exchange="deribit",
@@ -117,3 +116,29 @@ def test_parse_exchange_symbol_start_dates_parses_canonical_pairs() -> None:
     parsed = loader_cmd._parse_exchange_symbol_start_dates(["deribit:BTCUSDT=2023-04-24", "DERIBIT:SOL=2024-02-27"])
     assert parsed["deribit:BTC"] == int(datetime(2023, 4, 24, 0, 0, tzinfo=UTC).timestamp() * 1000)
     assert parsed["deribit:SOL"] == int(datetime(2024, 2, 27, 0, 0, tzinfo=UTC).timestamp() * 1000)
+
+
+def test_configure_bronze_start_bounds_sets_globals() -> None:
+    args = argparse.Namespace(
+        start_date=None,
+        symbol_start_dates=["BTC=2023-04-24"],
+        exchange_symbol_start_dates=["deribit:SOL=2024-02-27"],
+    )
+    logger = logging.getLogger("test_bronze_bounds")
+
+    original_global = loader_cmd._BRONZE_START_OPEN_MS
+    original_symbol = dict(loader_cmd._BRONZE_SYMBOL_START_OPEN_MS)
+    original_exchange_symbol = dict(loader_cmd._BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS)
+    try:
+        loader_cmd._configure_bronze_start_bounds(args=args, logger=logger)
+        assert loader_cmd._BRONZE_START_OPEN_MS is None
+        assert loader_cmd._BRONZE_SYMBOL_START_OPEN_MS["BTC"] == int(
+            datetime(2023, 4, 24, 0, 0, tzinfo=UTC).timestamp() * 1000
+        )
+        assert loader_cmd._BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS["deribit:SOL"] == int(
+            datetime(2024, 2, 27, 0, 0, tzinfo=UTC).timestamp() * 1000
+        )
+    finally:
+        loader_cmd._BRONZE_START_OPEN_MS = original_global
+        loader_cmd._BRONZE_SYMBOL_START_OPEN_MS = original_symbol
+        loader_cmd._BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS = original_exchange_symbol

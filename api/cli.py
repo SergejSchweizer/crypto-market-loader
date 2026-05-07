@@ -74,10 +74,6 @@ def _fetch_symbol_candles(
     )
 
 
-def _write_loader_samples(*args: Any, **kwargs: Any) -> None:
-    loader_cmd._write_loader_samples(*args, **kwargs)
-
-
 def _sync_loader_runtime_overrides() -> None:
     """Mirror runtime symbols into loader module to preserve monkeypatch behavior."""
 

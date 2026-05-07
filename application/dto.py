@@ -151,16 +151,3 @@ class PersistResultDTO:
             output["_parquet_files"] = self.parquet_files
         return output
 
-
-@dataclass(frozen=True)
-class ArtifactOptionsDTO:
-    """Controls artifact generation behavior.
-
-    Example:
-        ```python
-        options = ArtifactOptionsDTO(generate_plots=True)
-        ```
-    """
-
-    generate_plots: bool = True
-    sample_layer: str = "bronze"

@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Literal, TypeVar, cast
 
 from application.dto import (
-    ArtifactOptionsDTO,
     CandleFetchTaskDTO,
     FundingFetchTaskDTO,
     LoaderStorageDTO,
@@ -21,7 +20,6 @@ from application.dto import (
     PersistOptionsDTO,
 )
 from application.schema import dataset_contract
-from application.services.artifact_service import write_loader_samples_dto
 from application.services.fetch_service import (
     fetch_candle_tasks_parallel,
     fetch_funding_tasks_parallel,
@@ -379,6 +377,32 @@ def _symbol_start_open_ms_bound(exchange: Exchange, symbol: str) -> int | None:
     return _BRONZE_SYMBOL_START_OPEN_MS.get(symbol_key, _BRONZE_START_OPEN_MS)
 
 
+def _configure_bronze_start_bounds(args: argparse.Namespace, logger: logging.Logger) -> None:
+    """Initialize Bronze start-bound globals from CLI/config args and emit boundary logs."""
+
+    global _BRONZE_START_OPEN_MS, _BRONZE_SYMBOL_START_OPEN_MS, _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS
+    _BRONZE_START_OPEN_MS = _parse_start_date_to_open_ms(cast(str | None, getattr(args, "start_date", None)))
+    _BRONZE_SYMBOL_START_OPEN_MS = _parse_symbol_start_dates(
+        cast(list[str] | None, getattr(args, "symbol_start_dates", None))
+    )
+    _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS = _parse_exchange_symbol_start_dates(
+        cast(list[str] | None, getattr(args, "exchange_symbol_start_dates", None))
+    )
+    if _BRONZE_START_OPEN_MS is not None:
+        logger.info(
+            "Bronze start-date boundary enabled start_date=%s start_open_ms=%s",
+            cast(str, args.start_date),
+            _BRONZE_START_OPEN_MS,
+        )
+    if _BRONZE_SYMBOL_START_OPEN_MS:
+        logger.info("Bronze symbol start-date boundaries enabled symbol_bounds=%s", _BRONZE_SYMBOL_START_OPEN_MS)
+    if _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS:
+        logger.info(
+            "Bronze exchange-symbol start-date boundaries enabled exchange_symbol_bounds=%s",
+            _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS,
+        )
+
+
 def _fetch_candle_tasks_parallel(
     tasks: list[tuple[Exchange, Market, str, str]],
     lake_root: str,
@@ -528,48 +552,12 @@ def _fetch_all_task_groups(
     return task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors
 
 
-def _write_loader_samples(
-    candles_for_storage: dict[Market, dict[str, dict[str, list[SpotCandle]]]],
-    open_interest_for_storage: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]],
-    logger: logging.Logger,
-    funding_for_storage: dict[Market, dict[str, dict[str, list[FundingPoint]]]] | None = None,
-) -> None:
-    write_loader_samples_dto(
-        storage=LoaderStorageDTO(
-            candles=candles_for_storage,
-            open_interest=open_interest_for_storage,
-            funding=funding_for_storage or {},
-        ),
-        logger=logger,
-        options=ArtifactOptionsDTO(generate_plots=False),
-    )
-
-
 def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run bronze-build command."""
 
-    global _TAIL_DELTA_ONLY, _BRONZE_START_OPEN_MS, _BRONZE_SYMBOL_START_OPEN_MS, _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS
+    global _TAIL_DELTA_ONLY
     _TAIL_DELTA_ONLY = bool(args.tail_delta_only)
-    _BRONZE_START_OPEN_MS = _parse_start_date_to_open_ms(cast(str | None, getattr(args, "start_date", None)))
-    _BRONZE_SYMBOL_START_OPEN_MS = _parse_symbol_start_dates(
-        cast(list[str] | None, getattr(args, "symbol_start_dates", None))
-    )
-    _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS = _parse_exchange_symbol_start_dates(
-        cast(list[str] | None, getattr(args, "exchange_symbol_start_dates", None))
-    )
-    if _BRONZE_START_OPEN_MS is not None:
-        logger.info(
-            "Bronze start-date boundary enabled start_date=%s start_open_ms=%s",
-            cast(str, args.start_date),
-            _BRONZE_START_OPEN_MS,
-        )
-    if _BRONZE_SYMBOL_START_OPEN_MS:
-        logger.info("Bronze symbol start-date boundaries enabled symbol_bounds=%s", _BRONZE_SYMBOL_START_OPEN_MS)
-    if _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS:
-        logger.info(
-            "Bronze exchange-symbol start-date boundaries enabled exchange_symbol_bounds=%s",
-            _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS,
-        )
+    _configure_bronze_start_bounds(args=args, logger=logger)
 
     try:
         with SingleInstanceLock(".run/crypto-market-loader.lock"):
@@ -912,20 +900,6 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     output["_parquet_files"] = parquet_files
                 output["_manifest_files"] = _sidecar_path_list(parquet_files, ".json")
                 output["_plot_files"] = _sidecar_path_list(parquet_files, ".png")
-
-            artifact_candles: dict[Market, dict[str, dict[str, list[SpotCandle]]]] = candles_for_storage
-            artifact_oi: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = open_interest_for_storage
-            artifact_funding: dict[Market, dict[str, dict[str, list[FundingPoint]]]] = funding_for_storage
-
-            try:
-                _write_loader_samples(
-                    candles_for_storage=artifact_candles,
-                    open_interest_for_storage=artifact_oi,
-                    funding_for_storage=artifact_funding,
-                    logger=logger,
-                )
-            except Exception:  # noqa: BLE001
-                logger.exception("Failed to generate loader samples")
 
             if not args.no_json_output:
                 print(json.dumps(output, indent=2))
