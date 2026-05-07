@@ -18,7 +18,6 @@ from application.services.silver_service import (
     discover_months,
     discover_symbols,
     write_monthly_sidecars,
-    write_symbol_report,
 )
 
 pl = pytest.importorskip("polars")
@@ -181,18 +180,6 @@ def test_build_silver_for_symbol_writes_monthly_parquet_and_aggregated_report(tm
     assert silver_file.exists()
     written = pl.read_parquet(silver_file)
     assert written.height == 2
-
-    report_path = write_symbol_report(
-        silver_root=str(silver),
-        market="perp",
-        exchange="deribit",
-        symbol=symbol,
-        report=report,
-    )
-    payload = json.loads(Path(report_path).read_text(encoding="utf-8"))
-    assert payload["rows_out"] == 2
-    assert payload["dataset"] == "perp_1m"
-    assert "columns" in payload
 
     manifest_paths, plot_paths = write_monthly_sidecars(
         silver_root=str(silver),

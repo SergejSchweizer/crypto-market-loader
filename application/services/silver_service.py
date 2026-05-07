@@ -995,23 +995,6 @@ def build_oi_1m_feature_for_symbol(
     )
 
 
-def write_symbol_report(*, silver_root: str, market: str, exchange: str, symbol: str, report: SilverBuildReport) -> str:
-    """Write aggregated symbol manifest JSON and return absolute path."""
-
-    target = (
-        Path(silver_root)
-        / "reports"
-        / f"dataset_type={market}"
-        / f"exchange={exchange}"
-        / f"symbol={symbol}"
-        / f"timeframe={report.timeframe}"
-        / "manifest.json"
-    )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(report.to_dict(), indent=2), encoding="utf-8")
-    return str(target.resolve())
-
-
 def write_monthly_sidecars(
     *,
     silver_root: str,
