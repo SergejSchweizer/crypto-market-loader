@@ -10,6 +10,7 @@ from pathlib import Path
 
 LOGGER_NAME = "crypto_market_loader"
 DEFAULT_LOG_DIR = "/volume1/Temp/logs"
+DEFAULT_LOG_FILE = "crypto-market-loader.log"
 DEFAULT_FETCH_CONCURRENCY = 4
 MAX_FETCH_CONCURRENCY = 8
 
@@ -130,7 +131,7 @@ def _safe_log_module_name(module_name: str) -> str:
 
 
 def configure_logging(module_name: str = "crypto-market-loader") -> logging.Logger:
-    """Configure module-specific file logging with weekly rotation."""
+    """Configure process logging with weekly rotation."""
 
     safe_module_name = _safe_log_module_name(module_name)
     logger = logging.getLogger(f"{LOGGER_NAME}.{safe_module_name}")
@@ -140,11 +141,16 @@ def configure_logging(module_name: str = "crypto-market-loader") -> logging.Logg
     logger.setLevel(logging.INFO)
     logger.propagate = False
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
-    log_dir = Path(os.getenv("DEPTH_SYNC_LOG_DIR", DEFAULT_LOG_DIR))
+    log_file_env = os.getenv("DEPTH_SYNC_LOG_FILE", "").strip()
+    if log_file_env:
+        log_path = Path(log_file_env)
+    else:
+        log_dir = Path(os.getenv("DEPTH_SYNC_LOG_DIR", DEFAULT_LOG_DIR))
+        log_path = log_dir / DEFAULT_LOG_FILE
     try:
-        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = TimedRotatingFileHandler(
-            filename=log_dir / f"{safe_module_name}.log",
+            filename=log_path,
             when="D",
             interval=7,
             backupCount=0,
@@ -155,7 +161,7 @@ def configure_logging(module_name: str = "crypto-market-loader") -> logging.Logg
         file_handler.setFormatter(formatter)
         logger.addHandler(file_handler)
     except OSError:
-        logger.warning("Falling back to stderr logging; cannot create log directory '%s'", log_dir)
+        logger.warning("Falling back to stderr logging; cannot create log path '%s'", log_path)
 
     stream_handler = logging.StreamHandler()
     stream_handler.setFormatter(formatter)

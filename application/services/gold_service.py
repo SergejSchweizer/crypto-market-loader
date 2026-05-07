@@ -21,10 +21,6 @@ GOLD_DATASET_SPECS: dict[str, dict[str, object]] = {
         "requirements": [("spot", "1m"), ("perp", "1m"), ("funding_1m_feature", "1m")],
         "include_l2": False,
     },
-    "gold.market.perp_funding.m1": {
-        "requirements": [("perp", "1m"), ("funding_1m_feature", "1m")],
-        "include_l2": False,
-    },
     "gold.market.full.m1": {
         "requirements": [("spot", "1m"), ("perp", "1m"), ("oi_1m_feature", "1m"), ("funding_1m_feature", "1m")],
         "include_l2": False,
@@ -548,24 +544,28 @@ def _normalized_series(values_all: list[object]) -> tuple[list[float], list[floa
 
 def _time_axis_style(mdates: Any, mticker: Any, ts: list[object]) -> tuple[Any, Any, Any]:
     if not ts or not isinstance(ts[0], datetime) or not isinstance(ts[-1], datetime):
-        return mdates.AutoDateLocator(), None, mdates.DateFormatter("%m-%d %H:%M")
+        return mticker.MaxNLocator(nbins=6), None, mticker.StrMethodFormatter("{x:,.0f}")
     if len(ts) < 3 or ts[0] == ts[-1]:
-        return mdates.AutoDateLocator(maxticks=5), None, mdates.DateFormatter("%m-%d %H:%M")
+        major_locator = mdates.MinuteLocator(interval=1)
+        return major_locator, None, mdates.DateFormatter("%m-%d %H:%M")
     span_seconds = max((ts[-1] - ts[0]).total_seconds(), 1.0)
     span_minutes = span_seconds / 60.0
     span_hours = span_seconds / 3600.0
     span_days = span_seconds / 86400.0
-    major_locator = mdates.AutoDateLocator(maxticks=10)
     if span_seconds <= 6 * 3600:
+        major_locator = mdates.MinuteLocator(interval=max(30, int(span_minutes // 8) + 1))
         minor_locator = mdates.MinuteLocator(interval=max(10, int(span_minutes // 700) + 1))
         formatter = mdates.DateFormatter("%m-%d %H:%M")
     elif span_seconds <= 2 * 24 * 3600:
+        major_locator = mdates.HourLocator(interval=max(2, int(span_hours // 8) + 1))
         minor_locator = mdates.HourLocator(interval=max(1, int(span_hours // 700) + 1))
         formatter = mdates.DateFormatter("%m-%d %H:%M")
     elif span_seconds <= 14 * 24 * 3600:
+        major_locator = mdates.DayLocator(interval=max(1, int(span_days // 8) + 1))
         minor_locator = mdates.HourLocator(interval=max(6, int(span_hours // 700) + 1))
         formatter = mdates.DateFormatter("%m-%d")
     else:
+        major_locator = mdates.DayLocator(interval=max(2, int(span_days // 8) + 1))
         minor_locator = mdates.DayLocator(interval=max(1, int(span_days // 700) + 1))
         formatter = mdates.DateFormatter("%Y-%m-%d")
     return major_locator, minor_locator, formatter

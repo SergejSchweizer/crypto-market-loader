@@ -93,6 +93,40 @@ Behavior:
   - plot: `data.png`
   - missing sidecars on existing matching Bronze files are backfilled during the run
 
+Dataset semantics (precise):
+- `spot`:
+  - Describes the underlying spot market traded on the exchange (cash market, no expiry/funding).
+  - Rows are 1-minute OHLCV candles: `open/high/low/close`, traded `volume`, `quote_volume`, `trade_count`.
+  - Timestamp semantics: `open_time`/`close_time` represent the closed 1-minute bar window in UTC.
+  - Nuances:
+    - Measures executed trades only (not order book liquidity).
+    - Price can diverge from perpetual due to basis, inventory pressure, or temporary dislocations.
+    - Best used as underlying price anchor in cross-market features.
+- `perp`:
+  - Describes perpetual futures market microstructure aggregated to 1-minute OHLCV bars.
+  - Same candle fields as `spot`, but for perpetual instruments (levered derivatives).
+  - Timestamp semantics: same 1-minute bar windowing as spot.
+  - Nuances:
+    - Includes derivatives-specific behavior (liquidation cascades, leverage effects, risk-premium/basis).
+    - Volume/trade dynamics are not directly comparable to spot notional without normalization.
+    - Preferred for short-horizon derivatives signal extraction.
+- `oi` (open interest observations):
+  - Describes outstanding open derivatives exposure (total open contracts/positions), not traded flow.
+  - Rows are event-time observations with `open_interest` and `open_interest_value`.
+  - Timestamp semantics: stored at source observation time (no synthetic resampling in Bronze).
+  - Nuances:
+    - Update cadence can be irregular; missing minutes do not imply zero OI.
+    - OI can rise/fall without immediate price move; interpret jointly with perp return/volume.
+    - In Silver, `oi_observed` and `oi_1m_feature` separate observed values from forward-filled state.
+- `funding`:
+  - Describes perpetual funding-rate transfer mechanism between long/short sides.
+  - Rows contain observed `funding_rate`, `index_price`, `mark_price` at source event timestamps.
+  - Timestamp semantics: event-time observations (Deribit native funding cadence), not minute bars.
+  - Nuances:
+    - Funding is discrete in time and should not be treated as per-minute realized PnL directly.
+    - Positive/negative sign encodes payer side (market regime signal), but impact depends on holding period and leverage.
+    - In Silver, `funding_observed` and `funding_1m_feature` expose last-known funding state with leakage-safe asof logic.
+
 Bronze layout:
 
 ```text
@@ -153,7 +187,6 @@ Default dataset behavior:
 Supported dataset IDs:
 - `gold.market.core.m1`
 - `gold.market.core_funding.m1`
-- `gold.market.perp_funding.m1`
 - `gold.market.full.m1`
 - `gold.hybrid.full_l2.m1` (joins full market features with latest per-symbol L2 parquet from `--l2-root`; default `remote_l2_m1_features`)
 
@@ -163,7 +196,6 @@ Gold dataset feature matrix:
 |---|---|---|
 | `gold.market.core.m1` | `spot`, `perp` | `spot_open/high/low/close/volume`, `perp_open/high/low/close/volume` |
 | `gold.market.core_funding.m1` | `spot`, `perp`, `funding_1m_feature` | core features + `funding_rate_last_known`, `minutes_since_funding`, `is_funding_observation_minute`, `funding_data_available` |
-| `gold.market.perp_funding.m1` | `perp`, `funding_1m_feature` | perp OHLCV features + funding timing/state features |
 | `gold.market.full.m1` | `spot`, `perp`, `oi_1m_feature`, `funding_1m_feature` | core + `oi_open_interest`, `oi_is_observed`, `oi_is_ffill`, `minutes_since_oi_observation`, `oi_observation_lag_sec` + funding features |
 | `gold.hybrid.full_l2.m1` | `spot`, `perp`, `oi_1m_feature`, `funding_1m_feature`, latest L2 | full-market features + all L2 columns prefixed with `l2_` (for example `l2_snapshot_count`, `l2_coverage_ratio`) |
 
@@ -227,7 +259,7 @@ Equivalent:
 ## Operations Notes
 
 - single-instance runtime lock: `.run/crypto-market-loader.lock`
-- default log path: `/volume1/Temp/logs` (override via `DEPTH_SYNC_LOG_DIR`)
+- shared log file path: `/volume1/Temp/logs/crypto-market-loader.log` (override via `DEPTH_SYNC_LOG_FILE`)
 - this repo currently targets Deribit only
 
 ## Limitations
@@ -258,7 +290,7 @@ What it does:
 - no pipeline step flags are hardcoded in the script
 - stops immediately on first failed step (non-zero exit)
 - uses a non-blocking lock at `.run/full-pipeline.lock` to prevent overlapping runs
-- appends logs to `.run/logs/crypto-market-loader.log`
+- appends logs to the same shared log file used by all commands (`DEPTH_SYNC_LOG_FILE`)
 - writes explicit runtime markers such as `ACTIVE_STEP=bronze|silver|gold`
 
 Cron example (hourly):

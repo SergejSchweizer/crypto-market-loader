@@ -44,7 +44,6 @@ Layers:
 Supported dataset variants:
 - `gold.market.core.m1`
 - `gold.market.core_funding.m1`
-- `gold.market.perp_funding.m1`
 - `gold.market.full.m1`
 - `gold.hybrid.full_l2.m1`
 
@@ -54,7 +53,6 @@ Gold dataset feature matrix:
 |---|---|---|
 | `gold.market.core.m1` | spot + perp | spot/perp OHLCV feature set |
 | `gold.market.core_funding.m1` | spot + perp + funding_1m_feature | core OHLCV + funding state/timing features |
-| `gold.market.perp_funding.m1` | perp + funding_1m_feature | perp OHLCV + funding features |
 | `gold.market.full.m1` | spot + perp + oi_1m_feature + funding_1m_feature | core + OI + funding feature families |
 | `gold.hybrid.full_l2.m1` | full market set + latest L2 gold parquet | full market features + prefixed L2 microstructure features (`l2_*`) |
 
