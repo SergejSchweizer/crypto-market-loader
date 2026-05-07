@@ -778,33 +778,18 @@ def _write_feature_distribution_plot(
                         else "var: n/a"
                     ),
                     (
-                        (
-                            "1std: "
-                            f"[{(full_numeric_stats_by_col[col]['mean'] - full_numeric_stats_by_col[col]['std']):.6g}, "
-                            f"{(full_numeric_stats_by_col[col]['mean'] + full_numeric_stats_by_col[col]['std']):.6g}]"
-                        )
-                        if full_numeric_stats_by_col[col]["mean"] is not None
-                        and full_numeric_stats_by_col[col]["std"] is not None
+                        f"1std: {abs(full_numeric_stats_by_col[col]['std']):.6g}"
+                        if full_numeric_stats_by_col[col]["std"] is not None
                         else "1std: n/a"
                     ),
                     (
-                        (
-                            "2std: "
-                            f"[{(full_numeric_stats_by_col[col]['mean'] - 2.0 * full_numeric_stats_by_col[col]['std']):.6g}, "
-                            f"{(full_numeric_stats_by_col[col]['mean'] + 2.0 * full_numeric_stats_by_col[col]['std']):.6g}]"
-                        )
-                        if full_numeric_stats_by_col[col]["mean"] is not None
-                        and full_numeric_stats_by_col[col]["std"] is not None
+                        f"2std: {abs(2.0 * full_numeric_stats_by_col[col]['std']):.6g}"
+                        if full_numeric_stats_by_col[col]["std"] is not None
                         else "2std: n/a"
                     ),
                     (
-                        (
-                            "3std: "
-                            f"[{(full_numeric_stats_by_col[col]['mean'] - 3.0 * full_numeric_stats_by_col[col]['std']):.6g}, "
-                            f"{(full_numeric_stats_by_col[col]['mean'] + 3.0 * full_numeric_stats_by_col[col]['std']):.6g}]"
-                        )
-                        if full_numeric_stats_by_col[col]["mean"] is not None
-                        and full_numeric_stats_by_col[col]["std"] is not None
+                        f"3std: {abs(3.0 * full_numeric_stats_by_col[col]['std']):.6g}"
+                        if full_numeric_stats_by_col[col]["std"] is not None
                         else "3std: n/a"
                     ),
                 ]
@@ -816,7 +801,7 @@ def _write_feature_distribution_plot(
                 transform=left_ax.transAxes,
                 va="top",
                 ha="left",
-                fontsize=5.2,
+                fontsize=4.8,
                 family="monospace",
                 color="#d7e3f2",
                 bbox={"facecolor": "#0a1322", "edgecolor": "#334155", "alpha": 0.78, "pad": 2.0},
