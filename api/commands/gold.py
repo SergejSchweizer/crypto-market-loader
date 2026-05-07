@@ -23,8 +23,14 @@ def add_gold_build_parser(subparsers: argparse._SubParsersAction[argparse.Argume
     parser.add_argument("--dataset-version", default="v1.0.0", help="Semantic dataset version")
     parser.add_argument("--auto-version", action="store_true", help="Auto-increment semantic version from prior manifests")
     parser.add_argument("--version-base", default="v1.0.0", help="Base version used when auto-version has no prior manifest")
-    parser.add_argument("--manifest", action="store_true", help="Generate gold manifest JSON")
-    parser.add_argument("--plot", action="store_true", help="Generate gold feature distribution plot PNG")
+    parser.add_argument("--manifest", action="store_true", help="Deprecated: gold manifests are always generated")
+    parser.add_argument("--plot", action="store_true", help="Deprecated: gold plots are always generated")
+    parser.add_argument(
+        "--l2-validation-mode",
+        choices=["strict", "lenient"],
+        default="strict",
+        help="L2 quality handling for hybrid datasets: strict fails build, lenient drops invalid joined rows",
+    )
     parser.add_argument("--no-json-output", action="store_true", help="Suppress JSON output")
 
 
@@ -39,6 +45,7 @@ def run_gold_build(args: argparse.Namespace, logger: logging.Logger) -> None:
     auto_version = bool(getattr(args, "auto_version", False))
     version_base = cast(str, getattr(args, "version_base", "v1.0.0"))
     symbols = cast(list[str] | None, args.symbols)
+    l2_validation_mode = cast(str, getattr(args, "l2_validation_mode", "strict"))
     effective_symbols = (
         sorted({normalize_symbol(symbol) for symbol in symbols})
         if symbols
@@ -65,8 +72,9 @@ def run_gold_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     dataset_version=dataset_version,
                     auto_version=auto_version,
                     version_base=version_base,
-                    manifest=bool(getattr(args, "manifest", False)),
-                    plot=bool(getattr(args, "plot", False)),
+                    manifest=True,
+                    plot=True,
+                    l2_validation_mode=l2_validation_mode,
                 )
             except ValueError as exc:
                 logger.warning(

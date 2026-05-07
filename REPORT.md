@@ -1,191 +1,121 @@
-# Deribit Market Data Ingestion Baseline for Crypto Research Pipelines
+# Deribit Ingestion And Transformation Report
 
 ## Abstract
-This report presents a production-oriented baseline for cryptocurrency market-data ingestion designed to support downstream quantitative research. The problem addressed is the lack of reproducible, maintainable ingestion layers in early-stage quant projects, where exchange-specific scripts and schema drift frequently undermine empirical validity. We implement a typed, modular ingestion pipeline with adapter abstractions for Deribit, command-line interfaces for deterministic execution, and partitioned parquet-lake storage. Data are sourced from public exchange REST endpoints and normalized into canonical OHLCV, open-interest, and funding schemas with metadata fields for run traceability. The main finding is engineering-focused: the system provides deterministic normalization, supports backward pagination and gap-fill synchronization for historical series, preserves raw source event timestamps for OI and funding, and preserves idempotent persistence via natural-key partition merges. The current codebase also includes a silver-to-gold per-symbol build path that combines spot/perp/OI/funding silver features into one hashed gold artifact with symbol-level manifest metadata. The contribution is a maintainable ingestion foundation suitable for subsequent market microstructure, regime, and forecasting studies, with explicit reproducibility controls (strict typing, tests, linting, config-driven runs, and stable execution commands).
+This project provides a reproducible, maintainable data pipeline for Deribit crypto markets. It implements typed bronze ingestion, monthly silver transformations, and versioned/provenanced gold datasets. The main result is an engineering baseline suitable for downstream quantitative research, with deterministic contracts, incremental operation, and explicit artifact lineage.
 
-Canonical data-type naming in this project is fixed as `spot`, `perp`, `oi`, and `funding` across CLI and code. The parquet storage label for OI raw rows is `dataset_type=oi`. OHLCV is `1m`; OI and funding are stored at raw event timestamps.
+## Problem Statement
+Early-stage market-data stacks often fail due to ad-hoc scripts, schema drift, and weak reproducibility. This repository addresses that by enforcing:
+- explicit datatype contracts (`spot`, `perp`, `oi`, `funding`)
+- modular service boundaries
+- deterministic parquet output layouts
+- test-backed command workflows
 
-## Introduction
-Reliable market-data ingestion is a prerequisite for valid quantitative inference in crypto research.
+## System Summary
 
-Many practical pipelines fail due to exchange-specific one-off scripts, inconsistent timestamp handling, and weak reproducibility controls.
+Pipeline:
 
-This project proposes a modular ingestion architecture with typed interfaces, explicit normalization, and reproducible command-line workflows focused on Deribit as the current production exchange.
-
-The contributions of this stage are: (1) Deribit `spot`, `perp`, `oi`, and `funding` normalization for BTC/ETH/SOL, (2) parquet-lake persistence paths, (3) tested operational workflows for repeatable data acquisition.
-
-## Literature Review
-Volatility clustering and regime dependence motivate robust historical market-data pipelines. ARCH/GARCH foundations establish heteroskedastic behavior in financial time series, requiring high-integrity timestamped observations (Engle, 1982; Bollerslev, 1986). Regime-switching frameworks further highlight sensitivity to data quality and temporal consistency (Hamilton, 1989). Later work on high-frequency econometrics and realized-volatility estimation reinforces the need for reliable, granular data ingestion and synchronization processes (Andersen et al., 2001; Barndorff-Nielsen and Shephard, 2002).
-Market microstructure and stylized-facts literature also emphasizes heavy tails, volatility clustering, and serial dependence in returns, which makes interval alignment and timestamp integrity central to defensible inference (Cont, 2001).
-
-Within crypto-specific empirical work, market microstructure studies and liquidity fragmentation analyses depend on exchange-consistent symbol and timeframe normalization. This baseline currently covers BTC/ETH/SOL symbol normalization on Deribit and does not yet estimate econometric models, but it is intentionally built to satisfy upstream data-quality assumptions for such methods.
-
-## Dataset
-- Source: Deribit `/api/v2/public/get_tradingview_chart_data`, `/api/v2/public/get_last_settlements_by_instrument`, `/api/v2/public/get_funding_rate_history`.
-- Sample period: user-configurable runtime period determined by symbols, markets, and existing parquet coverage; OHLCV is stored at `1m` while OI/funding preserve raw source event timestamps.
-- Number of observations: runtime-dependent on symbol/timeframe scope and auto bootstrap vs gap-fill behavior.
-- Variables: `open_time`, `close_time`, `open`, `high`, `low`, `close`, `volume`, `quote_volume`, `trade_count` plus provenance metadata.
-- Additional perp feature set: `open_interest`, `open_interest_value`, and funding-rate fields.
-- Cleaning methodology: exchange adapter normalization, timeframe validation, symbol normalization, UTC conversion, partition-level deduplication by natural key.
-- Train/test split: not applicable at ingestion-only stage.
-
-### Data Type Definitions, Rationale, And Meaning
-
-#### `spot`
-- Why it exists in this research artifact:
-  `spot` provides the baseline cash-market price process required for primary return and volatility measurement.
-- Meaning in analysis:
-  Exchange-executed cash OHLCV bars; these are the reference series for non-derivative market state.
-
-#### `perp`
-- Why it exists in this research artifact:
-  `perp` captures derivatives-market trading behavior that can differ from spot and add information about speculative flow.
-- Meaning in analysis:
-  Perpetual-futures OHLCV bars normalized to the same schema as `spot`, enabling direct cross-market comparisons.
-
-#### `oi`
-- Why it exists in this research artifact:
-  `oi` is needed to quantify aggregate open positioning, which is not observable from OHLCV alone.
-- Meaning in analysis:
-  Open-interest time series associated with perpetual instruments; used to interpret whether moves are supported by position expansion or contraction.
-
-### Dataset Variable Construction (Implementation-Aligned)
-
-#### `spot` (cash OHLCV)
-- Constructed fields:
-  `open_time`, `close_time`, `open`, `high`, `low`, `close`, `volume`, `quote_volume`, `trade_count`.
-- Field construction logic:
-  - `open_time` is exchange open timestamp converted to UTC datetime.
-  - `close_time` is either exchange-provided close timestamp or computed as `open_time + timeframe_ms - 1` for endpoints that publish only interval starts.
-  - `open/high/low/close` are direct float-casts of exchange candle values.
-  - `volume` is base-asset traded volume over interval.
-  - `quote_volume` is exchange quote-turnover field when available; otherwise stored as `null` (Deribit chart endpoint does not provide dedicated quote turnover in the mapped payload).
-  - `trade_count` is exchange trade-count field when available; otherwise set to `0`.
-
-#### `perp` (perpetual OHLCV)
-- Constructed fields:
-  Same canonical OHLCV schema as `spot`; this enables direct cross-market comparisons without extra schema transforms.
-- Field construction logic:
-  - Same parser and storage mapping as `spot` (`SpotCandle` normalization path).
-  - Symbol normalization is exchange/market specific before parse (for example Deribit `BTC` -> `BTC-PERPETUAL`).
-
-#### `oi` (perpetual open interest)
-- Constructed fields:
-  `open_time`, `close_time`, `open_interest`, `open_interest_value`.
-- Field construction logic:
-  - OI ingestion is gated to `perp` context; non-perp requests return empty results by design.
-  - `open_time` derives from exchange timestamp and is UTC-normalized.
-  - `close_time` equals `open_time` in bronze raw mode.
-  - `open_interest` is mapped from exchange OI position-size field.
-  - `open_interest_value` is populated when the source returns a notional/value metric; else `0.0`.
-  - Exchange-specific mapping:
-  - Deribit: settlement `timestamp` is preserved as event time; `open_interest <- position`, `open_interest_value <- 0.0`.
-
-## Methodology
-### System Design
 ```text
-CLI -> Application Service Layer (gapfill_service, fetch_service)
-    -> Adapter Layer -> HTTP Client -> Exchange REST APIs
-    -> Normalized SpotCandle/OpenInterestPoint -> Parquet Lake
+CLI -> application services -> exchange adapters -> normalized rows -> parquet layers
 ```
 
-Storage and artifact side effects are also routed through dedicated services (`storage_service`, `artifact_service`) to keep CLI logic thin and testable. Canonical CLI-to-storage naming (`spot`/`perp`/`funding` direct  + `oi -> dataset_type=oi`) is formalized in `application/schema.py`.
+Layers:
+- Bronze: source-shaped parquet partitions
+- Silver: cleaned/derived monthly datasets with sidecars
+- Gold: model-ready merged datasets with semantic versioning and hash provenance
 
-### Core Mapping
-For each candle index \(t\):
+## Data Contracts
 
-\[
-x_t = \{e, s, \Delta, \tau_t^{open}, \tau_t^{close}, o_t, h_t, l_t, c_t, v_t, qv_t, n_t\}
-\]
+### Bronze
+- `spot`, `perp`: 1-minute OHLCV bars
+- `oi`, `funding`: source event-time rows
+- idempotent persistence via natural-key partition rewrites
 
-where \(e\) is exchange, \(s\) symbol, \(\Delta\) timeframe, and \(n_t\) trade count.
+### Silver
+- Monthly parquet naming: `<SYMBOL>-<YYYY-MM>.parquet`
+- Datasets:
+  - `spot`, `perp`
+  - `funding_observed`, `funding_1m_feature`
+  - `oi_observed`, `oi_1m_feature`
+- Optional monthly sidecars (`.json`, `.png`) with gold-style metadata
 
-### Persistence Objective
-Rows are persisted with natural key:
+### Gold
+Supported dataset variants:
+- `gold.market.core.m1`
+- `gold.market.core_funding.m1`
+- `gold.market.perp_funding.m1`
+- `gold.market.full.m1`
+- `gold.hybrid.full_l2.m1`
 
-\[
-K = (exchange, instrument\_type, symbol, timeframe, open\_time)
-\]
+Gold dataset feature matrix:
 
-Upsert policy enforces idempotency:
-
-\[
-\text{row}_{new}(K) \leftarrow \text{row}_{incoming}(K)
-\]
-
-### Optimization Logic
-- Bronze build operates in exactly two modes:
-  1. `fetch all history` for symbol/timeframe partitions that do not yet exist in parquet.
-  2. `fill gaps` for existing partitions by recovering missing internal intervals and tail intervals.
-- Bounded HTTP retries with exponential backoff for transient failures (default runtime profile: timeout `8s`, retries `2`, backoff `0.5s`).
-- Pagination for exchange request limits.
-- Gap-fill computes missing intervals from stored open-time sets.
-- Fetch execution uses bounded concurrency with task-level isolation.
-- Time-range fetches are split into UTC day windows and processed in randomized order.
-- Fetch orchestration and task error isolation are handled in a dedicated service layer (`application/services/fetch_service.py`) rather than directly in CLI command code.
-- Parquet reads/writes process data in batches to bound memory usage.
-
-## Results
-This stage reports ingestion robustness and descriptive statistics; bronze sample generation is CSV-only.
-
-### Descriptive Statistics Table
-Descriptive statistics are exported with a fixed, reproducible configuration via:
-`python3 main.py export-descriptive-stats --lake-root lake/bronze --output-csv docs/tables/descriptive_stats_baseline.csv --start-time 2026-01-01T00:00:00+00:00 --end-time 2026-01-31T23:59:59+00:00`.
-The table artifact is versioned at `docs/tables/descriptive_stats_baseline.csv`.
-
-| Variable | Mean | Std | Min | Max |
-|---|---:|---:|---:|---:|
-| Open | 46841.1872 | 43831.9162 | 2227.7600 | 97864.0000 |
-| High | 46851.7766 | 43841.3161 | 2334.2000 | 97967.5000 |
-| Low | 46830.4322 | 43822.3768 | 2202.4000 | 97767.0000 |
-| Close | 46841.0247 | 43831.7922 | 2235.7000 | 97874.0000 |
-| Volume | 380.8441 | 2277.7764 | 0.0000 | 325858.1960 |
-
-### Model Comparison Table
-No predictive or regime models are trained in this stage.
-
-| Model | Accuracy | Sharpe | AUC | RMSE |
-|---|---:|---:|---:|---:|
-| Not applicable (ingestion baseline) | N/A | N/A | N/A | N/A |
-
-### Robustness Table
-
-| Configuration | Scope | Outcome |
+| Dataset ID | Inputs | Feature families |
 |---|---|---|
-| Exchange fetch | Deribit (spot/perp/oi/funding) | Passed via typed adapter dispatch |
-| Gap-fill mode | Missing internal/tail intervals | Passed via open-time range recovery |
-| Incremental parquet persistence | Partition merge + natural-key dedup | Passed with idempotent key policy |
-| Service-layer fetch orchestration tests | Sequential success/error isolation | Passed (`tests/test_fetch_service.py`) |
-| Service-layer gap-fill utility tests | Closed-candle timestamp and missing-range logic | Passed (`tests/test_gapfill_service.py`) |
-| Service-layer storage orchestration tests | Parquet side-effect routing | Passed (`tests/test_storage_service.py`) |
-| Canonical schema contract tests | CLI datatype to storage contract mapping | Passed (`tests/test_schema_contract.py`) |
-| Loader sample artifacts | Per market/exchange/symbol/timeframe CSV | Passed with deterministic naming |
-| OI integration | Deribit perp dataset_type=oi | Passed for all-history and gap-fill paths |
+| `gold.market.core.m1` | spot + perp | spot/perp OHLCV feature set |
+| `gold.market.core_funding.m1` | spot + perp + funding_1m_feature | core OHLCV + funding state/timing features |
+| `gold.market.perp_funding.m1` | perp + funding_1m_feature | perp OHLCV + funding features |
+| `gold.market.full.m1` | spot + perp + oi_1m_feature + funding_1m_feature | core + OI + funding feature families |
+| `gold.hybrid.full_l2.m1` | full market set + latest L2 gold parquet | full market features + prefixed L2 microstructure features (`l2_*`) |
 
-## Discussion
-Business implications: a reliable ingestion substrate lowers operational risk for strategy research and accelerates feature engineering, backtesting, and monitoring deployment.
+Join policy for all gold datasets: canonical 1-minute time grid with left joins on
+`timestamp_m1` + (`exchange`, `symbol`) across included source datasets. Missing source
+minutes are preserved as null values.
 
-Limitations: current scope includes OHLCV, open-interest, and funding, but not trade-level feeds. Exchange-specific outages and schema changes still require active maintenance.
+Gold artifact policy:
+- every gold build writes `data.parquet`, `manifest.json`, and `plot.png`
+- for `gold.hybrid.full_l2.m1`, L2 validation mode is configurable:
+  - `strict` (default): invalid L2 rows fail that symbol/dataset build
+  - `lenient`: invalid L2 rows are dropped and audited in manifest fields
+    (`l2_invalid_rows_found`, `l2_invalid_rows_dropped`)
 
-Model weaknesses/assumptions: this stage does not perform inference; assumptions are engineering assumptions (timestamp consistency, endpoint availability, and exchange-provided data correctness).
+Artifact identity fields:
+- semantic contract version: `dataset_version`
+- reproducibility hashes: `feature_set_hash`, `source_data_hash`, `git_commit_hash`, `build_id`
 
-## Conclusion
-This baseline establishes a reproducible and extensible ingestion pipeline for Deribit crypto market data with typed normalization and idempotent persistence. The immediate value is production-quality data plumbing for future empirical studies. Next steps are fixed experiment configs, notebook-to-report metrics automation, and model/evaluation modules with formal benchmarks.
+## Versioning Policy
 
-## Appendix
-### Reproducibility Controls
-- Static checks: `ruff`, `mypy` (strict), `pytest`.
-- Deterministic interfaces: typed adapters and normalized candle schema.
-- Incremental persistence: partition-level merge and key-based dedup in parquet files.
+Gold dataset versions follow semver.
+
+- `major`: breaking contract changes
+- `minor`: additive contract changes
+- `patch`: same contract, data-source change
+
+Auto-version mode (`--auto-version`) derives bumps by comparing current contract and source hashes to the latest manifest of the same `dataset_id` and symbol.
+
+Manifest quality/provenance highlights:
+- feature-level missing/null and numeric summary stats
+- temporal coverage fields:
+  - `expected_minutes_in_span`
+  - `missing_minutes_in_span`
+  - `observed_row_coverage_ratio`
+- missing-value audit fields:
+  - `missing_value_count_total`
+  - `missing_value_count_by_column`
+
+## Plotting Policy
+
+Silver and gold plots share the same renderer style and are capped to **3000 evenly sampled points** across the full time series, preserving full-range representation while keeping rendering bounded.
+
+## Reliability And Reproducibility Controls
+
+- typed service interfaces and strict normalization
+- command-driven deterministic workflows
+- manifest-level provenance and source summaries
+- quality gates: `pytest`, `ruff`, `mypy`
+- mandatory runtime config file (`config.yaml`) with restricted permissions
+
+## Current Limitations
+
+- Deribit-only scope
+- no trade-level stream ingestion
+- no multi-exchange reconciliation
+
+## Recommended Next Steps
+
+1. Add continuous data quality checks (coverage/null/drift thresholds) per dataset variant.
+2. Add retention/compaction jobs for long-horizon parquet maintenance.
+3. Introduce contract migration tooling for future schema evolution.
+4. Expand adapters to additional exchanges with unified symbol canonicalization.
 
 ## References
-1. Engle, R. F. (1982). Autoregressive Conditional Heteroskedasticity with Estimates of the Variance of U.K. Inflation. *Econometrica*.
-2. Bollerslev, T. (1986). Generalized Autoregressive Conditional Heteroskedasticity. *Journal of Econometrics*.
-3. Hamilton, J. D. (1989). A New Approach to the Economic Analysis of Nonstationary Time Series and the Business Cycle. *Econometrica*.
-4. Andersen, T. G., Bollerslev, T., Diebold, F. X., and Labys, P. (2001). The Distribution of Realized Exchange Rate Volatility. *Journal of the American Statistical Association*.
-5. Barndorff-Nielsen, O. E., and Shephard, N. (2002). Econometric Analysis of Realised Volatility and Its Use in Estimating Stochastic Volatility Models. *Journal of the Royal Statistical Society: Series B*.
-6. Deribit API Documentation. TradingView Chart Data Endpoint.
-7. Deribit API Documentation. Historical Settlement/Open Interest Endpoint.
-8. Deribit API Documentation. Funding Rate History Endpoint.
-9. Apache Arrow Documentation. Parquet RecordBatch Processing.
-10. Cont, R. (2001). Empirical Properties of Asset Returns: Stylized Facts and Statistical Issues. *Quantitative Finance*.
+1. Deribit API documentation (market chart, settlements/open-interest, funding history).
+2. Apache Arrow/Parquet documentation.

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -31,6 +30,20 @@ def _write_silver_month(
         / f"symbol={symbol}"
         / f"timeframe={timeframe}"
         / f"{symbol}_{month.replace('-', '_')}.parquet"
+    )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    pl.DataFrame(rows).write_parquet(target)
+
+
+def _write_l2_gold_parquet(root: Path, *, symbol: str, exchange: str, rows: list[dict[str, object]]) -> None:
+    target = (
+        root
+        / "dataset_id=gold.l2.micro.m1"
+        / f"exchange={exchange}"
+        / f"symbol={symbol}"
+        / "version=v1.0.0"
+        / "build_id=testhash_abcdef12_12345678"
+        / "data.parquet"
     )
     target.parent.mkdir(parents=True, exist_ok=True)
     pl.DataFrame(rows).write_parquet(target)
@@ -103,16 +116,17 @@ def test_build_gold_for_symbol_writes_hashed_parquet_and_manifest(tmp_path: Path
         manifest=True,
     )
 
-    parquet_name = Path(report.parquet_path).name
-    assert re.fullmatch(
-        rf"{symbol}_gold-market-full-m1_v1\.0\.0_[a-f0-9]{{12}}_[a-f0-9]{{12}}_[A-Za-z0-9]+\.parquet",
-        parquet_name,
-    ) is not None
-    assert Path(report.parquet_path).parent == gold
+    parquet_path = Path(report.parquet_path)
+    assert parquet_path.name == "data.parquet"
+    assert "dataset_id=gold.market.full.m1" in report.parquet_path
+    assert f"exchange={exchange}" in report.parquet_path
+    assert f"symbol={symbol}" in report.parquet_path
+    assert "version=v1.0.0" in report.parquet_path
+    assert "build_id=" in report.parquet_path
     assert Path(report.parquet_path).exists()
     assert Path(report.manifest_path).exists()
     assert report.plot_path is None or Path(report.plot_path).exists()
-    assert Path(report.manifest_path).name == f"{Path(report.parquet_path).stem}.json"
+    assert Path(report.manifest_path).name == "manifest.json"
 
     payload = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
     assert payload["symbol"] == symbol
@@ -170,5 +184,418 @@ def test_build_gold_for_symbol_normalizes_input_symbol(tmp_path: Path) -> None:
         exchange=exchange,
         symbol="btc_perpetual",
     )
-    assert Path(report.parquet_path).parent == gold
-    assert report.manifest_path is None
+    assert "dataset_id=gold.market.full.m1" in report.parquet_path
+    assert report.manifest_path is not None
+    assert report.plot_path is not None
+    assert Path(report.manifest_path).exists()
+    assert Path(report.plot_path).exists()
+
+
+def test_build_gold_hybrid_full_l2_contains_l2_features(tmp_path: Path) -> None:
+    silver = tmp_path / "silver"
+    gold = tmp_path / "gold"
+    symbol = "BTC"
+    exchange = "deribit"
+    t0 = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
+    t1 = datetime(2026, 5, 1, 0, 1, tzinfo=UTC)
+
+    _write_silver_month(
+        silver,
+        dataset_type="spot",
+        exchange=exchange,
+        symbol="BTC_USDC",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 1.0, "high_price": 2.0, "low_price": 0.5, "close_price": 1.5, "volume": 10.0},
+            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 1.5, "high_price": 2.5, "low_price": 1.0, "close_price": 2.0, "volume": 11.0},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="perp",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 10.0, "high_price": 11.0, "low_price": 9.5, "close_price": 10.5, "volume": 110.0},
+            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 10.5, "high_price": 11.5, "low_price": 10.0, "close_price": 11.0, "volume": 111.0},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="oi_1m_feature",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"timestamp_m1": t0, "exchange": exchange, "symbol": symbol, "open_interest": 1000.0, "oi_is_observed": True, "oi_is_ffill": False, "minutes_since_oi_observation": 0, "oi_observation_lag_sec": 0},
+            {"timestamp_m1": t1, "exchange": exchange, "symbol": symbol, "open_interest": 1001.0, "oi_is_observed": False, "oi_is_ffill": True, "minutes_since_oi_observation": 1, "oi_observation_lag_sec": 60},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="funding_1m_feature",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"timestamp": t0, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 0, "is_funding_observation_minute": True, "funding_data_available": True},
+            {"timestamp": t1, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 1, "is_funding_observation_minute": False, "funding_data_available": True},
+        ],
+    )
+    _write_l2_gold_parquet(
+        gold,
+        symbol=symbol,
+        exchange=exchange,
+        rows=[
+            {"ts_minute": t0, "exchange": exchange, "symbol": symbol, "snapshot_count": 5, "coverage_ratio": 0.9},
+            {"ts_minute": t1, "exchange": exchange, "symbol": symbol, "snapshot_count": 6, "coverage_ratio": 1.0},
+        ],
+    )
+
+    report = build_gold_for_symbol(
+        silver_root=str(silver),
+        gold_root=str(gold),
+        exchange=exchange,
+        symbol=symbol,
+        dataset_id="gold.hybrid.full_l2.m1",
+        manifest=True,
+    )
+    assert Path(report.parquet_path).exists()
+    payload = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
+    assert payload["dataset_id"] == "gold.hybrid.full_l2.m1"
+    assert "gold_l2_m1" in payload["source_silver_datasets"]
+    written = pl.read_parquet(report.parquet_path)
+    assert "l2_snapshot_count" in written.columns
+    assert "l2_coverage_ratio" in written.columns
+
+
+def test_build_gold_hybrid_full_l2_uses_requested_exchange_l2(tmp_path: Path) -> None:
+    silver = tmp_path / "silver"
+    gold = tmp_path / "gold"
+    symbol = "BTC"
+    exchange = "deribit"
+    t0 = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
+    t1 = datetime(2026, 5, 1, 0, 1, tzinfo=UTC)
+
+    _write_silver_month(
+        silver,
+        dataset_type="spot",
+        exchange=exchange,
+        symbol="BTC_USDC",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 1.0, "high_price": 2.0, "low_price": 0.5, "close_price": 1.5, "volume": 10.0},
+            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 1.5, "high_price": 2.5, "low_price": 1.0, "close_price": 2.0, "volume": 11.0},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="perp",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 10.0, "high_price": 11.0, "low_price": 9.5, "close_price": 10.5, "volume": 110.0},
+            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 10.5, "high_price": 11.5, "low_price": 10.0, "close_price": 11.0, "volume": 111.0},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="oi_1m_feature",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"timestamp_m1": t0, "exchange": exchange, "symbol": symbol, "open_interest": 1000.0, "oi_is_observed": True, "oi_is_ffill": False, "minutes_since_oi_observation": 0, "oi_observation_lag_sec": 0},
+            {"timestamp_m1": t1, "exchange": exchange, "symbol": symbol, "open_interest": 1001.0, "oi_is_observed": False, "oi_is_ffill": True, "minutes_since_oi_observation": 1, "oi_observation_lag_sec": 60},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="funding_1m_feature",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"timestamp": t0, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 0, "is_funding_observation_minute": True, "funding_data_available": True},
+            {"timestamp": t1, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 1, "is_funding_observation_minute": False, "funding_data_available": True},
+        ],
+    )
+    # Valid artifact for requested exchange
+    _write_l2_gold_parquet(
+        gold,
+        symbol=symbol,
+        exchange=exchange,
+        rows=[
+            {"ts_minute": t0, "exchange": exchange, "symbol": symbol, "snapshot_count": 5, "coverage_ratio": 0.8},
+            {"ts_minute": t1, "exchange": exchange, "symbol": symbol, "snapshot_count": 6, "coverage_ratio": 1.0},
+        ],
+    )
+    # Invalid artifact for a different exchange; should be ignored.
+    _write_l2_gold_parquet(
+        gold,
+        symbol=symbol,
+        exchange="binance",
+        rows=[
+            {"ts_minute": t0, "exchange": "binance", "symbol": symbol, "snapshot_count": 5, "coverage_ratio": 1.5},
+            {"ts_minute": t1, "exchange": "binance", "symbol": symbol, "snapshot_count": 6, "coverage_ratio": 1.5},
+        ],
+    )
+
+    report = build_gold_for_symbol(
+        silver_root=str(silver),
+        gold_root=str(gold),
+        exchange=exchange,
+        symbol=symbol,
+        dataset_id="gold.hybrid.full_l2.m1",
+        manifest=True,
+    )
+    written = pl.read_parquet(report.parquet_path)
+    assert float(written["l2_coverage_ratio"].max()) == 1.0
+    payload = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
+    assert payload["observed_row_coverage_ratio"] == 1.0
+    assert payload["missing_minutes_in_span"] == 0
+    assert payload["expected_minutes_in_span"] == 2
+
+
+def test_build_gold_hybrid_full_l2_rejects_invalid_l2_coverage_ratio(tmp_path: Path) -> None:
+    silver = tmp_path / "silver"
+    gold = tmp_path / "gold"
+    symbol = "BTC"
+    exchange = "deribit"
+    t0 = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
+    t1 = datetime(2026, 5, 1, 0, 1, tzinfo=UTC)
+
+    _write_silver_month(
+        silver,
+        dataset_type="spot",
+        exchange=exchange,
+        symbol="BTC_USDC",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 1.0, "high_price": 2.0, "low_price": 0.5, "close_price": 1.5, "volume": 10.0},
+            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 1.5, "high_price": 2.5, "low_price": 1.0, "close_price": 2.0, "volume": 11.0},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="perp",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 10.0, "high_price": 11.0, "low_price": 9.5, "close_price": 10.5, "volume": 110.0},
+            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 10.5, "high_price": 11.5, "low_price": 10.0, "close_price": 11.0, "volume": 111.0},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="oi_1m_feature",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"timestamp_m1": t0, "exchange": exchange, "symbol": symbol, "open_interest": 1000.0, "oi_is_observed": True, "oi_is_ffill": False, "minutes_since_oi_observation": 0, "oi_observation_lag_sec": 0},
+            {"timestamp_m1": t1, "exchange": exchange, "symbol": symbol, "open_interest": 1001.0, "oi_is_observed": False, "oi_is_ffill": True, "minutes_since_oi_observation": 1, "oi_observation_lag_sec": 60},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="funding_1m_feature",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"timestamp": t0, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 0, "is_funding_observation_minute": True, "funding_data_available": True},
+            {"timestamp": t1, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 1, "is_funding_observation_minute": False, "funding_data_available": True},
+        ],
+    )
+    _write_l2_gold_parquet(
+        gold,
+        symbol=symbol,
+        exchange=exchange,
+        rows=[
+            {"ts_minute": t0, "exchange": exchange, "symbol": symbol, "snapshot_count": 5, "coverage_ratio": 1.2},
+            {"ts_minute": t1, "exchange": exchange, "symbol": symbol, "snapshot_count": 6, "coverage_ratio": 0.9},
+        ],
+    )
+
+    with pytest.raises(ValueError, match="L2 validation failed"):
+        build_gold_for_symbol(
+            silver_root=str(silver),
+            gold_root=str(gold),
+            exchange=exchange,
+            symbol=symbol,
+            dataset_id="gold.hybrid.full_l2.m1",
+        )
+
+
+def test_build_gold_hybrid_full_l2_lenient_drops_invalid_rows(tmp_path: Path) -> None:
+    silver = tmp_path / "silver"
+    gold = tmp_path / "gold"
+    symbol = "BTC"
+    exchange = "deribit"
+    t0 = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
+    t1 = datetime(2026, 5, 1, 0, 1, tzinfo=UTC)
+
+    _write_silver_month(
+        silver,
+        dataset_type="spot",
+        exchange=exchange,
+        symbol="BTC_USDC",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 1.0, "high_price": 2.0, "low_price": 0.5, "close_price": 1.5, "volume": 10.0},
+            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 1.5, "high_price": 2.5, "low_price": 1.0, "close_price": 2.0, "volume": 11.0},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="perp",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 10.0, "high_price": 11.0, "low_price": 9.5, "close_price": 10.5, "volume": 110.0},
+            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 10.5, "high_price": 11.5, "low_price": 10.0, "close_price": 11.0, "volume": 111.0},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="oi_1m_feature",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"timestamp_m1": t0, "exchange": exchange, "symbol": symbol, "open_interest": 1000.0, "oi_is_observed": True, "oi_is_ffill": False, "minutes_since_oi_observation": 0, "oi_observation_lag_sec": 0},
+            {"timestamp_m1": t1, "exchange": exchange, "symbol": symbol, "open_interest": 1001.0, "oi_is_observed": False, "oi_is_ffill": True, "minutes_since_oi_observation": 1, "oi_observation_lag_sec": 60},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="funding_1m_feature",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"timestamp": t0, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 0, "is_funding_observation_minute": True, "funding_data_available": True},
+            {"timestamp": t1, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 1, "is_funding_observation_minute": False, "funding_data_available": True},
+        ],
+    )
+    _write_l2_gold_parquet(
+        gold,
+        symbol=symbol,
+        exchange=exchange,
+        rows=[
+            {"ts_minute": t0, "exchange": exchange, "symbol": symbol, "snapshot_count": 5, "coverage_ratio": 1.2},
+            {"ts_minute": t1, "exchange": exchange, "symbol": symbol, "snapshot_count": 6, "coverage_ratio": 0.9},
+        ],
+    )
+
+    report = build_gold_for_symbol(
+        silver_root=str(silver),
+        gold_root=str(gold),
+        exchange=exchange,
+        symbol=symbol,
+        dataset_id="gold.hybrid.full_l2.m1",
+        manifest=True,
+        l2_validation_mode="lenient",
+    )
+    written = pl.read_parquet(report.parquet_path)
+    assert written.height == 1
+    payload = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
+    assert payload["l2_validation_mode"] == "lenient"
+    assert payload["l2_invalid_rows_found"] == 1
+    assert payload["l2_invalid_rows_dropped"] == 1
+
+
+def test_build_gold_full_keeps_minute_grid_and_reports_missing_values(tmp_path: Path) -> None:
+    silver = tmp_path / "silver"
+    gold = tmp_path / "gold"
+    symbol = "BTC"
+    exchange = "deribit"
+    t0 = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
+    t2 = datetime(2026, 5, 1, 0, 2, tzinfo=UTC)
+
+    _write_silver_month(
+        silver,
+        dataset_type="spot",
+        exchange=exchange,
+        symbol="BTC_USDC",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 1.0, "high_price": 2.0, "low_price": 0.5, "close_price": 1.5, "volume": 10.0},
+            {"open_time": t2, "exchange": exchange, "symbol": symbol, "open_price": 1.6, "high_price": 2.6, "low_price": 1.2, "close_price": 2.1, "volume": 12.0},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="perp",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 10.0, "high_price": 11.0, "low_price": 9.5, "close_price": 10.5, "volume": 110.0},
+            {"open_time": t2, "exchange": exchange, "symbol": symbol, "open_price": 10.6, "high_price": 11.6, "low_price": 10.1, "close_price": 11.1, "volume": 112.0},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="oi_1m_feature",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"timestamp_m1": t0, "exchange": exchange, "symbol": symbol, "open_interest": 1000.0, "oi_is_observed": True, "oi_is_ffill": False, "minutes_since_oi_observation": 0, "oi_observation_lag_sec": 0},
+            {"timestamp_m1": t2, "exchange": exchange, "symbol": symbol, "open_interest": 1002.0, "oi_is_observed": False, "oi_is_ffill": True, "minutes_since_oi_observation": 2, "oi_observation_lag_sec": 120},
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="funding_1m_feature",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {"timestamp": t0, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 0, "is_funding_observation_minute": True, "funding_data_available": True},
+            {"timestamp": t2, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 2, "is_funding_observation_minute": False, "funding_data_available": True},
+        ],
+    )
+
+    report = build_gold_for_symbol(
+        silver_root=str(silver),
+        gold_root=str(gold),
+        exchange=exchange,
+        symbol=symbol,
+        dataset_id="gold.market.full.m1",
+        manifest=True,
+    )
+    written = pl.read_parquet(report.parquet_path).sort("timestamp_m1")
+    assert written.height == 3
+    assert written["spot_close_price"].null_count() == 1
+    payload = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
+    assert payload["missing_minutes_in_span"] == 0
+    assert payload["missing_value_count_total"] >= 1
+    assert payload["missing_value_count_by_column"]["spot_close_price"] == 1
+    assert payload["feature_metadata"]["spot_close_price"]["missing_values"] == 1

@@ -12,12 +12,29 @@ from pathlib import Path
 from typing import Any
 
 MAX_PLOT_POINTS = 3_000
-SUPPORTED_GOLD_DATASET_IDS = {
-    "gold.market.core.m1",
-    "gold.market.core_funding.m1",
-    "gold.market.perp_funding.m1",
-    "gold.market.full.m1",
+GOLD_DATASET_SPECS: dict[str, dict[str, object]] = {
+    "gold.market.core.m1": {
+        "requirements": [("spot", "1m"), ("perp", "1m")],
+        "include_l2": False,
+    },
+    "gold.market.core_funding.m1": {
+        "requirements": [("spot", "1m"), ("perp", "1m"), ("funding_1m_feature", "1m")],
+        "include_l2": False,
+    },
+    "gold.market.perp_funding.m1": {
+        "requirements": [("perp", "1m"), ("funding_1m_feature", "1m")],
+        "include_l2": False,
+    },
+    "gold.market.full.m1": {
+        "requirements": [("spot", "1m"), ("perp", "1m"), ("oi_1m_feature", "1m"), ("funding_1m_feature", "1m")],
+        "include_l2": False,
+    },
+    "gold.hybrid.full_l2.m1": {
+        "requirements": [("spot", "1m"), ("perp", "1m"), ("oi_1m_feature", "1m"), ("funding_1m_feature", "1m")],
+        "include_l2": True,
+    },
 }
+SUPPORTED_GOLD_DATASET_IDS = set(GOLD_DATASET_SPECS.keys())
 
 
 def _require_polars() -> Any:
@@ -80,14 +97,6 @@ def _iso_utc(value: datetime | None) -> str | None:
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _git_commit_short() -> str:
-    try:
-        out = subprocess.check_output(["git", "rev-parse", "--short", "HEAD"], text=True).strip()
-        return out or "nogit"
-    except Exception:
-        return "nogit"
-
-
 def _git_commit_hash() -> str:
     try:
         out = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -123,10 +132,18 @@ def _bump_semver(version: str, level: str) -> str:
     raise ValueError(f"Unsupported semver bump level: {level}")
 
 
-def _latest_manifest_for_dataset(gold_root: Path, symbol: str, dataset_id: str) -> dict[str, object] | None:
+def _latest_manifest_for_dataset(gold_root: Path, exchange: str, symbol: str, dataset_id: str) -> dict[str, object] | None:
+    dataset_root = (
+        gold_root
+        / f"dataset_id={dataset_id}"
+        / f"exchange={exchange}"
+        / f"symbol={symbol}"
+    )
+    if not dataset_root.exists():
+        return None
     latest_payload: dict[str, object] | None = None
     latest_mtime = -1.0
-    for path in gold_root.glob(f"{symbol}_*.json"):
+    for path in dataset_root.glob("version=*/build_id=*/manifest.json"):
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
@@ -234,15 +251,109 @@ def discover_gold_symbols(silver_root: str, exchange: str) -> list[str]:
 
 
 def _dataset_requirements(dataset_id: str) -> list[tuple[str, str]]:
-    if dataset_id == "gold.market.core.m1":
-        return [("spot", "1m"), ("perp", "1m")]
-    if dataset_id == "gold.market.core_funding.m1":
-        return [("spot", "1m"), ("perp", "1m"), ("funding_1m_feature", "1m")]
-    if dataset_id == "gold.market.perp_funding.m1":
-        return [("perp", "1m"), ("funding_1m_feature", "1m")]
-    if dataset_id == "gold.market.full.m1":
-        return [("spot", "1m"), ("perp", "1m"), ("oi_1m_feature", "1m"), ("funding_1m_feature", "1m")]
-    raise ValueError(f"Unsupported dataset_id: {dataset_id}")
+    spec = GOLD_DATASET_SPECS.get(dataset_id)
+    if spec is None:
+        raise ValueError(f"Unsupported dataset_id: {dataset_id}")
+    requirements = spec.get("requirements")
+    if not isinstance(requirements, list):
+        raise ValueError(f"Invalid dataset requirements for dataset_id: {dataset_id}")
+    return requirements
+
+
+def _dataset_includes_l2(dataset_id: str) -> bool:
+    spec = GOLD_DATASET_SPECS.get(dataset_id)
+    if spec is None:
+        raise ValueError(f"Unsupported dataset_id: {dataset_id}")
+    return bool(spec.get("include_l2", False))
+
+
+def _read_latest_l2_gold_frame(*, gold_root: str, exchange: str, symbol: str) -> tuple[Any, Path]:
+    pl = _require_polars()
+    root = Path(gold_root) / "dataset_id=gold.l2.micro.m1"
+    candidates: list[Path] = []
+    # Preferred nested layout.
+    for path in root.glob("exchange=*/symbol=*/version=*/build_id=*/data.parquet"):
+        exchange_segment = next((part for part in path.parts if part.startswith("exchange=")), None)
+        if exchange_segment is None:
+            continue
+        raw_exchange = exchange_segment.split("=", 1)[1]
+        if raw_exchange != exchange:
+            continue
+        symbol_segment = next((part for part in path.parts if part.startswith("symbol=")), None)
+        if symbol_segment is None:
+            continue
+        raw_symbol = symbol_segment.split("=", 1)[1]
+        if normalize_symbol(raw_symbol) != normalize_symbol(symbol):
+            continue
+        candidates.append(path)
+    # Backward-compatible flat layout: <SYMBOL>_L2_<hash>_<hash>.parquet
+    if not candidates:
+        for path in root.glob("*_L2_*.parquet"):
+            base = path.name.split("_L2_", 1)[0]
+            if normalize_symbol(base) != normalize_symbol(symbol):
+                continue
+            candidates.append(path)
+    candidates = sorted(candidates, key=lambda p: p.stat().st_mtime)
+    if not candidates:
+        raise ValueError(f"Missing L2 gold parquet for symbol={symbol} in dataset_id=gold.l2.micro.m1")
+    chosen = candidates[-1]
+    return pl.read_parquet(str(chosen)), chosen
+
+
+def _prepare_l2(pl: Any, frame: Any, symbol: str) -> Any:
+    key_cols = {"ts_minute", "exchange", "symbol"}
+    if "ts_minute" not in frame.columns:
+        raise ValueError("L2 parquet missing required column 'ts_minute'")
+    if "exchange" not in frame.columns:
+        frame = frame.with_columns(pl.lit("deribit").alias("exchange"))
+    if "symbol" not in frame.columns:
+        frame = frame.with_columns(pl.lit(symbol).alias("symbol"))
+    renamed = []
+    for col in frame.columns:
+        if col in key_cols:
+            continue
+        renamed.append(pl.col(col).alias(f"l2_{col}"))
+    return (
+        frame.with_columns(
+            [
+                pl.col("ts_minute")
+                .cast(pl.Datetime(time_unit="us", time_zone="UTC"))
+                .dt.truncate("1m")
+                .alias("timestamp_m1"),
+                pl.lit(symbol).alias("symbol"),
+            ]
+        )
+        .select(["timestamp_m1", "exchange", "symbol", *renamed])
+        .sort("timestamp_m1")
+    )
+
+
+def _l2_invalid_mask_expr(pl: Any, columns: set[str]) -> Any:
+    cond = pl.lit(False)
+    if "l2_coverage_ratio" in columns:
+        cond = cond | (pl.col("l2_coverage_ratio") < 0.0) | (pl.col("l2_coverage_ratio") > 1.0)
+    if "l2_snapshot_count" in columns:
+        cond = cond | (pl.col("l2_snapshot_count") < 0)
+    if "l2_first_snapshot_ts" in columns and "l2_last_snapshot_ts" in columns:
+        cond = cond | (pl.col("l2_first_snapshot_ts") > pl.col("l2_last_snapshot_ts"))
+    return cond
+
+
+def _validate_or_filter_l2_quality(pl: Any, frame: Any, mode: str) -> tuple[Any, dict[str, int]]:
+    if mode not in {"strict", "lenient"}:
+        raise ValueError(f"Unsupported l2_validation_mode: {mode}")
+    l2_columns = set(frame.columns)
+    if "l2_coverage_ratio" not in l2_columns and "l2_snapshot_count" not in l2_columns:
+        raise ValueError("L2 validation failed: no supported L2 quality columns present")
+    invalid_mask = _l2_invalid_mask_expr(pl, l2_columns)
+    invalid_rows = frame.filter(invalid_mask).height
+    if invalid_rows == 0:
+        return frame, {"l2_invalid_rows_found": 0, "l2_invalid_rows_dropped": 0}
+    if mode == "strict":
+        raise ValueError(f"L2 validation failed: {invalid_rows} invalid rows detected")
+    filtered = frame.filter(~invalid_mask)
+    dropped = frame.height - filtered.height
+    return filtered, {"l2_invalid_rows_found": invalid_rows, "l2_invalid_rows_dropped": dropped}
 
 
 def _read_dataset_frame(
@@ -342,6 +453,41 @@ def _prepare_funding(pl: Any, frame: Any, symbol: str) -> Any:
     )
 
 
+def _prepare_dataset_frame(pl: Any, dataset_type: str, frame: Any, symbol: str) -> Any:
+    if dataset_type == "spot":
+        return _prepare_spot_or_perp(pl, frame, "spot", symbol)
+    if dataset_type == "perp":
+        return _prepare_spot_or_perp(pl, frame, "perp", symbol)
+    if dataset_type == "oi_1m_feature":
+        return _prepare_oi(pl, frame, symbol)
+    if dataset_type == "funding_1m_feature":
+        return _prepare_funding(pl, frame, symbol)
+    if dataset_type == "gold_l2_m1":
+        return _prepare_l2(pl, frame, symbol)
+    raise ValueError(f"Unsupported dataset_type for preparation: {dataset_type}")
+
+
+def _build_minute_grid(pl: Any, prepared: list[Any], exchange: str, symbol: str) -> Any:
+    mins: list[datetime] = []
+    maxs: list[datetime] = []
+    for frame in prepared:
+        if frame.height == 0:
+            continue
+        min_ts = frame.select(pl.col("timestamp_m1").min()).item()
+        max_ts = frame.select(pl.col("timestamp_m1").max()).item()
+        if isinstance(min_ts, datetime) and isinstance(max_ts, datetime):
+            mins.append(min_ts)
+            maxs.append(max_ts)
+    if not mins or not maxs:
+        raise ValueError("No timestamp coverage available across prepared datasets")
+    start = min(mins)
+    end = max(maxs)
+    timestamp_grid = pl.datetime_range(start, end, interval="1m", eager=True).alias("timestamp_m1")
+    return pl.DataFrame({"timestamp_m1": timestamp_grid}).with_columns(
+        [pl.lit(exchange).alias("exchange"), pl.lit(symbol).alias("symbol")]
+    )
+
+
 def _feature_hash(columns: list[str]) -> str:
     payload = "|".join(columns)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
@@ -377,6 +523,11 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
     numeric_cols = [col for col, dtype in zip(frame.columns, frame.dtypes, strict=False) if dtype.is_numeric()]
     if not numeric_cols:
         return None
+    market_cols = [col for col in numeric_cols if col.startswith(("spot_", "perp_"))]
+    derived_cols = [col for col in numeric_cols if col.startswith(("oi_", "funding_"))]
+    l2_cols = [col for col in numeric_cols if col.startswith("l2_")]
+    other_cols = [col for col in numeric_cols if col not in set(market_cols + derived_cols + l2_cols)]
+    numeric_cols = [*market_cols, *derived_cols, *l2_cols, *other_cols]
 
     row_count = len(numeric_cols)
     fig = plt.figure(figsize=(16, max(3.12 * row_count, 8.4)), facecolor="#0b1220", constrained_layout=True)
@@ -394,9 +545,10 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
     )
 
     for idx, col in enumerate(numeric_cols):
-        series_df = frame.select(["timestamp_m1", col]).drop_nulls().sort("timestamp_m1")
-        values = series_df.get_column(col).to_list()
+        series_df = frame.select(["timestamp_m1", col]).sort("timestamp_m1")
+        values_all = series_df.get_column(col).to_list()
         ts = series_df.get_column("timestamp_m1").to_list()
+        arr_non_null = [float(v) for v in values_all if v is not None]
         left_ax = fig.add_subplot(grid[idx, 0])
         right_ax = fig.add_subplot(grid[idx, 1])
 
@@ -408,27 +560,60 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
             axis.spines["left"].set_color("#64748b")
             axis.spines["bottom"].set_color("#64748b")
 
-        if values:
-            arr = [float(v) for v in values]
+        if arr_non_null:
+            arr = arr_non_null
             arr_sorted = sorted(arr)
             p50 = arr_sorted[len(arr_sorted) // 2]
             p95 = arr_sorted[min(len(arr_sorted) - 1, int(len(arr_sorted) * 0.95))]
             missing_values = frame.height - len(arr)
+            is_constant = (max(arr) - min(arr)) == 0.0
+            sparse_ratio = (len(arr) / frame.height) if frame.height > 0 else 0.0
+            is_sparse = sparse_ratio < 0.15 or len(arr) < 200
+            # Visibility-mode normalization: keep shape while avoiding flat/invisible lines
+            if is_constant:
+                arr_plot = [0.0 if value is not None else float("nan") for value in values_all]
+            else:
+                arr_min = min(arr)
+                arr_max = max(arr)
+                scale = arr_max - arr_min
+                arr_plot = [
+                    ((float(value) - arr_min) / scale) if value is not None else float("nan")
+                    for value in values_all
+                ]
             stats_text = "\n".join(
                 [
                     f"feature: {col}",
-                    f"count: {len(arr)}",
+                    f"count: {len(arr_non_null)}",
                     f"missing: {missing_values}",
+                    f"sparse: {is_sparse}",
+                    f"constant: {is_constant}",
                     f"mean: {sum(arr)/len(arr):.6g}",
                     f"min/max: {min(arr):.6g} / {max(arr):.6g}",
                     f"p50/p95: {p50:.6g} / {p95:.6g}",
                 ]
             )
-            left_ax.plot(ts, arr, color="#38bdf8", linewidth=1.6, alpha=0.95, label=stats_text)
-            left_ax.fill_between(ts, arr, [min(arr)] * len(arr), color="#0ea5e9", alpha=0.16)
+            line_width = 2.2 if is_sparse else 1.8
+            line_alpha = 1.0 if is_sparse else 0.90
+            left_ax.plot(ts, arr_plot, color="#38bdf8", linewidth=line_width, alpha=line_alpha, label=stats_text)
+            if is_sparse:
+                marker_every = max(1, len(arr_plot) // 80)
+                left_ax.plot(
+                    ts,
+                    arr_plot,
+                    linestyle="None",
+                    marker="o",
+                    markersize=2.2,
+                    color="#67e8f9",
+                    alpha=0.95,
+                    markevery=marker_every,
+                )
+            mask = [value == value for value in arr_plot]
+            left_ax.fill_between(ts, arr_plot, [0.0] * len(arr_plot), where=mask, color="#0ea5e9", alpha=0.18)
             left_ax.xaxis.set_major_locator(mdates.AutoDateLocator())
             left_ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
             left_ax.tick_params(axis="x", rotation=0)
+            left_ax.set_ylim(-0.05, 1.05)
+            left_ax.set_ylabel("normalized", color="#cbd5e1", fontsize=7)
             right_ax.hist(arr, bins=30, color="#22d3ee", alpha=0.85)
             right_ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.4g}"))
         else:
@@ -442,16 +627,18 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
                 fontsize=9.5,
                 transform=left_ax.transAxes,
             )
-        left_ax.legend(
-            loc="upper left",
-            frameon=True,
-            framealpha=0.82,
-            facecolor="#111827",
-            edgecolor="#334155",
-            labelcolor="#e2e8f0",
-            fontsize=7.8,
-            handlelength=1.6,
-        )
+        handles, labels = left_ax.get_legend_handles_labels()
+        if handles:
+            left_ax.legend(
+                loc="upper left",
+                frameon=True,
+                framealpha=0.82,
+                facecolor="#111827",
+                edgecolor="#334155",
+                labelcolor="#e2e8f0",
+                fontsize=7.8,
+                handlelength=1.6,
+            )
         right_ax.set_title(col, color="#cbd5e1", fontsize=8.5, pad=2)
         right_ax.set_xlabel("value", color="#cbd5e1", fontsize=8)
         right_ax.set_yticks([])
@@ -510,6 +697,46 @@ def _feature_metadata(pl: Any, frame: Any, exchange: str) -> dict[str, dict[str,
     return meta
 
 
+def _time_span_coverage(frame: Any) -> tuple[datetime | None, datetime | None, int | None, int | None, float | None]:
+    pl = _require_polars()
+    min_ts = frame.select(pl.col("timestamp_m1").min()).item()
+    max_ts = frame.select(pl.col("timestamp_m1").max()).item()
+    expected_minutes: int | None = None
+    missing_minutes: int | None = None
+    observed_coverage_ratio: float | None = None
+    if isinstance(min_ts, datetime) and isinstance(max_ts, datetime):
+        expected_minutes = int(((max_ts - min_ts).total_seconds() // 60) + 1)
+        if expected_minutes > 0:
+            observed_coverage_ratio = frame.height / float(expected_minutes)
+            missing_minutes = max(expected_minutes - frame.height, 0)
+    return min_ts, max_ts, expected_minutes, missing_minutes, observed_coverage_ratio
+
+
+def _source_dataset_summary(pl: Any, raw_by_dataset: dict[str, Any], l2_source_path: Path | None) -> dict[str, dict[str, object]]:
+    summary: dict[str, dict[str, object]] = {}
+    for dataset_type, raw in raw_by_dataset.items():
+        source_key = f"{dataset_type}_1m" if dataset_type in {"spot", "perp"} else dataset_type
+        source_symbols = (
+            sorted(set(raw.get_column("symbol").cast(pl.Utf8).to_list()))
+            if "symbol" in raw.columns
+            else []
+        )
+        summary[source_key] = {
+            "columns": raw.columns,
+            "rows": raw.height,
+            "source_symbols": source_symbols,
+        }
+        if dataset_type == "gold_l2_m1" and l2_source_path is not None:
+            summary[source_key]["source_artifact"] = l2_source_path.name
+    return summary
+
+
+def _missing_value_audit(pl: Any, frame: Any) -> tuple[dict[str, int], int]:
+    missing_by_column = {col: int(frame.select(pl.col(col).is_null().sum()).item()) for col in frame.columns}
+    missing_total = int(sum(missing_by_column.values()))
+    return missing_by_column, missing_total
+
+
 def build_gold_for_symbol(
     *,
     silver_root: str,
@@ -522,6 +749,7 @@ def build_gold_for_symbol(
     version_base: str = "v1.0.0",
     manifest: bool = False,
     plot: bool = False,
+    l2_validation_mode: str = "strict",
 ) -> GoldBuildReport:
     """Build one gold parquet dataset + manifest for a symbol."""
 
@@ -539,39 +767,35 @@ def build_gold_for_symbol(
         )
 
     prepared: list[Any] = []
-    if "spot" in raw_by_dataset:
-        prepared.append(_prepare_spot_or_perp(pl, raw_by_dataset["spot"], "spot", symbol))
-    if "perp" in raw_by_dataset:
-        prepared.append(_prepare_spot_or_perp(pl, raw_by_dataset["perp"], "perp", symbol))
-    if "oi_1m_feature" in raw_by_dataset:
-        prepared.append(_prepare_oi(pl, raw_by_dataset["oi_1m_feature"], symbol))
-    if "funding_1m_feature" in raw_by_dataset:
-        prepared.append(_prepare_funding(pl, raw_by_dataset["funding_1m_feature"], symbol))
+    l2_source_path: Path | None = None
+    if _dataset_includes_l2(dataset_id):
+        l2_raw, l2_source_path = _read_latest_l2_gold_frame(gold_root=gold_root, exchange=exchange, symbol=symbol)
+        raw_by_dataset["gold_l2_m1"] = l2_raw
+    for dataset_type, raw_frame in raw_by_dataset.items():
+        prepared.append(_prepare_dataset_frame(pl, dataset_type, raw_frame, symbol))
     if not prepared:
         raise ValueError(f"No prepared datasets for symbol={symbol} dataset_id={dataset_id}")
     key_cols = ["timestamp_m1", "exchange", "symbol"]
-    merged = prepared[0]
-    for frame in prepared[1:]:
-        merged = merged.join(frame, on=key_cols, how="full", coalesce=True)
+    merged = _build_minute_grid(pl, prepared, exchange, symbol)
+    for frame in prepared:
+        merged = merged.join(frame, on=key_cols, how="left", coalesce=True)
     merged = merged.sort("timestamp_m1")
+    l2_validation_audit = {"l2_invalid_rows_found": 0, "l2_invalid_rows_dropped": 0}
+    if _dataset_includes_l2(dataset_id):
+        merged, l2_validation_audit = _validate_or_filter_l2_quality(pl, merged, l2_validation_mode)
+    if merged.height == 0:
+        raise ValueError(f"Gold build produced zero rows for symbol={symbol} dataset_id={dataset_id}")
 
     cols = merged.columns
-    min_ts = merged.select(pl.col("timestamp_m1").min()).item()
-    max_ts = merged.select(pl.col("timestamp_m1").max()).item()
-    source_silver_datasets: dict[str, dict[str, object]] = {}
-    for dataset_type, raw in raw_by_dataset.items():
-        source_key = f"{dataset_type}_1m" if dataset_type in {"spot", "perp"} else dataset_type
-        source_silver_datasets[source_key] = {
-            "columns": raw.columns,
-            "rows": raw.height,
-            "source_symbols": sorted(set(raw.get_column("symbol").cast(pl.Utf8).to_list())) if "symbol" in raw.columns else [],
-        }
+    min_ts, max_ts, expected_minutes, missing_minutes, observed_coverage_ratio = _time_span_coverage(merged)
+    source_silver_datasets = _source_dataset_summary(pl, raw_by_dataset, l2_source_path)
     source_data_hash = _json_payload_hash({"source_silver_datasets": source_silver_datasets})
     contract_signature: dict[str, object] = {
         "columns": cols,
-        "join_policy": "full_outer_coalesce",
+        "join_policy": "minute_grid_left_join_coalesce",
         "source_dataset_keys": sorted(source_silver_datasets.keys()),
     }
+    missing_by_column, missing_total = _missing_value_audit(pl, merged)
     feature_set_hash = _json_payload_hash(
         {
             "dataset_id": dataset_id,
@@ -588,7 +812,7 @@ def build_gold_for_symbol(
     version_bump_reason = "manual_version"
     if auto_version:
         _parse_semver(version_base)
-        previous_manifest = _latest_manifest_for_dataset(root, symbol, dataset_id)
+        previous_manifest = _latest_manifest_for_dataset(root, exchange, symbol, dataset_id)
         if previous_manifest is None:
             resolved_version = version_base
             version_bump_level = "initial"
@@ -631,23 +855,43 @@ def build_gold_for_symbol(
         "columns": cols,
         "min_timestamp": _iso_utc(min_ts if isinstance(min_ts, datetime) else None),
         "max_timestamp": _iso_utc(max_ts if isinstance(max_ts, datetime) else None),
+        "expected_minutes_in_span": expected_minutes,
+        "missing_minutes_in_span": missing_minutes,
+        "observed_row_coverage_ratio": observed_coverage_ratio,
+        "l2_validation_mode": l2_validation_mode if _dataset_includes_l2(dataset_id) else None,
+        "l2_invalid_rows_found": l2_validation_audit["l2_invalid_rows_found"] if _dataset_includes_l2(dataset_id) else None,
+        "l2_invalid_rows_dropped": l2_validation_audit["l2_invalid_rows_dropped"] if _dataset_includes_l2(dataset_id) else None,
+        "missing_value_count_total": missing_total,
+        "missing_value_count_by_column": missing_by_column,
         "source_silver_datasets": source_silver_datasets,
         "feature_metadata": _feature_metadata(pl, merged, exchange),
     }
     hash_string = build_id
-    safe_dataset_id = dataset_id.replace(".", "-")
-    parquet_path = root / f"{symbol}_{safe_dataset_id}_{resolved_version}_{hash_string}.parquet"
+    artifact_dir = (
+        root
+        / f"dataset_id={dataset_id}"
+        / f"exchange={exchange}"
+        / f"symbol={symbol}"
+        / f"version={resolved_version}"
+        / f"build_id={hash_string}"
+    )
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = artifact_dir / "data.parquet"
     merged.write_parquet(parquet_path)
-    written_plot: str | None = None
-    if plot:
-        plot_path = root / f"{symbol}_{safe_dataset_id}_{resolved_version}_{hash_string}.png"
-        written_plot = _write_feature_distribution_plot(merged, plot_path)
-    written_manifest: str | None = None
-    if manifest:
-        manifest_payload["plot_generated"] = written_plot is not None
-        manifest_path = root / f"{symbol}_{safe_dataset_id}_{resolved_version}_{hash_string}.json"
-        manifest_path.write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
-        written_manifest = str(manifest_path.resolve())
+    # Gold policy: always emit plot + manifest for every dataset artifact.
+    _ = manifest
+    _ = plot
+    plot_path = artifact_dir / "plot.png"
+    written_plot = _write_feature_distribution_plot(merged, plot_path)
+    if written_plot is None:
+        raise ValueError(
+            "Gold build requires plot generation for every dataset, but plot generation failed "
+            "(missing matplotlib dependency or no plottable numeric columns)."
+        )
+    manifest_payload["plot_generated"] = True
+    manifest_path = artifact_dir / "manifest.json"
+    manifest_path.write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
+    written_manifest: str | None = str(manifest_path.resolve())
 
     return GoldBuildReport(
         exchange=exchange,
