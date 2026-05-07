@@ -8,8 +8,10 @@ from typing import Any, cast
 
 import pytest
 
+import application.services.fetch_service as fetch_service_module
 from application.dto import CandleFetchTaskDTO, OpenInterestFetchTaskDTO
 from application.services.fetch_service import (
+    _run_with_optional_timeout,
     _split_range_into_utc_days,
     _task_timeout_seconds,
     fetch_candle_tasks_parallel,
@@ -323,6 +325,38 @@ def test_task_timeout_seconds_uses_safe_default(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.delenv("DEPTH_FETCH_TASK_TIMEOUT_S", raising=False)
     timeout_s = _task_timeout_seconds()
     assert timeout_s is None
+
+
+def test_run_with_optional_timeout_falls_back_when_process_start_eio(monkeypatch: pytest.MonkeyPatch) -> None:
+    class _FakeQueue:
+        def close(self) -> None:
+            return None
+
+        def join_thread(self) -> None:
+            return None
+
+    class _FakeProcess:
+        def start(self) -> None:
+            raise OSError(5, "Input/output error")
+
+    class _FakeContext:
+        def Queue(self, maxsize: int = 1) -> _FakeQueue:  # noqa: N802
+            del maxsize
+            return _FakeQueue()
+
+        def Process(self, target: object, args: tuple[object, ...]) -> _FakeProcess:  # noqa: N802
+            del target, args
+            return _FakeProcess()
+
+    monkeypatch.setattr(fetch_service_module.mp, "get_context", lambda _: _FakeContext())
+    value = _run_with_optional_timeout(
+        lambda **_: "ok",
+        timeout_s=1.0,
+        heartbeat_s=0.1,
+        heartbeat=lambda _elapsed_s: None,
+        use_process_timeout=True,
+    )
+    assert value == "ok"
 
 
 def test_fetch_open_interest_tasks_parallel_times_out_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:

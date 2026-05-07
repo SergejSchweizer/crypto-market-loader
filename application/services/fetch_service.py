@@ -176,7 +176,7 @@ def _run_with_optional_timeout(
 ) -> TTimeout:
     """Run callable in a worker process with optional hard timeout and heartbeat."""
 
-    if timeout_s is None or not use_process_timeout:
+    def _run_inline_with_heartbeat() -> TTimeout:
         started = datetime.now(UTC)
         stop_event = threading.Event()
 
@@ -194,11 +194,24 @@ def _run_with_optional_timeout(
             stop_event.set()
             watcher.join(timeout=1.0)
 
+    if timeout_s is None or not use_process_timeout:
+        return _run_inline_with_heartbeat()
+
     started = datetime.now(UTC)
     ctx = mp.get_context("fork")
     result_queue = ctx.Queue(maxsize=1)
     process = ctx.Process(target=_timeout_worker, args=(result_queue, fn, kwargs))
-    process.start()
+    try:
+        process.start()
+    except OSError as exc:
+        if exc.errno != 5:
+            raise
+        logging.getLogger(__name__).warning(
+            "Worker process startup failed with EIO; falling back to inline execution without hard timeout"
+        )
+        result_queue.close()
+        result_queue.join_thread()
+        return _run_inline_with_heartbeat()
     deadline = None if timeout_s is None else (time.monotonic() + timeout_s)
     try:
         while True:
