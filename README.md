@@ -260,6 +260,7 @@ Equivalent:
 
 - single-instance runtime lock: `.run/crypto-market-loader.lock`
 - shared log file path: `/volume1/Temp/logs/crypto-market-loader.log` (override via `DEPTH_SYNC_LOG_FILE`)
+- log retention/rotation: daily rotation with 30-day retention; rotated files are date-suffixed (for example `crypto-market-loader.log.2026-05-07`)
 - this repo currently targets Deribit only
 
 ## Limitations

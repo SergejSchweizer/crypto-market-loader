@@ -359,6 +359,7 @@ def ensure_bronze_sidecars(
     *,
     lake_root: str,
     dataset_types: list[str] | None = None,
+    log_fn: Any | None = None,
 ) -> list[str]:
     """Ensure bronze sidecars exist for parquet files under requested dataset types."""
 
@@ -369,12 +370,20 @@ def ensure_bronze_sidecars(
 
     selected = dataset_types or ["spot", "perp", OI_DATASET_TYPE, "funding"]
     written: list[str] = []
+    log = log_fn if callable(log_fn) else None
+    if log is not None:
+        log("Bronze sidecar backfill start dataset_types=%s", selected)
     for dataset_type in selected:
         pattern = (
             f"dataset_type={dataset_type}/exchange=*/instrument_type=*/"
             "symbol=*/timeframe=*/month=*/date=*/data.parquet"
         )
-        for parquet_path in sorted(root.glob(pattern)):
+        paths = sorted(root.glob(pattern))
+        dataset_total = len(paths)
+        dataset_written = 0
+        if log is not None:
+            log("Bronze sidecar backfill scan dataset_type=%s parquet_files=%s", dataset_type, dataset_total)
+        for idx, parquet_path in enumerate(paths, start=1):
             parsed = _partition_key_from_parquet_path(parquet_path)
             if parsed is None:
                 continue
@@ -393,6 +402,25 @@ def ensure_bronze_sidecars(
                 rows=table.to_pylist(),
             )
             written.append(str(parquet_path.resolve()))
+            dataset_written += 1
+            if log is not None and (dataset_written <= 3 or idx % 50 == 0):
+                log(
+                    "Bronze sidecar backfill progress dataset_type=%s scanned=%s/%s repaired=%s path=%s",
+                    dataset_type,
+                    idx,
+                    dataset_total,
+                    dataset_written,
+                    parquet_path,
+                )
+        if log is not None:
+            log(
+                "Bronze sidecar backfill done dataset_type=%s scanned=%s repaired=%s",
+                dataset_type,
+                dataset_total,
+                dataset_written,
+            )
+    if log is not None:
+        log("Bronze sidecar backfill complete repaired_total=%s", len(written))
     return written
 
 

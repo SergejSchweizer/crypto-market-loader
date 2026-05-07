@@ -131,7 +131,7 @@ def _safe_log_module_name(module_name: str) -> str:
 
 
 def configure_logging(module_name: str = "crypto-market-loader") -> logging.Logger:
-    """Configure process logging with weekly rotation."""
+    """Configure process logging with daily rotation and 30-day retention."""
 
     safe_module_name = _safe_log_module_name(module_name)
     logger = logging.getLogger(f"{LOGGER_NAME}.{safe_module_name}")
@@ -151,9 +151,9 @@ def configure_logging(module_name: str = "crypto-market-loader") -> logging.Logg
         log_path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = TimedRotatingFileHandler(
             filename=log_path,
-            when="D",
-            interval=7,
-            backupCount=0,
+            when="midnight",
+            interval=1,
+            backupCount=30,
             encoding="utf-8",
             utc=True,
         )

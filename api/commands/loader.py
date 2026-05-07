@@ -763,6 +763,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 repaired_parquet_files = ensure_bronze_sidecars(
                     lake_root=cast(str, args.lake_root),
                     dataset_types=sorted(selected_dataset_types),
+                    log_fn=logger.info,
                 )
                 if repaired_parquet_files:
                     parquet_files = sorted(set(parquet_files).union(repaired_parquet_files))
