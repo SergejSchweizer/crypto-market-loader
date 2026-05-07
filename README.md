@@ -88,6 +88,10 @@ Behavior:
 - fixed ingestion cadence for OHLCV: `1m`
 - `oi`/`funding` preserve source event timestamps
 - incremental/tail-first operation with optional gap-fill checks
+- when `--save-parquet-lake` is enabled, Bronze guarantees sidecars for each `data.parquet`:
+  - manifest: `data.json`
+  - plot: `data.png`
+  - missing sidecars on existing matching Bronze files are backfilled during the run
 
 Bronze layout:
 
@@ -254,7 +258,8 @@ What it does:
 - no pipeline step flags are hardcoded in the script
 - stops immediately on first failed step (non-zero exit)
 - uses a non-blocking lock at `.run/full-pipeline.lock` to prevent overlapping runs
-- writes logs to `.run/logs/pipeline-<UTC timestamp>.log`
+- appends logs to `.run/logs/crypto-market-loader.log`
+- writes explicit runtime markers such as `ACTIVE_STEP=bronze|silver|gold`
 
 Cron example (hourly):
 

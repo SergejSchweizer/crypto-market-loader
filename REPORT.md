@@ -29,6 +29,8 @@ Layers:
 - `spot`, `perp`: 1-minute OHLCV bars
 - `oi`, `funding`: source event-time rows
 - idempotent persistence via natural-key partition rewrites
+- artifact policy per partition file: `data.parquet` + `data.json` + `data.png`
+- sidecar backfill: Bronze runs can repair missing sidecars for existing matching parquet partitions when parquet persistence is enabled
 
 ### Silver
 - Monthly parquet naming: `<SYMBOL>-<YYYY-MM>.parquet`
@@ -102,6 +104,7 @@ Silver and gold plots share the same renderer style and are capped to **3000 eve
 - manifest-level provenance and source summaries
 - quality gates: `pytest`, `ruff`, `mypy`
 - mandatory runtime config file (`config.yaml`) with restricted permissions
+- medallion orchestration lock (`.run/full-pipeline.lock`) to prevent concurrent pipeline runs
 
 ## Current Limitations
 
