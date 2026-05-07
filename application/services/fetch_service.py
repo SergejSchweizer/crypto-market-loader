@@ -6,10 +6,11 @@ import logging
 import multiprocessing as mp
 import os
 import random
+import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
-from typing import TypeVar
+from typing import Any, TypeVar, cast
 
 from application.dto import (
     CandleFetchResultDTO,
@@ -48,6 +49,40 @@ from ingestion.spot import (
 
 OI_DATASET_TYPE = dataset_contract("oi").dataset_type
 TTimeout = TypeVar("TTimeout")
+TRow = TypeVar("TRow")
+
+
+def _row_open_time_ms(row: TRow) -> int:
+    """Return row open timestamp in epoch milliseconds."""
+
+    return int(cast(Any, row).open_time.timestamp() * 1000)
+
+
+def _filter_rows_by_start_bound(rows: list[TRow], start_open_ms_bound: int | None) -> list[TRow]:
+    """Filter rows by inclusive start bound when provided."""
+
+    if start_open_ms_bound is None:
+        return rows
+    return [item for item in rows if _row_open_time_ms(item) >= start_open_ms_bound]
+
+
+def _filter_chunk_callback(
+    on_history_chunk: Callable[[list[TRow]], None] | None,
+    start_open_ms_bound: int | None,
+) -> Callable[[list[TRow]], None] | None:
+    """Wrap chunk callback with optional start-bound filtering."""
+
+    if on_history_chunk is None:
+        return None
+    if start_open_ms_bound is None:
+        return on_history_chunk
+
+    def _filtered_chunk(rows: list[TRow]) -> None:
+        filtered = _filter_rows_by_start_bound(rows, start_open_ms_bound)
+        if filtered:
+            on_history_chunk(filtered)
+
+    return _filtered_chunk
 
 
 def _timeout_worker(
@@ -142,7 +177,22 @@ def _run_with_optional_timeout(
     """Run callable in a worker process with optional hard timeout and heartbeat."""
 
     if timeout_s is None or not use_process_timeout:
-        return fn(**kwargs)
+        started = datetime.now(UTC)
+        stop_event = threading.Event()
+
+        def _heartbeat_loop() -> None:
+            interval = max(0.1, heartbeat_s)
+            while not stop_event.wait(interval):
+                elapsed_s = int((datetime.now(UTC) - started).total_seconds())
+                heartbeat(elapsed_s)
+
+        watcher = threading.Thread(target=_heartbeat_loop, daemon=True)
+        watcher.start()
+        try:
+            return fn(**kwargs)
+        finally:
+            stop_event.set()
+            watcher.join(timeout=1.0)
 
     started = datetime.now(UTC)
     ctx = mp.get_context("fork")
@@ -206,12 +256,15 @@ def fetch_symbol_candles(
     latest_open_time_reader: Callable[..., datetime | None] | None = None,
     tail_delta_only: bool = False,
     on_history_chunk: Callable[[list[SpotCandle]], None] | None = None,
+    start_open_ms_bound: int | None = None,
 ) -> list[SpotCandle]:
     """Fetch candles for one symbol with auto bootstrap/gap-fill behavior."""
 
     storage_symbol = symbol_normalizer(exchange=exchange, symbol=symbol, market=market)
     interval_ms = interval_ms_resolver(exchange=exchange, interval=timeframe)
     end_open_ms = now_open_resolver(interval_ms=interval_ms)
+    if start_open_ms_bound is not None and end_open_ms < start_open_ms_bound:
+        return []
 
     if tail_delta_only:
         latest_reader = latest_open_time_reader
@@ -225,14 +278,19 @@ def fetch_symbol_candles(
             timeframe=timeframe,
         )
         if latest_open_time is None:
-            return history_fetcher(
+            rows = history_fetcher(
                 exchange=exchange,
                 symbol=symbol,
                 market=market,
                 interval=timeframe,
-                on_history_chunk=on_history_chunk,
+                on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
             )
+            filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
+            unique_by_open_time = {item.open_time: item for item in filtered_rows}
+            return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
         start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
+        if start_open_ms_bound is not None:
+            start_open_ms = max(start_open_ms, start_open_ms_bound)
         if start_open_ms > end_open_ms:
             return []
         fetched_rows: list[SpotCandle] = []
@@ -259,13 +317,16 @@ def fetch_symbol_candles(
     )
 
     if not stored_open_times:
-        return history_fetcher(
+        rows = history_fetcher(
             exchange=exchange,
             symbol=symbol,
             market=market,
             interval=timeframe,
-            on_history_chunk=on_history_chunk,
+            on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
         )
+        filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
+        unique_by_open_time = {item.open_time: item for item in filtered_rows}
+        return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
     if end_open_ms < int(min(stored_open_times).timestamp() * 1000):
         return []
 
@@ -274,6 +335,11 @@ def fetch_symbol_candles(
         interval_ms=interval_ms,
         end_open_ms=end_open_ms,
     )
+    earliest_existing_ms = int(min(stored_open_times).timestamp() * 1000)
+    if start_open_ms_bound is not None and start_open_ms_bound < earliest_existing_ms:
+        head_end_ms = min(earliest_existing_ms - interval_ms, end_open_ms)
+        if start_open_ms_bound <= head_end_ms:
+            missing_ranges.append((start_open_ms_bound, head_end_ms))
     if not missing_ranges:
         return []
 
@@ -312,6 +378,7 @@ def fetch_symbol_open_interest(
     latest_open_time_reader: Callable[..., datetime | None] | None = None,
     tail_delta_only: bool = False,
     on_history_chunk: Callable[[list[OpenInterestPoint]], None] | None = None,
+    start_open_ms_bound: int | None = None,
 ) -> list[OpenInterestPoint]:
     """Fetch open-interest for one symbol with auto bootstrap/gap-fill behavior."""
 
@@ -322,6 +389,8 @@ def fetch_symbol_open_interest(
     storage_symbol = symbol_normalizer(exchange=exchange, symbol=symbol, market=market)
     interval_ms = interval_ms_resolver(exchange=exchange, interval=normalized_interval)
     end_open_ms = now_open_resolver(interval_ms=interval_ms)
+    if start_open_ms_bound is not None and end_open_ms < start_open_ms_bound:
+        return []
 
     if tail_delta_only:
         latest_reader = latest_open_time_reader
@@ -336,14 +405,19 @@ def fetch_symbol_open_interest(
             timeframe=normalized_interval,
         )
         if latest_open_time is None:
-            return history_fetcher(
+            rows = history_fetcher(
                 exchange=exchange,
                 symbol=symbol,
                 interval=normalized_interval,
                 market=market,
-                on_history_chunk=on_history_chunk,
+                on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
             )
+            filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
+            unique_by_open_time = {item.open_time: item for item in filtered_rows}
+            return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
         start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
+        if start_open_ms_bound is not None:
+            start_open_ms = max(start_open_ms, start_open_ms_bound)
         if start_open_ms > end_open_ms:
             return []
         fetched_rows: list[OpenInterestPoint] = []
@@ -371,13 +445,16 @@ def fetch_symbol_open_interest(
     )
 
     if not stored_open_times:
-        return history_fetcher(
+        rows = history_fetcher(
             exchange=exchange,
             symbol=symbol,
             interval=normalized_interval,
             market=market,
-            on_history_chunk=on_history_chunk,
+            on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
         )
+        filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
+        unique_by_open_time = {item.open_time: item for item in filtered_rows}
+        return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
     if end_open_ms < int(min(stored_open_times).timestamp() * 1000):
         return []
 
@@ -386,6 +463,11 @@ def fetch_symbol_open_interest(
         interval_ms=interval_ms,
         end_open_ms=end_open_ms,
     )
+    earliest_existing_ms = int(min(stored_open_times).timestamp() * 1000)
+    if start_open_ms_bound is not None and start_open_ms_bound < earliest_existing_ms:
+        head_end_ms = min(earliest_existing_ms - interval_ms, end_open_ms)
+        if start_open_ms_bound <= head_end_ms:
+            missing_ranges.append((start_open_ms_bound, head_end_ms))
     if not missing_ranges:
         return []
 
@@ -424,6 +506,7 @@ def fetch_symbol_funding(
     latest_open_time_reader: Callable[..., datetime | None] | None = None,
     tail_delta_only: bool = False,
     on_history_chunk: Callable[[list[FundingPoint]], None] | None = None,
+    start_open_ms_bound: int | None = None,
 ) -> list[FundingPoint]:
     """Fetch funding for one symbol with auto bootstrap/gap-fill behavior."""
 
@@ -434,6 +517,8 @@ def fetch_symbol_funding(
     storage_symbol = symbol_normalizer(exchange=exchange, symbol=symbol, market=market)
     interval_ms = interval_ms_resolver(exchange=exchange, interval=normalized_interval)
     end_open_ms = now_open_resolver(interval_ms=interval_ms)
+    if start_open_ms_bound is not None and end_open_ms < start_open_ms_bound:
+        return []
 
     if tail_delta_only:
         latest_reader = latest_open_time_reader
@@ -448,14 +533,19 @@ def fetch_symbol_funding(
             timeframe=normalized_interval,
         )
         if latest_open_time is None:
-            return history_fetcher(
+            rows = history_fetcher(
                 exchange=exchange,
                 symbol=symbol,
                 interval=normalized_interval,
                 market=market,
-                on_history_chunk=on_history_chunk,
+                on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
             )
+            filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
+            unique_by_open_time = {item.open_time: item for item in filtered_rows}
+            return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
         start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
+        if start_open_ms_bound is not None:
+            start_open_ms = max(start_open_ms, start_open_ms_bound)
         if start_open_ms > end_open_ms:
             return []
         # Funding is naturally sparse (e.g. 8h on Deribit), so one ranged call is
@@ -481,13 +571,16 @@ def fetch_symbol_funding(
     )
 
     if not stored_open_times:
-        return history_fetcher(
+        rows = history_fetcher(
             exchange=exchange,
             symbol=symbol,
             interval=normalized_interval,
             market=market,
-            on_history_chunk=on_history_chunk,
+            on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
         )
+        filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
+        unique_by_open_time = {item.open_time: item for item in filtered_rows}
+        return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
     if end_open_ms < int(min(stored_open_times).timestamp() * 1000):
         return []
 
@@ -496,6 +589,11 @@ def fetch_symbol_funding(
         interval_ms=interval_ms,
         end_open_ms=end_open_ms,
     )
+    earliest_existing_ms = int(min(stored_open_times).timestamp() * 1000)
+    if start_open_ms_bound is not None and start_open_ms_bound < earliest_existing_ms:
+        head_end_ms = min(earliest_existing_ms - interval_ms, end_open_ms)
+        if start_open_ms_bound <= head_end_ms:
+            missing_ranges.append((start_open_ms_bound, head_end_ms))
     if not missing_ranges:
         return []
 

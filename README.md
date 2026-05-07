@@ -88,6 +88,9 @@ Behavior:
 - fixed ingestion cadence for OHLCV: `1m`
 - `oi`/`funding` preserve source event timestamps
 - incremental/tail-first operation with optional gap-fill checks
+- optional lower bounds can be configured per exchange-symbol via
+  `bronze-build.exchange_symbol_start_dates` entries like
+  `deribit:BTC=2023-04-24`
 - when `--save-parquet-lake` is enabled, Bronze guarantees sidecars for each `data.parquet`:
   - manifest: `data.json`
   - plot: `data.png`

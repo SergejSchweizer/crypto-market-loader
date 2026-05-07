@@ -95,3 +95,25 @@ def test_run_bronze_build_emits_manifest_and_plot_file_lists(
     assert payload["_parquet_files"] == [str(parquet_path)]
     assert payload["_manifest_files"] == [str(parquet_path.with_suffix(".json").resolve())]
     assert payload["_plot_files"] == [str(parquet_path.with_suffix(".png").resolve())]
+
+
+def test_exchange_symbol_start_dates_override_symbol_and_global_bounds() -> None:
+    original_global = loader_cmd._BRONZE_START_OPEN_MS
+    original_symbol = dict(loader_cmd._BRONZE_SYMBOL_START_OPEN_MS)
+    original_exchange_symbol = dict(loader_cmd._BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS)
+    try:
+        loader_cmd._BRONZE_START_OPEN_MS = 1000
+        loader_cmd._BRONZE_SYMBOL_START_OPEN_MS = {"BTC": 2000}
+        loader_cmd._BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS = {"deribit:BTC": 3000}
+        assert loader_cmd._symbol_start_open_ms_bound(exchange="deribit", symbol="BTCUSDT") == 3000
+        assert loader_cmd._symbol_start_open_ms_bound(exchange="deribit", symbol="ETHUSDT") == 1000
+    finally:
+        loader_cmd._BRONZE_START_OPEN_MS = original_global
+        loader_cmd._BRONZE_SYMBOL_START_OPEN_MS = original_symbol
+        loader_cmd._BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS = original_exchange_symbol
+
+
+def test_parse_exchange_symbol_start_dates_parses_canonical_pairs() -> None:
+    parsed = loader_cmd._parse_exchange_symbol_start_dates(["deribit:BTCUSDT=2023-04-24", "DERIBIT:SOL=2024-02-27"])
+    assert parsed["deribit:BTC"] == int(datetime(2023, 4, 24, 0, 0, tzinfo=UTC).timestamp() * 1000)
+    assert parsed["deribit:SOL"] == int(datetime(2024, 2, 27, 0, 0, tzinfo=UTC).timestamp() * 1000)

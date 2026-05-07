@@ -141,6 +141,96 @@ def test_fetch_symbol_candles_tail_delta_only_uses_latest_open_time() -> None:
     assert calls == [(expected_start_ms, end_open_ms)]
 
 
+def test_fetch_symbol_candles_tail_delta_only_uses_start_bound_when_no_history() -> None:
+    start_bound_ms = int(datetime(2022, 4, 29, 0, 0, tzinfo=UTC).timestamp() * 1000)
+    end_open_ms = int(datetime(2022, 4, 29, 0, 2, tzinfo=UTC).timestamp() * 1000)
+    pre_start = datetime(2022, 4, 28, 23, 59, tzinfo=UTC)
+    on_start = datetime(2022, 4, 29, 0, 0, tzinfo=UTC)
+
+    def _history_fetcher(**kwargs: object) -> list[SpotCandle]:
+        del kwargs
+        return [
+            SpotCandle(
+                exchange="deribit",
+                symbol="BTCUSDT",
+                interval="1m",
+                open_time=pre_start,
+                close_time=pre_start,
+                open_price=1.0,
+                high_price=1.0,
+                low_price=1.0,
+                close_price=1.0,
+                volume=1.0,
+                quote_volume=1.0,
+                trade_count=1,
+            ),
+            SpotCandle(
+                exchange="deribit",
+                symbol="BTCUSDT",
+                interval="1m",
+                open_time=on_start,
+                close_time=on_start,
+                open_price=1.0,
+                high_price=1.0,
+                low_price=1.0,
+                close_price=1.0,
+                volume=1.0,
+                quote_volume=1.0,
+                trade_count=1,
+            ),
+        ]
+
+    candles = fetch_symbol_candles(
+        exchange="deribit",
+        market="spot",
+        symbol="BTCUSDT",
+        timeframe="1m",
+        lake_root="lake/bronze",
+        symbol_normalizer=lambda **kwargs: "BTCUSDT",
+        interval_ms_resolver=lambda **kwargs: 60_000,
+        now_open_resolver=lambda **kwargs: end_open_ms,
+        history_fetcher=_history_fetcher,
+        range_fetcher=lambda **kwargs: pytest.fail("range_fetcher should not be called in bootstrap path"),
+        latest_open_time_reader=lambda **kwargs: None,
+        tail_delta_only=True,
+        start_open_ms_bound=start_bound_ms,
+    )
+
+    assert [item.open_time for item in candles] == [on_start]
+
+
+def test_fetch_symbol_candles_full_gap_fill_includes_head_gap_from_start_bound() -> None:
+    start_bound_ms = int(datetime(2022, 4, 29, 0, 0, tzinfo=UTC).timestamp() * 1000)
+    existing_first = datetime(2022, 4, 29, 0, 3, tzinfo=UTC)
+    end_open_ms = int(datetime(2022, 4, 29, 0, 5, tzinfo=UTC).timestamp() * 1000)
+    interval_ms = 60_000
+    calls: list[tuple[int, int]] = []
+
+    def _range_fetcher(**kwargs: object) -> list[SpotCandle]:
+        calls.append((int(cast(Any, kwargs["start_open_ms"])), int(cast(Any, kwargs["end_open_ms"]))))
+        return []
+
+    candles = fetch_symbol_candles(
+        exchange="deribit",
+        market="spot",
+        symbol="BTCUSDT",
+        timeframe="1m",
+        lake_root="lake/bronze",
+        open_times_reader=lambda **kwargs: [existing_first],
+        symbol_normalizer=lambda **kwargs: "BTCUSDT",
+        interval_ms_resolver=lambda **kwargs: interval_ms,
+        now_open_resolver=lambda **kwargs: end_open_ms,
+        ranges_builder=lambda **kwargs: [],
+        history_fetcher=lambda **kwargs: pytest.fail("history_fetcher should not be called when open_times exist"),
+        range_fetcher=_range_fetcher,
+        tail_delta_only=False,
+        start_open_ms_bound=start_bound_ms,
+    )
+
+    assert candles == []
+    assert calls == [(start_bound_ms, int(existing_first.timestamp() * 1000) - interval_ms)]
+
+
 def test_split_range_into_utc_days_splits_cross_day_windows() -> None:
     start_ms = int(datetime(2026, 4, 27, 23, 59, tzinfo=UTC).timestamp() * 1000)
     end_ms = int(datetime(2026, 4, 28, 0, 1, tzinfo=UTC).timestamp() * 1000)
@@ -201,6 +291,32 @@ def test_fetch_candle_tasks_parallel_records_rows_for_slow_fetcher(monkeypatch: 
     key = (task.exchange, task.market, task.symbol, task.timeframe)
     assert key in result.rows
     assert key not in result.errors
+
+
+def test_fetch_candle_tasks_parallel_emits_heartbeat_without_timeout(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.delenv("DEPTH_FETCH_TASK_TIMEOUT_S", raising=False)
+    monkeypatch.setenv("DEPTH_FETCH_HEARTBEAT_S", "0.1")
+    task = CandleFetchTaskDTO(exchange="deribit", market="spot", symbol="BTCUSDT", timeframe="1m")
+
+    def _slow_fetcher(exchange: str, market: str, symbol: str, timeframe: str, lake_root: str) -> list[SpotCandle]:
+        del exchange, market, symbol, timeframe, lake_root
+        import time
+
+        time.sleep(0.25)
+        return []
+
+    with caplog.at_level(logging.INFO):
+        fetch_candle_tasks_parallel(
+            tasks=[task],
+            lake_root="lake/bronze",
+            concurrency=1,
+            logger=logging.getLogger("test"),
+            symbol_fetcher=_slow_fetcher,
+        )
+
+    assert any("Fetch heartbeat type=ohlcv" in message for message in caplog.messages)
 
 
 def test_task_timeout_seconds_uses_safe_default(monkeypatch: pytest.MonkeyPatch) -> None:

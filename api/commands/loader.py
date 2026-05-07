@@ -8,7 +8,7 @@ import logging
 import random
 from collections.abc import Callable
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, TypeVar, cast
 
@@ -67,6 +67,9 @@ from ingestion.spot import (
 
 DataType = Literal["spot", "perp", "oi", "funding"]
 _TAIL_DELTA_ONLY = True
+_BRONZE_START_OPEN_MS: int | None = None
+_BRONZE_SYMBOL_START_OPEN_MS: dict[str, int] = {}
+_BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS: dict[str, int] = {}
 OI_DATASET_TYPE = dataset_contract("oi").dataset_type
 BRONZE_FIXED_TIMEFRAME = "1m"
 T = TypeVar("T")
@@ -143,6 +146,26 @@ def _add_ingest_parser(
         action="store_false",
         help="Run full historical internal gap checks instead of default tail-only delta mode.",
     )
+    parser.add_argument(
+        "--start-date",
+        default=None,
+        help="Inclusive UTC date boundary (YYYY-MM-DD) for Bronze ingestion history.",
+    )
+    parser.add_argument(
+        "--symbol-start-dates",
+        nargs="+",
+        default=None,
+        help="Per-symbol inclusive UTC start dates (SYMBOL=YYYY-MM-DD), e.g. BTC=2023-04-24",
+    )
+    parser.add_argument(
+        "--exchange-symbol-start-dates",
+        nargs="+",
+        default=None,
+        help=(
+            "Per exchange-symbol inclusive UTC start dates (EXCHANGE:SYMBOL=YYYY-MM-DD), "
+            "e.g. deribit:BTC=2023-04-24"
+        ),
+    )
 
 
 def add_bronze_build_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -198,6 +221,7 @@ def _fetch_symbol_candles(
         latest_open_time_reader=latest_open_time_in_lake,
         tail_delta_only=_TAIL_DELTA_ONLY,
         on_history_chunk=on_history_chunk,
+        start_open_ms_bound=_symbol_start_open_ms_bound(exchange=exchange, symbol=symbol),
     )
 
 
@@ -226,6 +250,7 @@ def _fetch_symbol_open_interest(
         latest_open_time_reader=latest_open_time_in_lake_by_dataset,
         tail_delta_only=_TAIL_DELTA_ONLY,
         on_history_chunk=on_history_chunk,
+        start_open_ms_bound=_symbol_start_open_ms_bound(exchange=exchange, symbol=symbol),
     )
 
 
@@ -254,7 +279,104 @@ def _fetch_symbol_funding(
         latest_open_time_reader=latest_open_time_in_lake_by_dataset,
         tail_delta_only=_TAIL_DELTA_ONLY,
         on_history_chunk=on_history_chunk,
+        start_open_ms_bound=_symbol_start_open_ms_bound(exchange=exchange, symbol=symbol),
     )
+
+
+def _parse_start_date_to_open_ms(start_date: str | None) -> int | None:
+    """Parse inclusive UTC start date ``YYYY-MM-DD`` to epoch milliseconds."""
+
+    if start_date is None:
+        return None
+    value = start_date.strip()
+    if not value:
+        return None
+    start_dt = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=UTC)
+    return int(start_dt.timestamp() * 1000)
+
+
+def _canonical_symbol_key(symbol: str) -> str:
+    """Return canonical base symbol key for per-symbol start-date matching."""
+
+    upper = symbol.upper().strip()
+    if not upper:
+        return upper
+    if upper.endswith("-PERPETUAL"):
+        return upper.split("-", 1)[0]
+    if "_" in upper:
+        return upper.split("_", 1)[0]
+    if upper.endswith("USDC"):
+        return upper[:-4]
+    if upper.endswith("USDT"):
+        return upper[:-4]
+    if upper.endswith("USD"):
+        return upper[:-3]
+    return upper
+
+
+def _parse_symbol_start_dates(entries: list[str] | None) -> dict[str, int]:
+    """Parse ``SYMBOL=YYYY-MM-DD`` entries into canonical symbol->epoch-ms map."""
+
+    if not entries:
+        return {}
+    parsed: dict[str, int] = {}
+    for raw in entries:
+        item = raw.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(f"Invalid symbol start date '{item}'. Expected SYMBOL=YYYY-MM-DD")
+        symbol_part, date_part = item.split("=", 1)
+        symbol_key = _canonical_symbol_key(symbol_part)
+        if not symbol_key:
+            raise ValueError(f"Invalid symbol in symbol start date '{item}'")
+        start_ms = _parse_start_date_to_open_ms(date_part)
+        if start_ms is None:
+            raise ValueError(f"Invalid start date in symbol start date '{item}'")
+        parsed[symbol_key] = start_ms
+    return parsed
+
+
+def _parse_exchange_symbol_start_dates(entries: list[str] | None) -> dict[str, int]:
+    """Parse ``EXCHANGE:SYMBOL=YYYY-MM-DD`` entries into canonical exchange:symbol->epoch-ms map."""
+
+    if not entries:
+        return {}
+    parsed: dict[str, int] = {}
+    for raw in entries:
+        item = raw.strip()
+        if not item:
+            continue
+        if "=" not in item:
+            raise ValueError(
+                f"Invalid exchange-symbol start date '{item}'. Expected EXCHANGE:SYMBOL=YYYY-MM-DD"
+            )
+        pair_part, date_part = item.split("=", 1)
+        if ":" not in pair_part:
+            raise ValueError(
+                f"Invalid exchange-symbol pair '{pair_part}'. Expected EXCHANGE:SYMBOL"
+            )
+        exchange_part, symbol_part = pair_part.split(":", 1)
+        exchange_key = exchange_part.strip().lower()
+        symbol_key = _canonical_symbol_key(symbol_part)
+        if not exchange_key or not symbol_key:
+            raise ValueError(f"Invalid exchange-symbol in '{item}'")
+        start_ms = _parse_start_date_to_open_ms(date_part)
+        if start_ms is None:
+            raise ValueError(f"Invalid start date in exchange-symbol start date '{item}'")
+        parsed[f"{exchange_key}:{symbol_key}"] = start_ms
+    return parsed
+
+
+def _symbol_start_open_ms_bound(exchange: Exchange, symbol: str) -> int | None:
+    """Resolve exchange-symbol boundary, then symbol boundary, then global boundary."""
+
+    exchange_key = exchange.lower()
+    symbol_key = _canonical_symbol_key(symbol)
+    exchange_symbol_key = f"{exchange_key}:{symbol_key}"
+    if exchange_symbol_key in _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS:
+        return _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS[exchange_symbol_key]
+    return _BRONZE_SYMBOL_START_OPEN_MS.get(symbol_key, _BRONZE_START_OPEN_MS)
 
 
 def _fetch_candle_tasks_parallel(
@@ -426,8 +548,28 @@ def _write_loader_samples(
 def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run bronze-build command."""
 
-    global _TAIL_DELTA_ONLY
+    global _TAIL_DELTA_ONLY, _BRONZE_START_OPEN_MS, _BRONZE_SYMBOL_START_OPEN_MS, _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS
     _TAIL_DELTA_ONLY = bool(args.tail_delta_only)
+    _BRONZE_START_OPEN_MS = _parse_start_date_to_open_ms(cast(str | None, getattr(args, "start_date", None)))
+    _BRONZE_SYMBOL_START_OPEN_MS = _parse_symbol_start_dates(
+        cast(list[str] | None, getattr(args, "symbol_start_dates", None))
+    )
+    _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS = _parse_exchange_symbol_start_dates(
+        cast(list[str] | None, getattr(args, "exchange_symbol_start_dates", None))
+    )
+    if _BRONZE_START_OPEN_MS is not None:
+        logger.info(
+            "Bronze start-date boundary enabled start_date=%s start_open_ms=%s",
+            cast(str, args.start_date),
+            _BRONZE_START_OPEN_MS,
+        )
+    if _BRONZE_SYMBOL_START_OPEN_MS:
+        logger.info("Bronze symbol start-date boundaries enabled symbol_bounds=%s", _BRONZE_SYMBOL_START_OPEN_MS)
+    if _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS:
+        logger.info(
+            "Bronze exchange-symbol start-date boundaries enabled exchange_symbol_bounds=%s",
+            _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS,
+        )
 
     try:
         with SingleInstanceLock(".run/crypto-market-loader.lock"):
