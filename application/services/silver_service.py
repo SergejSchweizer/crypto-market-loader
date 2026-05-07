@@ -201,6 +201,7 @@ def _bronze_month_files(
     instrument_type: str | None = None,
 ) -> list[str]:
     instrument = instrument_type or market
+    year = month.split("-", 1)[0]
     root = (
         Path(bronze_root)
         / f"dataset_type={market}"
@@ -208,9 +209,12 @@ def _bronze_month_files(
         / f"instrument_type={instrument}"
         / f"symbol={symbol}"
         / f"timeframe={timeframe}"
-        / f"month={month}"
     )
-    return sorted(str(path) for path in root.glob("date=*/data.parquet"))
+    files = {
+        *root.glob(f"year={year}/month={month}/date=*/data.parquet"),
+        *root.glob(f"month={month}/date=*/data.parquet"),
+    }
+    return sorted(str(path) for path in files)
 
 
 def discover_symbols(
@@ -264,13 +268,16 @@ def discover_months(
     )
     if not root.exists():
         return []
-    months: list[str] = []
+    months: set[str] = set()
+    for path in root.glob("year=*/month=*"):
+        name = path.name
+        if name.startswith("month="):
+            months.add(name.split("=", 1)[1])
     for path in root.glob("month=*"):
         name = path.name
-        if not name.startswith("month="):
-            continue
-        months.append(name.split("=", 1)[1])
-    return sorted(set(months))
+        if name.startswith("month="):
+            months.add(name.split("=", 1)[1])
+    return sorted(months)
 
 
 def _iso_utc(value: datetime | None) -> str | None:

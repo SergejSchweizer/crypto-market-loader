@@ -45,6 +45,7 @@ def _write_bronze_day_file(
         / f"instrument_type={instrument}"
         / f"symbol={symbol}"
         / f"timeframe={timeframe}"
+        / f"year={month.split('-', 1)[0]}"
         / f"month={month}"
         / f"date={day}"
         / "data.parquet"

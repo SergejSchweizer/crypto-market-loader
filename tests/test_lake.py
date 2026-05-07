@@ -48,7 +48,7 @@ def test_partition_key_and_path() -> None:
 
     result = partition_path("lake/bronze", "spot", key)
     assert str(result).endswith(
-        "dataset_type=spot/exchange=deribit/instrument_type=spot/symbol=BTCUSDT/timeframe=1m/month=2026-04/date=2026-04-27"
+        "dataset_type=spot/exchange=deribit/instrument_type=spot/symbol=BTCUSDT/timeframe=1m/year=2026/month=2026-04/date=2026-04-27"
     )
 
 
@@ -122,7 +122,7 @@ def test_save_spot_candles_parquet_lake_rewrites_single_partition_file(tmp_path:
 
     assert files_1 == files_2
     assert len(files_2) == 1
-    assert "/month=2026-04/date=2026-04-27/data.parquet" in files_2[0]
+    assert "/year=2026/month=2026-04/date=2026-04-27/data.parquet" in files_2[0]
     parquet_path = Path(files_2[0])
     assert parquet_path.with_suffix(".json").exists()
     assert parquet_path.with_suffix(".png").exists()
@@ -316,7 +316,9 @@ def test_bronze_all_symbols_use_same_daily_partition_format(tmp_path: Path) -> N
     )
     assert len(files) == 2
     for file_path in files:
-        assert re.search(r"/month=\d{4}-\d{2}/date=\d{4}-\d{2}-\d{2}/data\.parquet$", file_path) is not None
+        assert (
+            re.search(r"/year=\d{4}/month=\d{4}-\d{2}/date=\d{4}-\d{2}-\d{2}/data\.parquet$", file_path) is not None
+        )
 
 
 def test_ensure_bronze_sidecars_backfills_missing_sidecars(tmp_path: Path) -> None:

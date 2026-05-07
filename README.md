@@ -134,7 +134,7 @@ Bronze layout:
 
 ```text
 dataset_type=spot|perp|oi|funding/
-  exchange=<exchange>/instrument_type=<spot|perp>/symbol=<symbol>/timeframe=<interval>/month=<YYYY-MM>/date=<YYYY-MM-DD>/data.parquet
+  exchange=<exchange>/instrument_type=<spot|perp>/symbol=<symbol>/timeframe=<interval>/year=<YYYY>/month=<YYYY-MM>/date=<YYYY-MM-DD>/data.parquet
 ```
 
 ## Silver Layer

@@ -56,6 +56,7 @@ def partition_path(lake_root: str, dataset_type: DatasetType, key: PartitionKey)
 
     exchange, instrument_type, symbol, timeframe, date_partition = key
     month_partition = date_partition[:7]
+    year_partition = month_partition[:4]
     return (
         Path(lake_root)
         / f"dataset_type={dataset_type}"
@@ -63,9 +64,37 @@ def partition_path(lake_root: str, dataset_type: DatasetType, key: PartitionKey)
         / f"instrument_type={instrument_type}"
         / f"symbol={symbol}"
         / f"timeframe={timeframe}"
+        / f"year={year_partition}"
         / f"month={month_partition}"
         / f"date={date_partition}"
     )
+
+
+def _partition_data_files(partition_root: Path) -> list[Path]:
+    """Return bronze partition parquet files, supporting new and legacy layouts."""
+
+    files = {
+        *partition_root.glob("year=*/month=*/date=*/data.parquet"),
+        *partition_root.glob("month=*/date=*/data.parquet"),
+    }
+    return sorted(files)
+
+
+def _dataset_data_files(lake_root: str, dataset_type: str) -> list[Path]:
+    """Return dataset parquet files across new and legacy bronze layouts."""
+
+    root = Path(lake_root)
+    files = {
+        *root.glob(
+            f"dataset_type={dataset_type}/exchange=*/instrument_type=*/"
+            "symbol=*/timeframe=*/year=*/month=*/date=*/data.parquet"
+        ),
+        *root.glob(
+            f"dataset_type={dataset_type}/exchange=*/instrument_type=*/"
+            "symbol=*/timeframe=*/month=*/date=*/data.parquet"
+        ),
+    }
+    return sorted(files)
 
 
 def candle_record(candle: SpotCandle, market: str, run_id: str, ingested_at: datetime) -> dict[str, object]:
@@ -199,7 +228,7 @@ def open_times_in_lake_by_dataset(
         return []
 
     values: list[datetime] = []
-    for data_file in sorted(partition_root.glob("month=*/date=*/data.parquet")):
+    for data_file in _partition_data_files(partition_root):
         parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
         for batch in parquet_file.iter_batches(columns=["open_time"], batch_size=10_000):  # type: ignore[no-untyped-call]
             for row in batch.to_pylist():
@@ -374,11 +403,7 @@ def ensure_bronze_sidecars(
     if log is not None:
         log("Bronze sidecar backfill start dataset_types=%s", selected)
     for dataset_type in selected:
-        pattern = (
-            f"dataset_type={dataset_type}/exchange=*/instrument_type=*/"
-            "symbol=*/timeframe=*/month=*/date=*/data.parquet"
-        )
-        paths = sorted(root.glob(pattern))
+        paths = _dataset_data_files(lake_root, dataset_type)
         dataset_total = len(paths)
         dataset_written = 0
         if log is not None:
@@ -559,7 +584,7 @@ def latest_open_time_in_lake_by_dataset(
     if not partition_root.exists():
         return None
 
-    data_files = sorted(partition_root.glob("month=*/date=*/data.parquet"))
+    data_files = _partition_data_files(partition_root)
     if not data_files:
         return None
     latest_file = data_files[-1]
@@ -621,7 +646,7 @@ def load_spot_candles_from_lake(
         return []
 
     candles_by_open_time: dict[datetime, SpotCandle] = {}
-    for data_file in sorted(partition_root.glob("month=*/date=*/data.parquet")):
+    for data_file in _partition_data_files(partition_root):
         parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
         for batch in parquet_file.iter_batches(batch_size=10_000):  # type: ignore[no-untyped-call]
             for row in batch.to_pylist():
@@ -673,7 +698,7 @@ def load_open_interest_from_lake(
         return []
 
     items_by_open_time: dict[datetime, OpenInterestPoint] = {}
-    for data_file in sorted(partition_root.glob("month=*/date=*/data.parquet")):
+    for data_file in _partition_data_files(partition_root):
         parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
         for batch in parquet_file.iter_batches(batch_size=10_000):  # type: ignore[no-untyped-call]
             for row in batch.to_pylist():
@@ -719,7 +744,7 @@ def load_funding_from_lake(
         return []
 
     items_by_open_time: dict[datetime, FundingPoint] = {}
-    for data_file in sorted(partition_root.glob("month=*/date=*/data.parquet")):
+    for data_file in _partition_data_files(partition_root):
         parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
         for batch in parquet_file.iter_batches(batch_size=10_000):  # type: ignore[no-untyped-call]
             for row in batch.to_pylist():
@@ -876,16 +901,7 @@ def load_combined_dataframe_from_lake(
     timeframe_filter = {item.lower() for item in timeframes} if timeframes else None
     instrument_filter = {item.lower() for item in instrument_types} if instrument_types else None
 
-    data_files = sorted(
-        [
-            *Path(lake_root).glob(
-                "dataset_type=spot/exchange=*/instrument_type=*/symbol=*/timeframe=*/month=*/date=*/data.parquet"
-            ),
-            *Path(lake_root).glob(
-                "dataset_type=perp/exchange=*/instrument_type=*/symbol=*/timeframe=*/month=*/date=*/data.parquet"
-            ),
-        ]
-    )
+    data_files = sorted([*_dataset_data_files(lake_root, "spot"), *_dataset_data_files(lake_root, "perp")])
 
     frames: list[Any] = []
     for data_file in data_files:
@@ -962,11 +978,7 @@ def load_combined_dataframe_from_lake(
             dataframe = dataframe.head(limit)
 
     if include_open_interest:
-        oi_files = sorted(
-            Path(lake_root).glob(
-                f"dataset_type={OI_DATASET_TYPE}/exchange=*/instrument_type=*/symbol=*/timeframe=*/month=*/date=*/data.parquet"
-            )
-        )
+        oi_files = _dataset_data_files(lake_root, OI_DATASET_TYPE)
         oi_frames: list[Any] = []
         for data_file in oi_files:
             oi_parts = data_file.parts
