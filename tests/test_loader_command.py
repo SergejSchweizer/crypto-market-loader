@@ -1,0 +1,97 @@
+"""Tests for bronze loader command output sidecar metadata."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+from datetime import UTC, datetime
+from pathlib import Path
+
+from api.commands import loader as loader_cmd
+from application.dto import CandleFetchTaskDTO, PersistResultDTO
+from ingestion.spot import SpotCandle
+
+
+def test_run_bronze_build_emits_manifest_and_plot_file_lists(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:  # type: ignore[no-untyped-def]
+    class _NoopLock:
+        def __init__(self, lock_path: str) -> None:
+            del lock_path
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+    candle = SpotCandle(
+        exchange="deribit",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+        close_time=datetime(2026, 5, 1, 0, 0, 59, 999000, tzinfo=UTC),
+        open_price=100.0,
+        high_price=101.0,
+        low_price=99.0,
+        close_price=100.5,
+        volume=10.0,
+        quote_volume=1000.0,
+        trade_count=10,
+    )
+    parquet_path = (
+        tmp_path
+        / "dataset_type=spot"
+        / "exchange=deribit"
+        / "instrument_type=spot"
+        / "symbol=BTCUSDT"
+        / "timeframe=1m"
+        / "month=2026-05"
+        / "date=2026-05-01"
+        / "data.parquet"
+    )
+
+    def _fake_fetch_all_task_groups(**kwargs: object):  # type: ignore[no-untyped-def]
+        callback = kwargs.get("on_candle_task_chunk")
+        if callable(callback):
+            callback(
+                CandleFetchTaskDTO(exchange="deribit", market="spot", symbol="BTCUSDT", timeframe="1m"),
+                [candle],
+            )
+        return (
+            {("deribit", "spot", "BTCUSDT", "1m"): [candle]},
+            {},
+            {},
+            {},
+            {},
+            {},
+        )
+
+    monkeypatch.setattr(loader_cmd, "SingleInstanceLock", _NoopLock)
+    monkeypatch.setattr(loader_cmd, "_fetch_all_task_groups", _fake_fetch_all_task_groups)
+    monkeypatch.setattr(
+        loader_cmd,
+        "persist_loader_outputs_dto",
+        lambda **kwargs: PersistResultDTO([str(parquet_path)]),
+    )
+    monkeypatch.setattr(loader_cmd, "ensure_bronze_sidecars", lambda **kwargs: [])
+    monkeypatch.setattr(loader_cmd, "_write_loader_samples", lambda **kwargs: None)
+
+    args = argparse.Namespace(
+        exchange="deribit",
+        exchanges=None,
+        market=["spot"],
+        symbols=["BTCUSDT"],
+        save_parquet_lake=True,
+        lake_root=str(tmp_path),
+        no_json_output=False,
+        tail_delta_only=True,
+    )
+    logger = logging.getLogger("test_bronze_build")
+    loader_cmd.run_bronze_build(args=args, logger=logger)
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["_parquet_files"] == [str(parquet_path)]
+    assert payload["_manifest_files"] == [str(parquet_path.with_suffix(".json").resolve())]
+    assert payload["_plot_files"] == [str(parquet_path.with_suffix(".png").resolve())]

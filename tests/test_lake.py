@@ -11,6 +11,7 @@ import pyarrow.parquet as pq
 from ingestion.lake import (
     candle_partition_key,
     candle_record,
+    ensure_bronze_sidecars,
     load_open_interest_from_lake,
     load_spot_candles_from_lake,
     merge_and_deduplicate_rows,
@@ -122,6 +123,9 @@ def test_save_spot_candles_parquet_lake_rewrites_single_partition_file(tmp_path:
     assert files_1 == files_2
     assert len(files_2) == 1
     assert "/month=2026-04/date=2026-04-27/data.parquet" in files_2[0]
+    parquet_path = Path(files_2[0])
+    assert parquet_path.with_suffix(".json").exists()
+    assert parquet_path.with_suffix(".png").exists()
 
 
 def test_open_times_in_lake_returns_sorted_unique(tmp_path: Path) -> None:
@@ -313,3 +317,34 @@ def test_bronze_all_symbols_use_same_daily_partition_format(tmp_path: Path) -> N
     assert len(files) == 2
     for file_path in files:
         assert re.search(r"/month=\d{4}-\d{2}/date=\d{4}-\d{2}-\d{2}/data\.parquet$", file_path) is not None
+
+
+def test_ensure_bronze_sidecars_backfills_missing_sidecars(tmp_path: Path) -> None:
+    candle = SpotCandle(
+        exchange="deribit",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
+        open_price=100.0,
+        high_price=101.0,
+        low_price=99.0,
+        close_price=100.5,
+        volume=10.0,
+        quote_volume=1000.0,
+        trade_count=10,
+    )
+    files = save_spot_candles_parquet_lake(
+        {"deribit": {"BTCUSDT": [candle]}},
+        market="spot",
+        lake_root=str(tmp_path),
+    )
+    parquet_path = Path(files[0])
+    parquet_path.with_suffix(".json").unlink()
+    parquet_path.with_suffix(".png").unlink()
+
+    repaired = ensure_bronze_sidecars(lake_root=str(tmp_path), dataset_types=["spot"])
+
+    assert repaired == [str(parquet_path.resolve())]
+    assert parquet_path.with_suffix(".json").exists()
+    assert parquet_path.with_suffix(".png").exists()

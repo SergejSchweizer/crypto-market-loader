@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 from collections import defaultdict
 from dataclasses import asdict
 from datetime import UTC, datetime
+from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
 
 from application.schema import dataset_contract
+from application.services.gold_service import _write_feature_distribution_plot
 from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import SpotCandle
@@ -248,6 +251,151 @@ def _require_pyarrow() -> tuple[Any, Any]:
     return pa, pq
 
 
+def _require_polars() -> Any:
+    try:
+        import polars as pl
+    except ImportError as exc:
+        raise RuntimeError("polars is required for bronze sidecar generation. Install project dependencies.") from exc
+    return pl
+
+
+def _iso_utc(value: datetime | None) -> str | None:
+    if value is None:
+        return None
+    return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _write_bronze_sidecars(
+    *,
+    file_path: Path,
+    dataset_type: str,
+    key: PartitionKey,
+    rows: list[dict[str, object]],
+) -> None:
+    pl = _require_polars()
+    exchange, instrument_type, symbol, timeframe, date_partition = key
+    frame = pl.DataFrame(rows) if rows else pl.DataFrame()
+    min_ts = None
+    max_ts = None
+    if "open_time" in frame.columns and frame.height > 0:
+        min_v = frame.select(pl.col("open_time").min()).item()
+        max_v = frame.select(pl.col("open_time").max()).item()
+        min_ts = min_v if isinstance(min_v, datetime) else None
+        max_ts = max_v if isinstance(max_v, datetime) else None
+
+    payload: dict[str, object] = {
+        "dataset": f"{dataset_type}_1m",
+        "dataset_type": dataset_type,
+        "exchange": exchange,
+        "instrument_type": instrument_type,
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "date_partition": date_partition,
+        "rows_out": int(frame.height),
+        "columns": frame.columns,
+        "min_timestamp": _iso_utc(min_ts),
+        "max_timestamp": _iso_utc(max_ts),
+        "source_data_hash": sha256(
+            json.dumps(
+                {
+                    "rows_out": int(frame.height),
+                    "columns": frame.columns,
+                    "min_timestamp": _iso_utc(min_ts),
+                    "max_timestamp": _iso_utc(max_ts),
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+        ).hexdigest()[:12],
+    }
+    manifest_path = file_path.with_suffix(".json")
+    manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+
+    ts_col = next(
+        (candidate for candidate in ("timestamp_m1", "open_time", "timestamp") if candidate in frame.columns),
+        None,
+    )
+    if ts_col is not None and ts_col != "timestamp_m1":
+        frame = frame.with_columns(pl.col(ts_col).alias("timestamp_m1"))
+    plotted = _write_feature_distribution_plot(frame, file_path.with_suffix(".png"), normalize_y=False)
+    if plotted is None:
+        raise RuntimeError(
+            "Bronze sidecar policy requires plot generation for every parquet file, but plot generation failed "
+            "(missing matplotlib dependency or no plottable numeric columns)."
+        )
+
+
+def _partition_key_from_parquet_path(file_path: Path) -> tuple[str, PartitionKey] | None:
+    """Parse dataset_type and partition key from a bronze parquet file path."""
+
+    dataset_type: str | None = None
+    exchange: str | None = None
+    instrument_type: str | None = None
+    symbol: str | None = None
+    timeframe: str | None = None
+    date_partition: str | None = None
+
+    for part in file_path.parts:
+        if part.startswith("dataset_type="):
+            dataset_type = part.split("=", 1)[1]
+        elif part.startswith("exchange="):
+            exchange = part.split("=", 1)[1]
+        elif part.startswith("instrument_type="):
+            instrument_type = part.split("=", 1)[1]
+        elif part.startswith("symbol="):
+            symbol = part.split("=", 1)[1]
+        elif part.startswith("timeframe="):
+            timeframe = part.split("=", 1)[1]
+        elif part.startswith("date="):
+            date_partition = part.split("=", 1)[1]
+
+    if not all([dataset_type, exchange, instrument_type, symbol, timeframe, date_partition]):
+        return None
+    return dataset_type, (exchange, instrument_type, symbol, timeframe, date_partition)
+
+
+def ensure_bronze_sidecars(
+    *,
+    lake_root: str,
+    dataset_types: list[str] | None = None,
+) -> list[str]:
+    """Ensure bronze sidecars exist for parquet files under requested dataset types."""
+
+    _, pq = _require_pyarrow()
+    root = Path(lake_root)
+    if not root.exists():
+        return []
+
+    selected = dataset_types or ["spot", "perp", OI_DATASET_TYPE, "funding"]
+    written: list[str] = []
+    for dataset_type in selected:
+        pattern = (
+            f"dataset_type={dataset_type}/exchange=*/instrument_type=*/"
+            "symbol=*/timeframe=*/month=*/date=*/data.parquet"
+        )
+        for parquet_path in sorted(root.glob(pattern)):
+            parsed = _partition_key_from_parquet_path(parquet_path)
+            if parsed is None:
+                continue
+            parsed_dataset_type, key = parsed
+            if parsed_dataset_type != dataset_type:
+                continue
+            manifest_path = parquet_path.with_suffix(".json")
+            plot_path = parquet_path.with_suffix(".png")
+            if manifest_path.exists() and plot_path.exists():
+                continue
+            table = pq.ParquetFile(parquet_path).read()
+            _write_bronze_sidecars(
+                file_path=parquet_path,
+                dataset_type=dataset_type,
+                key=key,
+                rows=table.to_pylist(),
+            )
+            written.append(str(parquet_path.resolve()))
+    return written
+
+
 def _write_partition_file(
     *,
     pa: Any,
@@ -307,6 +455,27 @@ def _write_grouped_rows(
             ]
             for future in concurrent.futures.as_completed(futures):
                 written_files.append(future.result())
+        # Render sidecars on the main thread: matplotlib backends are not reliably thread-safe.
+        key_by_path: dict[str, PartitionKey] = {
+            str(
+                (
+                    partition_path(lake_root=lake_root, dataset_type=dataset_type, key=key) / "data.parquet"
+                ).resolve()
+            ): key
+            for key in grouped
+        }
+        for file_str in sorted(written_files):
+            file_path = Path(file_str)
+            key = key_by_path.get(file_str)
+            if key is None:
+                continue
+            table = pq.ParquetFile(file_path).read()
+            _write_bronze_sidecars(
+                file_path=file_path,
+                dataset_type=dataset_type,
+                key=key,
+                rows=table.to_pylist(),
+            )
     return sorted(written_files)
 
 

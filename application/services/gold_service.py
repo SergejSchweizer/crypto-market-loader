@@ -549,11 +549,13 @@ def _normalized_series(values_all: list[object]) -> tuple[list[float], list[floa
 def _time_axis_style(mdates: Any, mticker: Any, ts: list[object]) -> tuple[Any, Any, Any]:
     if not ts or not isinstance(ts[0], datetime) or not isinstance(ts[-1], datetime):
         return mdates.AutoDateLocator(), None, mdates.DateFormatter("%m-%d %H:%M")
+    if len(ts) < 3 or ts[0] == ts[-1]:
+        return mdates.AutoDateLocator(maxticks=5), None, mdates.DateFormatter("%m-%d %H:%M")
     span_seconds = max((ts[-1] - ts[0]).total_seconds(), 1.0)
     span_minutes = span_seconds / 60.0
     span_hours = span_seconds / 3600.0
     span_days = span_seconds / 86400.0
-    major_locator = mticker.MaxNLocator(nbins=10)
+    major_locator = mdates.AutoDateLocator(maxticks=10)
     if span_seconds <= 6 * 3600:
         minor_locator = mdates.MinuteLocator(interval=max(10, int(span_minutes // 700) + 1))
         formatter = mdates.DateFormatter("%m-%d %H:%M")
@@ -569,7 +571,12 @@ def _time_axis_style(mdates: Any, mticker: Any, ts: list[object]) -> tuple[Any, 
     return major_locator, minor_locator, formatter
 
 
-def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | None:
+def _write_feature_distribution_plot(
+    frame: Any,
+    output_path: Path,
+    *,
+    normalize_y: bool = True,
+) -> str | None:
     try:
         import matplotlib.dates as mdates
         import matplotlib.ticker as mticker
@@ -578,12 +585,33 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
         return None
 
     pl = _require_polars()
-    frame = _sample_frame_for_plot(frame)
-    numeric_cols = _ordered_numeric_columns(frame)
+    full_frame = frame
+    frame = _sample_frame_for_plot(full_frame)
+    numeric_cols = _ordered_numeric_columns(full_frame)
     if not numeric_cols:
         return None
 
     row_count = len(numeric_cols)
+    full_missing_by_col: dict[str, int] = {
+        col: int(full_frame.select(pl.col(col).is_null().sum()).item()) for col in numeric_cols
+    }
+    full_available_by_col: dict[str, int] = {
+        col: int(full_frame.height - full_missing_by_col[col]) for col in numeric_cols
+    }
+    full_time_range_by_col: dict[str, str] = {}
+    for col in numeric_cols:
+        non_null_frame = full_frame.filter(pl.col(col).is_not_null())
+        if non_null_frame.height == 0:
+            full_time_range_by_col[col] = "n/a"
+            continue
+        min_ts = non_null_frame.select(pl.col("timestamp_m1").min()).item()
+        max_ts = non_null_frame.select(pl.col("timestamp_m1").max()).item()
+        if isinstance(min_ts, datetime) and isinstance(max_ts, datetime):
+            min_iso = _iso_utc(min_ts)
+            max_iso = _iso_utc(max_ts)
+            full_time_range_by_col[col] = f"{min_iso} -> {max_iso}"
+        else:
+            full_time_range_by_col[col] = "n/a"
     fig = plt.figure(figsize=(12, max(0.85 * row_count + 4.0, 12.0)), facecolor="#070b16", constrained_layout=True)
     grid = fig.add_gridspec(
         row_count + 1,
@@ -614,7 +642,7 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
         0.56,
         "\n".join(
             [
-                f"build rows: {frame.height:,} | numeric features: {row_count}",
+                f"numeric features: {row_count}",
                 f"window: {_iso_utc(ts_min if isinstance(ts_min, datetime) else None)} -> {_iso_utc(ts_max if isinstance(ts_max, datetime) else None)}",
                 f"output: {output_path.name}",
             ]
@@ -640,7 +668,7 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
         series_df = frame.select(["timestamp_m1", col]).sort("timestamp_m1")
         values_all = series_df.get_column(col).to_list()
         ts = series_df.get_column("timestamp_m1").to_list()
-        arr_non_null, arr_plot, missing_values = _normalized_series(values_all)
+        arr_non_null, arr_plot_normalized, missing_values = _normalized_series(values_all)
         left_ax = fig.add_subplot(grid[idx + 1, 0])
         right_ax = fig.add_subplot(grid[idx + 1, 1])
 
@@ -654,6 +682,11 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
 
         if arr_non_null:
             arr = arr_non_null
+            arr_plot = (
+                arr_plot_normalized
+                if normalize_y
+                else [float(v) if v is not None else float("nan") for v in values_all]
+            )
             sparse_ratio = (len(arr) / frame.height) if frame.height > 0 else 0.0
             is_sparse = sparse_ratio < 0.15 or len(arr) < 200
             line_width = 1.1 if is_sparse else 0.8
@@ -672,7 +705,15 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
                     markevery=marker_every,
                 )
             mask = [value == value for value in arr_plot]
-            left_ax.fill_between(ts, arr_plot, [0.0] * len(arr_plot), where=mask, color="#234b6e", alpha=0.16)
+            if normalize_y:
+                left_ax.fill_between(ts, arr_plot, [0.0] * len(arr_plot), where=mask, color="#234b6e", alpha=0.16)
+            else:
+                # Keep subtle area shading without anchoring to zero, so y-scale reflects feature movement.
+                y_min = min(arr)
+                y_max = max(arr)
+                if y_max > y_min:
+                    baseline = y_min
+                    left_ax.fill_between(ts, arr_plot, [baseline] * len(arr_plot), where=mask, color="#234b6e", alpha=0.10)
             major_locator, minor_locator, major_formatter = _time_axis_style(mdates, mticker, ts)
             left_ax.xaxis.set_major_locator(major_locator)
             if minor_locator is not None:
@@ -682,24 +723,36 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
             left_ax.tick_params(axis="x", which="minor", length=2, color="#475569")
             left_ax.grid(axis="x", which="major", color="#2f3b52", alpha=0.28, linewidth=0.6)
             left_ax.grid(axis="x", which="minor", color="#253047", alpha=0.16, linewidth=0.4)
-            left_ax.set_ylim(-0.05, 1.05)
+            if normalize_y:
+                left_ax.set_ylim(-0.05, 1.05)
+            else:
+                y_low = min(arr)
+                y_high = max(arr)
+                if y_high > y_low:
+                    pad = (y_high - y_low) * 0.05
+                    left_ax.set_ylim(y_low - pad, y_high + pad)
             missing_ts = [t for t, v in zip(ts, values_all, strict=False) if v is None]
             if missing_ts:
-                left_ax.vlines(missing_ts, ymin=-0.05, ymax=1.05, color="#5b233b", alpha=0.22, linewidth=0.7)
+                if normalize_y:
+                    ymin, ymax = -0.05, 1.05
+                else:
+                    y_low = min(arr)
+                    y_high = max(arr)
+                    pad = (y_high - y_low) * 0.05 if y_high > y_low else 1.0
+                    ymin, ymax = y_low - pad, y_high + pad
+                left_ax.vlines(missing_ts, ymin=ymin, ymax=ymax, color="#5b233b", alpha=0.22, linewidth=0.7)
             left_ax.set_ylabel(col, color="#cbd5e1", fontsize=6.8)
             right_ax.hist(arr, bins=24, color="#a8be8f", alpha=0.92, edgecolor="#a8be8f")
             right_ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.4g}"))
-            non_null_ts = [t for t, v in zip(ts, values_all, strict=False) if v is not None]
-            if non_null_ts:
-                ts_range = f"{non_null_ts[0]:%Y-%m-%d %H:%M} -> {non_null_ts[-1]:%Y-%m-%d %H:%M}"
-            else:
-                ts_range = "n/a"
             stats_box = "\n".join(
                 [
                     f"feature: {col}",
-                    f"time range: {ts_range}",
-                    f"all rows: {frame.height}",
-                    f"missing rows: {missing_values}",
+                    f"time range: {full_time_range_by_col[col]}",
+                    f"all rows: {full_available_by_col[col]}",
+                    (
+                        f"missing rows: "
+                        f"{(100.0 * full_missing_by_col[col] / full_available_by_col[col]) if full_available_by_col[col] > 0 else 0.0:.2f}%"
+                    ),
                 ]
             )
             left_ax.text(
@@ -982,7 +1035,7 @@ def build_gold_for_symbol(
     _ = manifest
     _ = plot
     plot_path = artifact_dir / f"{stem}.png"
-    written_plot = _write_feature_distribution_plot(merged, plot_path)
+    written_plot = _write_feature_distribution_plot(merged, plot_path, normalize_y=False)
     if written_plot is None:
         raise ValueError(
             "Gold build requires plot generation for every dataset, but plot generation failed "

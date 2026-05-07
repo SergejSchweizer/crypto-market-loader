@@ -9,6 +9,7 @@ import random
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import datetime
+from pathlib import Path
 from typing import Literal, TypeVar, cast
 
 from application.dto import (
@@ -21,7 +22,6 @@ from application.dto import (
 )
 from application.schema import dataset_contract
 from application.services.artifact_service import write_loader_samples_dto
-from application.services.bronze_report_service import build_bronze_symbol_reports
 from application.services.fetch_service import (
     fetch_candle_tasks_parallel,
     fetch_funding_tasks_parallel,
@@ -41,6 +41,7 @@ from ingestion.funding import (
     normalize_funding_timeframe,
 )
 from ingestion.lake import (
+    ensure_bronze_sidecars,
     latest_open_time_in_lake,
     latest_open_time_in_lake_by_dataset,
     open_times_in_lake,
@@ -77,6 +78,12 @@ def _items_in_random_order(items: list[T]) -> list[T]:
     if len(items) <= 1:
         return list(items)
     return random.SystemRandom().sample(items, k=len(items))
+
+
+def _sidecar_path_list(parquet_files: list[str], suffix: str) -> list[str]:
+    """Build sorted unique sidecar paths for provided parquet files."""
+
+    return sorted({str(Path(path).with_suffix(suffix).resolve()) for path in parquet_files})
 
 
 def _add_ingest_parser(
@@ -741,29 +748,27 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     logger.exception("Parquet lake write failed")
             elif incremental_parquet_on_fetch:
                 output["_parquet_files"] = incremental_parquet_files
-                spot_report_symbols: set[tuple[str, str, str]] = {
-                    (exchange, symbol.upper(), timeframe)
-                    for exchange, market, symbol, timeframe in tasks
-                    if market == "spot"
-                }
-                perp_report_symbols: set[tuple[str, str, str]] = {
-                    (exchange, symbol.upper(), timeframe)
-                    for exchange, market, symbol, timeframe in tasks
-                    if market == "perp"
-                }
-                oi_report_symbols: set[tuple[str, str, str]] = {
-                    (exchange, symbol.upper(), timeframe) for exchange, symbol, timeframe in oi_tasks
-                }
-                funding_report_symbols: set[tuple[str, str, str]] = {
-                    (exchange, symbol.upper(), timeframe) for exchange, symbol, timeframe in funding_tasks
-                }
-                output["_bronze_reports"] = build_bronze_symbol_reports(
+
+            if args.save_parquet_lake:
+                parquet_files = cast(list[str], output.get("_parquet_files", []))
+                selected_dataset_types: set[str] = set()
+                if any(market == "spot" for market in ohlcv_markets):
+                    selected_dataset_types.add("spot")
+                if any(market == "perp" for market in ohlcv_markets):
+                    selected_dataset_types.add("perp")
+                if oi_requested:
+                    selected_dataset_types.add(OI_DATASET_TYPE)
+                if funding_requested:
+                    selected_dataset_types.add("funding")
+                repaired_parquet_files = ensure_bronze_sidecars(
                     lake_root=cast(str, args.lake_root),
-                    spot_symbols=spot_report_symbols,
-                    perp_symbols=perp_report_symbols,
-                    oi_symbols=oi_report_symbols,
-                    funding_symbols=funding_report_symbols,
+                    dataset_types=sorted(selected_dataset_types),
                 )
+                if repaired_parquet_files:
+                    parquet_files = sorted(set(parquet_files).union(repaired_parquet_files))
+                    output["_parquet_files"] = parquet_files
+                output["_manifest_files"] = _sidecar_path_list(parquet_files, ".json")
+                output["_plot_files"] = _sidecar_path_list(parquet_files, ".png")
 
             artifact_candles: dict[Market, dict[str, dict[str, list[SpotCandle]]]] = candles_for_storage
             artifact_oi: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = open_interest_for_storage

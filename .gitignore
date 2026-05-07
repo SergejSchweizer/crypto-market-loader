@@ -13,7 +13,6 @@
 !main.py
 !pyproject.toml
 !.pre-commit-config.yaml
-!sample_config.yaml
 
 # Source and test trees.
 !api/
@@ -59,5 +58,4 @@ exports/
 lake_test/
 .env
 .env.*
-config.yaml
 docker/.env

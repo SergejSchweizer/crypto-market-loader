@@ -66,14 +66,13 @@ Quality tools:
 
 Runtime configuration is mandatory via `config.yaml`.
 
-- `config.yaml` must be local/untracked and permission-restricted (`chmod 600 config.yaml`)
-- `sample_config.yaml` is the tracked template
+- `config.yaml` is the canonical configuration file
+- keep permissions restrictive (`chmod 600 config.yaml`)
 - CLI flags override config defaults
 
-Create local config:
+Validate config permissions:
 
 ```bash
-cp sample_config.yaml config.yaml
 chmod 600 config.yaml
 ```
 
@@ -239,3 +238,26 @@ Equivalent:
 - multi-exchange adapters
 - schema migration utilities
 - richer observability dashboards
+
+## Scheduled Pipeline (Python Script)
+
+Use the built-in Python orchestrator to run Bronze -> Silver -> Gold in one cron-safe command:
+
+```bash
+python3 scripts/run_medallion_pipeline.py --config config.yaml
+```
+
+What it does:
+- executes only what is defined in `medallion-pipeline` config
+- requires three layer sections: `medallion-pipeline.bronze`, `medallion-pipeline.silver`, `medallion-pipeline.gold`
+- uses `medallion-pipeline.execution_order` plus each layer `command` and `cli_args`
+- no pipeline step flags are hardcoded in the script
+- stops immediately on first failed step (non-zero exit)
+- uses a non-blocking lock at `.run/full-pipeline.lock` to prevent overlapping runs
+- writes logs to `.run/logs/pipeline-<UTC timestamp>.log`
+
+Cron example (hourly):
+
+```cron
+5 * * * * /usr/bin/python3 /home/vcs/git/crypto-market-loader/scripts/run_medallion_pipeline.py --config /home/vcs/git/crypto-market-loader/config.yaml
+```

@@ -286,7 +286,11 @@ def _write_silver_plot(frame: Any, output_path: Path) -> str | None:
         return None
     if ts_col != "timestamp_m1":
         frame = frame.with_columns(pl.col(ts_col).alias("timestamp_m1"))
-    return _write_feature_distribution_plot(frame, output_path)
+    if "exchange" not in frame.columns:
+        frame = frame.with_columns(pl.lit("deribit").alias("exchange"))
+    if "symbol" not in frame.columns:
+        frame = frame.with_columns(pl.lit("unknown").alias("symbol"))
+    return _write_feature_distribution_plot(frame, output_path, normalize_y=False)
 
 
 def _with_timestamp_m1(frame: Any) -> Any:

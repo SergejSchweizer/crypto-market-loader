@@ -153,7 +153,7 @@ Rules:
 - Never commit secrets or credentials.
 - Use environment variables and local config files.
 - Keep sensitive config out of version control.
-- Provide a sanitized tracked config template (`sample_config.yaml`) for required variables.
+- Keep required runtime variables documented directly in `config.yaml`.
 - Do not place live secret values in docs.
 
 ## Configuration Security Policy (MANDATORY)
@@ -161,9 +161,8 @@ Rules:
 - `config.yaml` is the single required runtime configuration source for this repository.
 - CLI/runtime usage without `config.yaml` is not allowed.
 - `.env` must not be used for runtime configuration.
-- `config.yaml` must remain untracked in git and must not be committed.
+- `config.yaml` is the canonical config file and may be tracked in git.
 - `config.yaml` permissions must be restrictive (no permissions for “others”; recommended `chmod 600 config.yaml`).
-- `sample_config.yaml` must be tracked, must not contain sensitive values, and must stay aligned with required `config.yaml` keys.
 - Agents must update `config.yaml` structure/docs together with any code changes that add/remove config keys.
 
 ---
