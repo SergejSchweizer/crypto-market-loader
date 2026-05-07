@@ -292,6 +292,8 @@ def _fetch_chart_page(
     volumes = result.get("volume")
     status = result.get("status")
 
+    if status == "no_data":
+        return []
     if status not in {"ok", None}:
         raise ValueError(f"Deribit chart status is '{status}'")
 

@@ -165,3 +165,34 @@ def test_fetch_candles_range_returns_empty_on_http_client_error(monkeypatch: pyt
     )
 
     assert rows == []
+
+
+def test_fetch_candles_range_returns_empty_on_deribit_no_data_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ingestion.exchanges import deribit as deribit_exchange
+
+    def fake_get_json(url: str, params: dict[str, object] | None = None, timeout_s: float = 15.0) -> object:
+        del url, params, timeout_s
+        return {
+            "result": {
+                "status": "no_data",
+                "ticks": [],
+                "open": [],
+                "high": [],
+                "low": [],
+                "close": [],
+                "volume": [],
+            }
+        }
+
+    monkeypatch.setattr(deribit_exchange, "get_json", fake_get_json)
+
+    rows = fetch_candles_range(
+        exchange="deribit",
+        market="spot",
+        symbol="SOL",
+        interval="1m",
+        start_open_ms=1_000,
+        end_open_ms=120_000,
+    )
+
+    assert rows == []
