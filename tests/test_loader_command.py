@@ -8,6 +8,8 @@ import logging
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from api.commands import loader as loader_cmd
 from application.dto import CandleFetchTaskDTO, PersistResultDTO
 from ingestion.spot import SpotCandle
@@ -142,3 +144,74 @@ def test_configure_bronze_start_bounds_sets_globals() -> None:
         loader_cmd._BRONZE_START_OPEN_MS = original_global
         loader_cmd._BRONZE_SYMBOL_START_OPEN_MS = original_symbol
         loader_cmd._BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS = original_exchange_symbol
+
+
+def test_run_bronze_build_drops_invalid_symbols_before_scheduling(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class _NoopLock:
+        def __init__(self, lock_path: str) -> None:
+            del lock_path
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+    scheduled_candle_tasks: list[tuple[str, str, str, str]] = []
+    scheduled_oi_tasks: list[tuple[str, str, str]] = []
+    scheduled_funding_tasks: list[tuple[str, str, str]] = []
+
+    def _fake_fetch_all_task_groups(**kwargs: object):  # type: ignore[no-untyped-def]
+        scheduled_candle_tasks.extend(kwargs["candle_tasks"])
+        scheduled_oi_tasks.extend(kwargs["oi_tasks"])
+        scheduled_funding_tasks.extend(kwargs["funding_tasks"])
+        return ({}, {}, {}, {}, {}, {})
+
+    monkeypatch.setattr(loader_cmd, "SingleInstanceLock", _NoopLock)
+    monkeypatch.setattr(loader_cmd, "_fetch_all_task_groups", _fake_fetch_all_task_groups)
+    monkeypatch.setattr(loader_cmd, "ensure_bronze_sidecars", lambda **kwargs: [])
+
+    args = argparse.Namespace(
+        exchange="deribit",
+        exchanges=None,
+        market=["spot", "perp", "oi", "funding"],
+        symbols=["BTC", None, " ", "\t", "ETH"],
+        save_parquet_lake=False,
+        lake_root="lake/bronze",
+        no_json_output=True,
+        tail_delta_only=True,
+    )
+    logger = logging.getLogger("test_symbol_sanitization")
+    loader_cmd.run_bronze_build(args=args, logger=logger)
+
+    assert all(task[2] in {"BTC", "ETH"} for task in scheduled_candle_tasks)
+    assert all(task[1] in {"BTC", "ETH"} for task in scheduled_oi_tasks)
+    assert all(task[1] in {"BTC", "ETH"} for task in scheduled_funding_tasks)
+
+
+def test_run_bronze_build_raises_when_no_valid_symbols(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class _NoopLock:
+        def __init__(self, lock_path: str) -> None:
+            del lock_path
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+    monkeypatch.setattr(loader_cmd, "SingleInstanceLock", _NoopLock)
+
+    args = argparse.Namespace(
+        exchange="deribit",
+        exchanges=None,
+        market=["spot"],
+        symbols=[None, "", "  "],
+        save_parquet_lake=False,
+        lake_root="lake/bronze",
+        no_json_output=True,
+        tail_delta_only=True,
+    )
+    logger = logging.getLogger("test_symbol_sanitization_empty")
+    with pytest.raises(ValueError, match="No valid symbols configured"):
+        loader_cmd.run_bronze_build(args=args, logger=logger)

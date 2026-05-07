@@ -81,6 +81,29 @@ def _items_in_random_order(items: list[T]) -> list[T]:
     return random.SystemRandom().sample(items, k=len(items))
 
 
+def _sanitize_symbols(raw_symbols: object, logger: logging.Logger) -> list[str]:
+    """Return validated symbol list, dropping null/blank/non-string entries."""
+
+    if not isinstance(raw_symbols, list):
+        raise ValueError("Symbols must be provided as a list")
+    cleaned: list[str] = []
+    dropped = 0
+    for raw in raw_symbols:
+        if not isinstance(raw, str):
+            dropped += 1
+            continue
+        symbol = raw.strip()
+        if not symbol:
+            dropped += 1
+            continue
+        cleaned.append(symbol)
+    if dropped > 0:
+        logger.warning("Dropped %s invalid symbol entries from configured symbol list", dropped)
+    if not cleaned:
+        raise ValueError("No valid symbols configured. Provide at least one non-empty symbol.")
+    return cleaned
+
+
 def _sidecar_path_list(parquet_files: list[str], suffix: str) -> list[str]:
     """Build sorted unique sidecar paths for provided parquet files."""
 
@@ -575,7 +598,8 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             tasks: list[tuple[Exchange, Market, str, str]] = []
             oi_tasks: list[tuple[Exchange, str, str]] = []
             funding_tasks: list[tuple[Exchange, str, str]] = []
-            randomized_symbols = _items_in_random_order(cast(list[str], args.symbols))
+            validated_symbols = _sanitize_symbols(cast(object, args.symbols), logger=logger)
+            randomized_symbols = _items_in_random_order(validated_symbols)
             logger.info("Randomized schedule markets=%s symbols=%s", data_types, randomized_symbols)
 
             for exchange in exchanges:
