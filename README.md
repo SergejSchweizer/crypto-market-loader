@@ -140,7 +140,7 @@ python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exc
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --dataset-id gold.market.full.m1 --dataset-version v1.0.0
 python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --dataset-id gold.market.full.m1 --auto-version --version-base v1.0.0
-python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --dataset-id gold.hybrid.full_l2.m1 --l2-validation-mode lenient
+python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --l2-root remote_l2_m1_features --exchange deribit --dataset-id gold.hybrid.full_l2.m1 --l2-validation-mode lenient
 ```
 
 Default dataset behavior:
@@ -152,7 +152,7 @@ Supported dataset IDs:
 - `gold.market.core_funding.m1`
 - `gold.market.perp_funding.m1`
 - `gold.market.full.m1`
-- `gold.hybrid.full_l2.m1` (joins full market features with latest per-symbol L2 parquet from `dataset_id=gold.l2.micro.m1`)
+- `gold.hybrid.full_l2.m1` (joins full market features with latest per-symbol L2 parquet from `--l2-root`; default `remote_l2_m1_features`)
 
 Gold dataset feature matrix:
 
@@ -167,9 +167,9 @@ Gold dataset feature matrix:
 Gold artifacts:
 
 ```text
-lake/gold/dataset_id=<dataset_id>/exchange=<exchange>/symbol=<symbol>/version=<dataset_version>/build_id=<featurehash>_<sourcehash>_<gitshort>/data.parquet
-lake/gold/dataset_id=<dataset_id>/exchange=<exchange>/symbol=<symbol>/version=<dataset_version>/build_id=<featurehash>_<sourcehash>_<gitshort>/manifest.json
-lake/gold/dataset_id=<dataset_id>/exchange=<exchange>/symbol=<symbol>/version=<dataset_version>/build_id=<featurehash>_<sourcehash>_<gitshort>/plot.png
+lake/gold/dataset_id=<dataset_id>/dataset_type=gold_symbol_dataset/feature_set_version=<dataset_version>/exchange=<exchange>/symbol=<symbol>/<SYMBOL>_GOLD_<featurehash>_<sourcehash>.parquet
+lake/gold/dataset_id=<dataset_id>/dataset_type=gold_symbol_dataset/feature_set_version=<dataset_version>/exchange=<exchange>/symbol=<symbol>/<SYMBOL>_GOLD_<featurehash>_<sourcehash>.json
+lake/gold/dataset_id=<dataset_id>/dataset_type=gold_symbol_dataset/feature_set_version=<dataset_version>/exchange=<exchange>/symbol=<symbol>/<SYMBOL>_GOLD_<featurehash>_<sourcehash>.png
 ```
 
 - `.json` manifest is always generated for every gold dataset artifact

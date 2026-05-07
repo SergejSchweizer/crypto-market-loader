@@ -49,6 +49,7 @@ silver-build:
 gold-build:
   silver_root: lake/silver
   gold_root: lake/gold
+  l2_root: remote_l2_m1_features
   exchange: deribit
   symbols:
     - BTC

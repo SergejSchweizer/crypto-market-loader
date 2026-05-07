@@ -17,6 +17,11 @@ def add_gold_build_parser(subparsers: argparse._SubParsersAction[argparse.Argume
     parser = subparsers.add_parser("gold-build", help="Build gold per-symbol parquet datasets from silver data")
     parser.add_argument("--silver-root", default="lake/silver", help="Silver lake root")
     parser.add_argument("--gold-root", default="lake/gold", help="Gold lake root")
+    parser.add_argument(
+        "--l2-root",
+        default="remote_l2_m1_features",
+        help="Root path for upstream L2 minute features (used by hybrid L2 gold dataset)",
+    )
     parser.add_argument("--exchange", choices=["deribit"], default="deribit")
     parser.add_argument("--symbols", nargs="+", help="Optional symbol list; auto-discovered when omitted")
     parser.add_argument("--dataset-id", help="Gold dataset identifier (when omitted, build all supported datasets)")
@@ -39,6 +44,7 @@ def run_gold_build(args: argparse.Namespace, logger: logging.Logger) -> None:
 
     silver_root = cast(str, args.silver_root)
     gold_root = cast(str, args.gold_root)
+    l2_root = cast(str, args.l2_root)
     exchange = cast(str, args.exchange)
     dataset_id = cast(str | None, args.dataset_id)
     dataset_version = cast(str, args.dataset_version)
@@ -66,6 +72,7 @@ def run_gold_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 report = build_gold_for_symbol(
                     silver_root=silver_root,
                     gold_root=gold_root,
+                    l2_root=l2_root,
                     exchange=exchange,
                     symbol=symbol,
                     dataset_id=selected_dataset_id,

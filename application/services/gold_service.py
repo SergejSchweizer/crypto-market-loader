@@ -143,7 +143,11 @@ def _latest_manifest_for_dataset(gold_root: Path, exchange: str, symbol: str, da
         return None
     latest_payload: dict[str, object] | None = None
     latest_mtime = -1.0
-    for path in dataset_root.glob("version=*/build_id=*/manifest.json"):
+    candidate_paths = list(dataset_root.glob("version=*/build_id=*/manifest.json"))
+    candidate_paths.extend(
+        dataset_root.glob("dataset_type=gold_symbol_dataset/feature_set_version=*/exchange=*/symbol=*/*.json")
+    )
+    for path in candidate_paths:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
@@ -267,9 +271,13 @@ def _dataset_includes_l2(dataset_id: str) -> bool:
     return bool(spec.get("include_l2", False))
 
 
-def _read_latest_l2_gold_frame(*, gold_root: str, exchange: str, symbol: str) -> tuple[Any, Path]:
+def _read_latest_l2_gold_frame(*, l2_root: str, exchange: str, symbol: str) -> tuple[Any, Path]:
     pl = _require_polars()
-    root = Path(gold_root) / "dataset_id=gold.l2.micro.m1"
+    root = Path(l2_root)
+    # Support either a direct L2 artifact root or a root containing the legacy dataset folder.
+    nested = root / "dataset_id=gold.l2.micro.m1"
+    if nested.exists():
+        root = nested
     candidates: list[Path] = []
     # Preferred nested layout.
     for path in root.glob("exchange=*/symbol=*/version=*/build_id=*/data.parquet"):
@@ -288,14 +296,14 @@ def _read_latest_l2_gold_frame(*, gold_root: str, exchange: str, symbol: str) ->
         candidates.append(path)
     # Backward-compatible flat layout: <SYMBOL>_L2_<hash>_<hash>.parquet
     if not candidates:
-        for path in root.glob("*_L2_*.parquet"):
+        for path in root.glob("**/*_L2_*.parquet"):
             base = path.name.split("_L2_", 1)[0]
             if normalize_symbol(base) != normalize_symbol(symbol):
                 continue
             candidates.append(path)
     candidates = sorted(candidates, key=lambda p: p.stat().st_mtime)
     if not candidates:
-        raise ValueError(f"Missing L2 gold parquet for symbol={symbol} in dataset_id=gold.l2.micro.m1")
+        raise ValueError(f"Missing L2 parquet for symbol={symbol} under l2_root={l2_root}")
     chosen = candidates[-1]
     return pl.read_parquet(str(chosen)), chosen
 
@@ -498,6 +506,69 @@ def _json_payload_hash(payload: dict[str, object]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12]
 
 
+def _sample_frame_for_plot(frame: Any) -> Any:
+    if "timestamp_m1" not in frame.columns or frame.height <= MAX_PLOT_POINTS:
+        return frame
+    step = (frame.height - 1) / float(MAX_PLOT_POINTS - 1)
+    indices = [int(round(i * step)) for i in range(MAX_PLOT_POINTS)]
+    indices[0] = 0
+    indices[-1] = frame.height - 1
+    seen: set[int] = set()
+    deduped_indices: list[int] = []
+    for idx in indices:
+        if idx not in seen:
+            seen.add(idx)
+            deduped_indices.append(idx)
+    return frame[deduped_indices]
+
+
+def _ordered_numeric_columns(frame: Any) -> list[str]:
+    numeric_cols = [col for col, dtype in zip(frame.columns, frame.dtypes, strict=False) if dtype.is_numeric()]
+    market_cols = [col for col in numeric_cols if col.startswith(("spot_", "perp_"))]
+    derived_cols = [col for col in numeric_cols if col.startswith(("oi_", "funding_"))]
+    l2_cols = [col for col in numeric_cols if col.startswith("l2_")]
+    other_cols = [col for col in numeric_cols if col not in set(market_cols + derived_cols + l2_cols)]
+    return [*market_cols, *derived_cols, *l2_cols, *other_cols]
+
+
+def _normalized_series(values_all: list[object]) -> tuple[list[float], list[float], int]:
+    arr = [float(v) for v in values_all if v is not None]
+    missing_values = len(values_all) - len(arr)
+    if not arr:
+        return [], [], missing_values
+    arr_min = min(arr)
+    arr_max = max(arr)
+    if arr_max == arr_min:
+        arr_plot = [0.0 if v is not None else float("nan") for v in values_all]
+    else:
+        scale = arr_max - arr_min
+        arr_plot = [((float(v) - arr_min) / scale) if v is not None else float("nan") for v in values_all]
+    return arr, arr_plot, missing_values
+
+
+def _time_axis_style(mdates: Any, mticker: Any, ts: list[object]) -> tuple[Any, Any, Any]:
+    if not ts or not isinstance(ts[0], datetime) or not isinstance(ts[-1], datetime):
+        return mdates.AutoDateLocator(), None, mdates.DateFormatter("%m-%d %H:%M")
+    span_seconds = max((ts[-1] - ts[0]).total_seconds(), 1.0)
+    span_minutes = span_seconds / 60.0
+    span_hours = span_seconds / 3600.0
+    span_days = span_seconds / 86400.0
+    major_locator = mticker.MaxNLocator(nbins=10)
+    if span_seconds <= 6 * 3600:
+        minor_locator = mdates.MinuteLocator(interval=max(10, int(span_minutes // 700) + 1))
+        formatter = mdates.DateFormatter("%m-%d %H:%M")
+    elif span_seconds <= 2 * 24 * 3600:
+        minor_locator = mdates.HourLocator(interval=max(1, int(span_hours // 700) + 1))
+        formatter = mdates.DateFormatter("%m-%d %H:%M")
+    elif span_seconds <= 14 * 24 * 3600:
+        minor_locator = mdates.HourLocator(interval=max(6, int(span_hours // 700) + 1))
+        formatter = mdates.DateFormatter("%m-%d")
+    else:
+        minor_locator = mdates.DayLocator(interval=max(1, int(span_days // 700) + 1))
+        formatter = mdates.DateFormatter("%Y-%m-%d")
+    return major_locator, minor_locator, formatter
+
+
 def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | None:
     try:
         import matplotlib.dates as mdates
@@ -506,95 +577,88 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
     except ImportError:
         return None
 
-    if "timestamp_m1" in frame.columns and frame.height > MAX_PLOT_POINTS:
-        # Evenly sample across the full time range so the plot represents the whole series.
-        step = (frame.height - 1) / float(MAX_PLOT_POINTS - 1)
-        indices = [int(round(i * step)) for i in range(MAX_PLOT_POINTS)]
-        indices[0] = 0
-        indices[-1] = frame.height - 1
-        seen: set[int] = set()
-        deduped_indices: list[int] = []
-        for idx in indices:
-            if idx not in seen:
-                seen.add(idx)
-                deduped_indices.append(idx)
-        frame = frame[deduped_indices]
-
-    numeric_cols = [col for col, dtype in zip(frame.columns, frame.dtypes, strict=False) if dtype.is_numeric()]
+    pl = _require_polars()
+    frame = _sample_frame_for_plot(frame)
+    numeric_cols = _ordered_numeric_columns(frame)
     if not numeric_cols:
         return None
-    market_cols = [col for col in numeric_cols if col.startswith(("spot_", "perp_"))]
-    derived_cols = [col for col in numeric_cols if col.startswith(("oi_", "funding_"))]
-    l2_cols = [col for col in numeric_cols if col.startswith("l2_")]
-    other_cols = [col for col in numeric_cols if col not in set(market_cols + derived_cols + l2_cols)]
-    numeric_cols = [*market_cols, *derived_cols, *l2_cols, *other_cols]
 
     row_count = len(numeric_cols)
-    fig = plt.figure(figsize=(16, max(3.12 * row_count, 8.4)), facecolor="#0b1220", constrained_layout=True)
-    grid = fig.add_gridspec(row_count, 2, width_ratios=[8, 2], wspace=0.08, hspace=0.40)
-    fig.text(0.06, 0.985, "Feature", color="#e2e8f0", fontsize=11, fontweight="semibold", ha="left", va="top")
-    fig.text(
-        0.86,
-        0.985,
-        "Distribution",
-        color="#e2e8f0",
-        fontsize=11,
-        fontweight="semibold",
+    fig = plt.figure(figsize=(12, max(0.85 * row_count + 4.0, 12.0)), facecolor="#070b16", constrained_layout=True)
+    grid = fig.add_gridspec(
+        row_count + 1,
+        2,
+        height_ratios=[1.15, *([1.0] * row_count)],
+        width_ratios=[8, 2],
+        wspace=0.08,
+        hspace=0.30,
+    )
+    profile_ax = fig.add_subplot(grid[0, :])
+    profile_ax.set_axis_off()
+    profile_ax.set_facecolor("#070b16")
+    ts_min = frame.select(pl.col("timestamp_m1").min()).item() if "timestamp_m1" in frame.columns else None
+    ts_max = frame.select(pl.col("timestamp_m1").max()).item() if "timestamp_m1" in frame.columns else None
+    exchange_val = str(frame.get_column("exchange")[0]) if "exchange" in frame.columns and frame.height > 0 else "unknown"
+    symbol_val = str(frame.get_column("symbol")[0]) if "symbol" in frame.columns and frame.height > 0 else "unknown"
+    profile_ax.text(
+        0.5,
+        0.94,
+        f"Gold 1m profile | {exchange_val} {symbol_val}",
+        color="#e5e7eb",
+        fontsize=9,
         ha="center",
         va="top",
+    )
+    profile_ax.text(
+        0.0,
+        0.56,
+        "\n".join(
+            [
+                f"build rows: {frame.height:,} | numeric features: {row_count}",
+                f"window: {_iso_utc(ts_min if isinstance(ts_min, datetime) else None)} -> {_iso_utc(ts_max if isinstance(ts_max, datetime) else None)}",
+                f"output: {output_path.name}",
+            ]
+        ),
+        color="#b8c2d6",
+        fontsize=6.3,
+        family="monospace",
+        ha="left",
+        va="top",
+    )
+    fig.text(0.06, 0.93, "Gold M1 numeric feature lines", color="#e2e8f0", fontsize=8.5, ha="left", va="bottom")
+    fig.text(
+        0.90,
+        0.93,
+        "Distribution",
+        color="#d1d5db",
+        fontsize=8,
+        ha="center",
+        va="bottom",
     )
 
     for idx, col in enumerate(numeric_cols):
         series_df = frame.select(["timestamp_m1", col]).sort("timestamp_m1")
         values_all = series_df.get_column(col).to_list()
         ts = series_df.get_column("timestamp_m1").to_list()
-        arr_non_null = [float(v) for v in values_all if v is not None]
-        left_ax = fig.add_subplot(grid[idx, 0])
-        right_ax = fig.add_subplot(grid[idx, 1])
+        arr_non_null, arr_plot, missing_values = _normalized_series(values_all)
+        left_ax = fig.add_subplot(grid[idx + 1, 0])
+        right_ax = fig.add_subplot(grid[idx + 1, 1])
 
         for axis in (left_ax, right_ax):
-            axis.set_facecolor("#0f172a")
+            axis.set_facecolor("#0d1424")
             axis.tick_params(colors="#cbd5e1", labelsize=8)
-            axis.spines["top"].set_visible(False)
-            axis.spines["right"].set_visible(False)
-            axis.spines["left"].set_color("#64748b")
-            axis.spines["bottom"].set_color("#64748b")
+            axis.spines["top"].set_color("#22324c")
+            axis.spines["right"].set_color("#22324c")
+            axis.spines["left"].set_color("#22324c")
+            axis.spines["bottom"].set_color("#22324c")
 
         if arr_non_null:
             arr = arr_non_null
-            arr_sorted = sorted(arr)
-            p50 = arr_sorted[len(arr_sorted) // 2]
-            p95 = arr_sorted[min(len(arr_sorted) - 1, int(len(arr_sorted) * 0.95))]
-            missing_values = frame.height - len(arr)
-            is_constant = (max(arr) - min(arr)) == 0.0
             sparse_ratio = (len(arr) / frame.height) if frame.height > 0 else 0.0
             is_sparse = sparse_ratio < 0.15 or len(arr) < 200
-            # Visibility-mode normalization: keep shape while avoiding flat/invisible lines
-            if is_constant:
-                arr_plot = [0.0 if value is not None else float("nan") for value in values_all]
-            else:
-                arr_min = min(arr)
-                arr_max = max(arr)
-                scale = arr_max - arr_min
-                arr_plot = [
-                    ((float(value) - arr_min) / scale) if value is not None else float("nan")
-                    for value in values_all
-                ]
-            stats_text = "\n".join(
-                [
-                    f"feature: {col}",
-                    f"count: {len(arr_non_null)}",
-                    f"missing: {missing_values}",
-                    f"sparse: {is_sparse}",
-                    f"constant: {is_constant}",
-                    f"mean: {sum(arr)/len(arr):.6g}",
-                    f"min/max: {min(arr):.6g} / {max(arr):.6g}",
-                    f"p50/p95: {p50:.6g} / {p95:.6g}",
-                ]
-            )
-            line_width = 2.2 if is_sparse else 1.8
-            line_alpha = 1.0 if is_sparse else 0.90
-            left_ax.plot(ts, arr_plot, color="#38bdf8", linewidth=line_width, alpha=line_alpha, label=stats_text)
+            line_width = 1.1 if is_sparse else 0.8
+            line_alpha = 0.95 if is_sparse else 0.86
+            left_ax.plot(ts, arr_plot, color="#8cd7f3", linewidth=line_width, alpha=line_alpha)
             if is_sparse:
                 marker_every = max(1, len(arr_plot) // 80)
                 left_ax.plot(
@@ -603,19 +667,53 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
                     linestyle="None",
                     marker="o",
                     markersize=2.2,
-                    color="#67e8f9",
-                    alpha=0.95,
+                    color="#b5edff",
+                    alpha=0.88,
                     markevery=marker_every,
                 )
             mask = [value == value for value in arr_plot]
-            left_ax.fill_between(ts, arr_plot, [0.0] * len(arr_plot), where=mask, color="#0ea5e9", alpha=0.18)
-            left_ax.xaxis.set_major_locator(mdates.AutoDateLocator())
-            left_ax.xaxis.set_major_formatter(mdates.DateFormatter("%Y-%m-%d"))
-            left_ax.tick_params(axis="x", rotation=0)
+            left_ax.fill_between(ts, arr_plot, [0.0] * len(arr_plot), where=mask, color="#234b6e", alpha=0.16)
+            major_locator, minor_locator, major_formatter = _time_axis_style(mdates, mticker, ts)
+            left_ax.xaxis.set_major_locator(major_locator)
+            if minor_locator is not None:
+                left_ax.xaxis.set_minor_locator(minor_locator)
+            left_ax.xaxis.set_major_formatter(major_formatter)
+            left_ax.tick_params(axis="x", rotation=35, labelsize=6.5)
+            left_ax.tick_params(axis="x", which="minor", length=2, color="#475569")
+            left_ax.grid(axis="x", which="major", color="#2f3b52", alpha=0.28, linewidth=0.6)
+            left_ax.grid(axis="x", which="minor", color="#253047", alpha=0.16, linewidth=0.4)
             left_ax.set_ylim(-0.05, 1.05)
-            left_ax.set_ylabel("normalized", color="#cbd5e1", fontsize=7)
-            right_ax.hist(arr, bins=30, color="#22d3ee", alpha=0.85)
+            missing_ts = [t for t, v in zip(ts, values_all, strict=False) if v is None]
+            if missing_ts:
+                left_ax.vlines(missing_ts, ymin=-0.05, ymax=1.05, color="#5b233b", alpha=0.22, linewidth=0.7)
+            left_ax.set_ylabel(col, color="#cbd5e1", fontsize=6.8)
+            right_ax.hist(arr, bins=24, color="#a8be8f", alpha=0.92, edgecolor="#a8be8f")
             right_ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.4g}"))
+            non_null_ts = [t for t, v in zip(ts, values_all, strict=False) if v is not None]
+            if non_null_ts:
+                ts_range = f"{non_null_ts[0]:%Y-%m-%d %H:%M} -> {non_null_ts[-1]:%Y-%m-%d %H:%M}"
+            else:
+                ts_range = "n/a"
+            stats_box = "\n".join(
+                [
+                    f"feature: {col}",
+                    f"time range: {ts_range}",
+                    f"all rows: {frame.height}",
+                    f"missing rows: {missing_values}",
+                ]
+            )
+            left_ax.text(
+                0.008,
+                0.96,
+                stats_box,
+                transform=left_ax.transAxes,
+                va="top",
+                ha="left",
+                fontsize=5.2,
+                family="monospace",
+                color="#d7e3f2",
+                bbox={"facecolor": "#0a1322", "edgecolor": "#334155", "alpha": 0.78, "pad": 2.0},
+            )
         else:
             left_ax.text(
                 0.02,
@@ -627,25 +725,15 @@ def _write_feature_distribution_plot(frame: Any, output_path: Path) -> str | Non
                 fontsize=9.5,
                 transform=left_ax.transAxes,
             )
-        handles, labels = left_ax.get_legend_handles_labels()
-        if handles:
-            left_ax.legend(
-                loc="upper left",
-                frameon=True,
-                framealpha=0.82,
-                facecolor="#111827",
-                edgecolor="#334155",
-                labelcolor="#e2e8f0",
-                fontsize=7.8,
-                handlelength=1.6,
-            )
-        right_ax.set_title(col, color="#cbd5e1", fontsize=8.5, pad=2)
-        right_ax.set_xlabel("value", color="#cbd5e1", fontsize=8)
+        if idx < row_count - 1:
+            left_ax.set_xticklabels([])
+            right_ax.set_xticklabels([])
+        right_ax.set_xlabel("value", color="#cbd5e1", fontsize=7)
         right_ax.set_yticks([])
         right_ax.tick_params(axis="x", colors="#cbd5e1", labelsize=7)
-        right_ax.grid(alpha=0.25, linestyle="--", linewidth=0.8, color="#334155")
+        right_ax.grid(alpha=0.18, linestyle="-", linewidth=0.6, color="#334155")
 
-    fig.suptitle("Gold Feature Distributions", color="#e2e8f0", fontsize=14, fontweight="semibold")
+    fig.suptitle("Gold 1m Feature Profile", color="#f1f5f9", fontsize=10, fontweight="semibold")
     fig.savefig(output_path, dpi=180)
     plt.close(fig)
     return str(output_path.resolve())
@@ -741,6 +829,7 @@ def build_gold_for_symbol(
     *,
     silver_root: str,
     gold_root: str,
+    l2_root: str | None = None,
     exchange: str,
     symbol: str,
     dataset_id: str = "gold.market.full.m1",
@@ -751,7 +840,10 @@ def build_gold_for_symbol(
     plot: bool = False,
     l2_validation_mode: str = "strict",
 ) -> GoldBuildReport:
-    """Build one gold parquet dataset + manifest for a symbol."""
+    """Build one gold parquet dataset + manifest for a symbol.
+
+    When ``l2_root`` is omitted, L2 lookup falls back to ``gold_root`` for backward compatibility.
+    """
 
     pl = _require_polars()
     symbol = normalize_symbol(symbol)
@@ -769,7 +861,12 @@ def build_gold_for_symbol(
     prepared: list[Any] = []
     l2_source_path: Path | None = None
     if _dataset_includes_l2(dataset_id):
-        l2_raw, l2_source_path = _read_latest_l2_gold_frame(gold_root=gold_root, exchange=exchange, symbol=symbol)
+        effective_l2_root = l2_root or gold_root
+        l2_raw, l2_source_path = _read_latest_l2_gold_frame(
+            l2_root=effective_l2_root,
+            exchange=exchange,
+            symbol=symbol,
+        )
         raw_by_dataset["gold_l2_m1"] = l2_raw
     for dataset_type, raw_frame in raw_by_dataset.items():
         prepared.append(_prepare_dataset_frame(pl, dataset_type, raw_frame, symbol))
@@ -866,22 +963,25 @@ def build_gold_for_symbol(
         "source_silver_datasets": source_silver_datasets,
         "feature_metadata": _feature_metadata(pl, merged, exchange),
     }
-    hash_string = build_id
+    hash_string = f"{feature_set_hash}_{source_data_hash}"
+    feature_set_version = resolved_version
+    symbol_file = symbol.replace("-", "_")
+    stem = f"{symbol_file}_GOLD_{hash_string}"
     artifact_dir = (
         root
         / f"dataset_id={dataset_id}"
+        / "dataset_type=gold_symbol_dataset"
+        / f"feature_set_version={feature_set_version}"
         / f"exchange={exchange}"
         / f"symbol={symbol}"
-        / f"version={resolved_version}"
-        / f"build_id={hash_string}"
     )
     artifact_dir.mkdir(parents=True, exist_ok=True)
-    parquet_path = artifact_dir / "data.parquet"
+    parquet_path = artifact_dir / f"{stem}.parquet"
     merged.write_parquet(parquet_path)
     # Gold policy: always emit plot + manifest for every dataset artifact.
     _ = manifest
     _ = plot
-    plot_path = artifact_dir / "plot.png"
+    plot_path = artifact_dir / f"{stem}.png"
     written_plot = _write_feature_distribution_plot(merged, plot_path)
     if written_plot is None:
         raise ValueError(
@@ -889,7 +989,7 @@ def build_gold_for_symbol(
             "(missing matplotlib dependency or no plottable numeric columns)."
         )
     manifest_payload["plot_generated"] = True
-    manifest_path = artifact_dir / "manifest.json"
+    manifest_path = artifact_dir / f"{stem}.json"
     manifest_path.write_text(json.dumps(manifest_payload, indent=2), encoding="utf-8")
     written_manifest: str | None = str(manifest_path.resolve())
 

@@ -117,16 +117,18 @@ def test_build_gold_for_symbol_writes_hashed_parquet_and_manifest(tmp_path: Path
     )
 
     parquet_path = Path(report.parquet_path)
-    assert parquet_path.name == "data.parquet"
+    assert parquet_path.name.startswith("BTC_GOLD_")
+    assert parquet_path.suffix == ".parquet"
     assert "dataset_id=gold.market.full.m1" in report.parquet_path
+    assert "dataset_type=gold_symbol_dataset" in report.parquet_path
+    assert "feature_set_version=v1.0.0" in report.parquet_path
     assert f"exchange={exchange}" in report.parquet_path
     assert f"symbol={symbol}" in report.parquet_path
-    assert "version=v1.0.0" in report.parquet_path
-    assert "build_id=" in report.parquet_path
     assert Path(report.parquet_path).exists()
     assert Path(report.manifest_path).exists()
     assert report.plot_path is None or Path(report.plot_path).exists()
-    assert Path(report.manifest_path).name == "manifest.json"
+    assert Path(report.manifest_path).name.startswith("BTC_GOLD_")
+    assert Path(report.manifest_path).suffix == ".json"
 
     payload = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
     assert payload["symbol"] == symbol
