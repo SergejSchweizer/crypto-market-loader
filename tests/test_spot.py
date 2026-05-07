@@ -8,9 +8,11 @@ from typing import Literal
 import pytest
 
 from ingestion.exchanges import deribit
+from ingestion.http_client import HttpClientError
 from ingestion.spot import (
     fetch_candles,
     fetch_candles_all_history,
+    fetch_candles_range,
     normalize_timeframe,
     parse_kline,
 )
@@ -142,3 +144,24 @@ def test_fetch_all_history_deribit(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert len(candles) == 1
     assert candles[0].symbol == "BTC-PERPETUAL"
+
+
+def test_fetch_candles_range_returns_empty_on_http_client_error(monkeypatch: pytest.MonkeyPatch) -> None:
+    from ingestion.exchanges import deribit as deribit_exchange
+
+    def fake_fetch_klines_range(**kwargs: object) -> list[list[object]]:
+        del kwargs
+        raise HttpClientError("Connection error")
+
+    monkeypatch.setattr(deribit_exchange, "fetch_klines_range", fake_fetch_klines_range)
+
+    rows = fetch_candles_range(
+        exchange="deribit",
+        market="perp",
+        symbol="ETH",
+        interval="1m",
+        start_open_ms=1_000,
+        end_open_ms=2_000,
+    )
+
+    assert rows == []

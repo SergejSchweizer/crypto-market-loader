@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 from ingestion.exchanges import deribit
+from ingestion.http_client import HttpClientError
 
 Exchange = Literal["deribit"]
 Market = Literal["spot", "perp"]
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -171,12 +175,21 @@ def fetch_candles_all_history(
             ]
         )
 
-    rows = deribit.fetch_klines_all(
-        symbol=symbol,
-        market=market,
-        interval=normalized_interval,
-        on_page=_on_page if on_history_chunk is not None else None,
-    )
+    try:
+        rows = deribit.fetch_klines_all(
+            symbol=symbol,
+            market=market,
+            interval=normalized_interval,
+            on_page=_on_page if on_history_chunk is not None else None,
+        )
+    except TypeError as exc:
+        if "on_page" not in str(exc):
+            raise
+        rows = deribit.fetch_klines_all(
+            symbol=symbol,
+            market=market,
+            interval=normalized_interval,
+        )
 
     return [
         parse_kline(exchange=exchange, symbol=normalized_symbol, interval=normalized_interval, row=row) for row in rows
@@ -198,14 +211,40 @@ def fetch_candles_range(
 
     if exchange != "deribit":
         raise ValueError(f"Unsupported exchange '{exchange}'")
-    rows = deribit.fetch_klines_range(
-        symbol=symbol,
-        market=market,
-        interval=normalized_interval,
-        start_open_ms=start_open_ms,
-        end_open_ms=end_open_ms,
-    )
+    started = time.monotonic()
+    try:
+        rows = deribit.fetch_klines_range(
+            symbol=symbol,
+            market=market,
+            interval=normalized_interval,
+            start_open_ms=start_open_ms,
+            end_open_ms=end_open_ms,
+        )
+    except HttpClientError:
+        logger.warning(
+            "OHLCV day fetch failed exchange=%s market=%s symbol=%s interval=%s start_ms=%s end_ms=%s elapsed_s=%.2f",
+            exchange,
+            market,
+            normalized_symbol,
+            normalized_interval,
+            start_open_ms,
+            end_open_ms,
+            time.monotonic() - started,
+        )
+        return []
 
-    return [
+    candles = [
         parse_kline(exchange=exchange, symbol=normalized_symbol, interval=normalized_interval, row=row) for row in rows
     ]
+    logger.info(
+        "OHLCV day fetch done exchange=%s market=%s symbol=%s interval=%s start_ms=%s end_ms=%s rows=%s elapsed_s=%.2f",
+        exchange,
+        market,
+        normalized_symbol,
+        normalized_interval,
+        start_open_ms,
+        end_open_ms,
+        len(candles),
+        time.monotonic() - started,
+    )
+    return candles
