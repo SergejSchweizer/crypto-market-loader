@@ -599,10 +599,12 @@ def _write_feature_distribution_plot(
         col: int(full_frame.height - full_missing_by_col[col]) for col in numeric_cols
     }
     full_time_range_by_col: dict[str, str] = {}
+    full_numeric_stats_by_col: dict[str, dict[str, float | None]] = {}
     for col in numeric_cols:
         non_null_frame = full_frame.filter(pl.col(col).is_not_null())
         if non_null_frame.height == 0:
             full_time_range_by_col[col] = "n/a"
+            full_numeric_stats_by_col[col] = {"mean": None, "std": None, "var": None}
             continue
         min_ts = non_null_frame.select(pl.col("timestamp_m1").min()).item()
         max_ts = non_null_frame.select(pl.col("timestamp_m1").max()).item()
@@ -612,6 +614,18 @@ def _write_feature_distribution_plot(
             full_time_range_by_col[col] = f"{min_iso} -> {max_iso}"
         else:
             full_time_range_by_col[col] = "n/a"
+        stats_row = non_null_frame.select(
+            [
+                pl.col(col).mean().alias("mean"),
+                pl.col(col).std().alias("std"),
+                pl.col(col).var().alias("var"),
+            ]
+        ).to_dicts()[0]
+        full_numeric_stats_by_col[col] = {
+            "mean": float(stats_row["mean"]) if stats_row["mean"] is not None else None,
+            "std": float(stats_row["std"]) if stats_row["std"] is not None else None,
+            "var": float(stats_row["var"]) if stats_row["var"] is not None else None,
+        }
     fig = plt.figure(figsize=(12, max(0.85 * row_count + 4.0, 12.0)), facecolor="#070b16", constrained_layout=True)
     grid = fig.add_gridspec(
         row_count + 1,
@@ -752,6 +766,46 @@ def _write_feature_distribution_plot(
                     (
                         f"missing rows: "
                         f"{(100.0 * full_missing_by_col[col] / full_available_by_col[col]) if full_available_by_col[col] > 0 else 0.0:.2f}%"
+                    ),
+                    (
+                        f"mean: {full_numeric_stats_by_col[col]['mean']:.6g}"
+                        if full_numeric_stats_by_col[col]["mean"] is not None
+                        else "mean: n/a"
+                    ),
+                    (
+                        f"var: {full_numeric_stats_by_col[col]['var']:.6g}"
+                        if full_numeric_stats_by_col[col]["var"] is not None
+                        else "var: n/a"
+                    ),
+                    (
+                        (
+                            "1std: "
+                            f"[{(full_numeric_stats_by_col[col]['mean'] - full_numeric_stats_by_col[col]['std']):.6g}, "
+                            f"{(full_numeric_stats_by_col[col]['mean'] + full_numeric_stats_by_col[col]['std']):.6g}]"
+                        )
+                        if full_numeric_stats_by_col[col]["mean"] is not None
+                        and full_numeric_stats_by_col[col]["std"] is not None
+                        else "1std: n/a"
+                    ),
+                    (
+                        (
+                            "2std: "
+                            f"[{(full_numeric_stats_by_col[col]['mean'] - 2.0 * full_numeric_stats_by_col[col]['std']):.6g}, "
+                            f"{(full_numeric_stats_by_col[col]['mean'] + 2.0 * full_numeric_stats_by_col[col]['std']):.6g}]"
+                        )
+                        if full_numeric_stats_by_col[col]["mean"] is not None
+                        and full_numeric_stats_by_col[col]["std"] is not None
+                        else "2std: n/a"
+                    ),
+                    (
+                        (
+                            "3std: "
+                            f"[{(full_numeric_stats_by_col[col]['mean'] - 3.0 * full_numeric_stats_by_col[col]['std']):.6g}, "
+                            f"{(full_numeric_stats_by_col[col]['mean'] + 3.0 * full_numeric_stats_by_col[col]['std']):.6g}]"
+                        )
+                        if full_numeric_stats_by_col[col]["mean"] is not None
+                        and full_numeric_stats_by_col[col]["std"] is not None
+                        else "3std: n/a"
                     ),
                 ]
             )

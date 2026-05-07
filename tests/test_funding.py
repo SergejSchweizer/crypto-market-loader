@@ -186,3 +186,14 @@ def test_parse_funding_row_preserves_raw_timestamp() -> None:
     )
     assert parsed["open_time"] == datetime(2026, 4, 28, 12, 8, 34, tzinfo=UTC)
     assert parsed["close_time"] == datetime(2026, 4, 28, 12, 8, 34, tzinfo=UTC)
+
+
+def test_parse_funding_row_handles_null_prev_index_price() -> None:
+    ts_ms = int(datetime(2026, 4, 28, 12, 8, 34, tzinfo=UTC).timestamp() * 1000)
+    parsed = deribit_funding.parse_funding_row(
+        symbol="BTC-PERPETUAL",
+        period="8h",
+        row={"timestamp": ts_ms, "interest_8h": 0.0001, "index_price": 123.45, "prev_index_price": None},
+    )
+    assert parsed["index_price"] == 123.45
+    assert parsed["mark_price"] == 123.45

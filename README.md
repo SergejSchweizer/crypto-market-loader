@@ -95,6 +95,8 @@ Behavior:
   - manifest: `data.json`
   - plot: `data.png`
   - missing sidecars on existing matching Bronze files are backfilled during the run
+- Bronze stores raw source-shaped records only: no aggregations, no resampling beyond source cadence,
+  and no engineered/artificial feature columns.
 
 Dataset semantics (precise):
 - `spot`:

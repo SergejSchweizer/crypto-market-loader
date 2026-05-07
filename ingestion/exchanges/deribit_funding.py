@@ -12,6 +12,17 @@ DERIBIT_FUNDING_URL = "https://www.deribit.com/api/v2/public/get_funding_rate_hi
 DERIBIT_FUNDING_MAX_POINTS_PER_REQUEST = 500
 
 
+def _to_float_or_default(value: object, default: float) -> float:
+    """Convert value to float, falling back to default for null/invalid payloads."""
+
+    if value is None:
+        return default
+    try:
+        return float(cast(Any, value))
+    except (TypeError, ValueError):
+        return default
+
+
 def _normalize_funding_instrument(symbol: str) -> str:
     """Map normalized perp symbols to Deribit funding endpoint instrument names."""
 
@@ -148,16 +159,19 @@ def parse_funding_row(symbol: str, period: str, row: dict[str, object]) -> dict[
     open_time = datetime.fromtimestamp(open_time_ms / 1000, tz=UTC)
     close_time = open_time
 
-    funding_rate = row.get("interest_8h", row.get("interest_1h", 0.0))
+    funding_rate_raw = row.get("interest_8h", row.get("interest_1h", 0.0))
+    index_price = _to_float_or_default(row.get("index_price"), 0.0)
+    # Deribit sometimes returns prev_index_price=null; use index_price as fallback.
+    mark_price = _to_float_or_default(row.get("prev_index_price"), index_price)
 
     return {
         "symbol": symbol,
         "timeframe": period,
         "open_time": open_time,
         "close_time": close_time,
-        "funding_rate": float(cast(Any, funding_rate)),
-        "index_price": float(cast(Any, row.get("index_price", 0.0))),
-        "mark_price": float(cast(Any, row.get("prev_index_price", 0.0))),
+        "funding_rate": _to_float_or_default(funding_rate_raw, 0.0),
+        "index_price": index_price,
+        "mark_price": mark_price,
     }
 
 
