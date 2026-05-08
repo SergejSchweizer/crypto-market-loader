@@ -1,68 +1,151 @@
 # crypto-market-loader
 
-Production-grade ingestion and transformation pipeline for Deribit market data with bronze/silver/gold parquet layers.
+Production-grade cryptocurrency market data ingestion, normalization, feature engineering, and dataset generation framework for quantitative research and systematic trading.
 
-![Gold 1m Feature Profile](docs/figures/plot_outputs/gold_1m_feature_profile.png)
+---
 
-## Overview
+# Table Of Contents
 
-`crypto-market-loader` is designed for deterministic market data ingestion, incremental bronze/silver/gold feature engineering, and clean dataset artifacts for downstream modeling.
+- [crypto-market-loader](#crypto-market-loader)
+- [Table Of Contents](#table-of-contents)
+- [1. Project Goals](#1-project-goals)
+- [2. System Overview](#2-system-overview)
+  - [2.1 Core Design Principles](#21-core-design-principles)
+  - [2.2 Medallion Architecture](#22-medallion-architecture)
+  - [2.3 Supported Data Domains](#23-supported-data-domains)
+- [3. Repository Structure](#3-repository-structure)
+- [4. Installation](#4-installation)
+- [5. Pipeline Architecture](#5-pipeline-architecture)
+  - [5.1 Bronze Layer](#51-bronze-layer)
+  - [5.2 Silver Layer](#52-silver-layer)
+  - [5.3 Gold Layer](#53-gold-layer)
+- [6. Dataset Definitions](#6-dataset-definitions)
+  - [6.1 Spot OHLCV](#61-spot-ohlcv)
+  - [6.2 Perpetual OHLCV](#62-perpetual-ohlcv)
+  - [6.3 Open Interest](#63-open-interest)
+  - [6.4 Funding Rate](#64-funding-rate)
+- [7. Quantitative Interpretation Of Features](#7-quantitative-interpretation-of-features)
+  - [Price Features](#price-features)
+  - [Volume Features](#volume-features)
+  - [Funding Features](#funding-features)
+  - [Open Interest Features](#open-interest-features)
+  - [Cross-Market Features](#cross-market-features)
+- [8. Gold Dataset Definitions](#8-gold-dataset-definitions)
+  - [gold.market.core.m1](#goldmarketcorem1)
+  - [gold.market.core\_funding.m1](#goldmarketcore_fundingm1)
+  - [gold.market.full.m1](#goldmarketfullm1)
+  - [gold.hybrid.full\_l2.m1](#goldhybridfull_l2m1)
+- [9. Recommended Additional Features](#9-recommended-additional-features)
+- [10. Missing Datasets And Future Extensions](#10-missing-datasets-and-future-extensions)
+  - [L2 Order Book Data](#l2-order-book-data)
+  - [Liquidation Data](#liquidation-data)
+  - [Trade-Level Data](#trade-level-data)
+  - [Options Surface Data](#options-surface-data)
+  - [Cross-Exchange Data](#cross-exchange-data)
+- [11. Storage Layout](#11-storage-layout)
+  - [Bronze Layout](#bronze-layout)
+  - [Silver Layout](#silver-layout)
+  - [Gold Layout](#gold-layout)
+- [12. Example Commands](#12-example-commands)
+  - [Bronze Build](#bronze-build)
+  - [Silver Build](#silver-build)
+  - [Gold Build](#gold-build)
+- [13. Quant Research Usage](#13-quant-research-usage)
+  - [Regime Detection](#regime-detection)
+  - [Market-Neutral Strategies](#market-neutral-strategies)
+  - [Forecasting](#forecasting)
+  - [Reinforcement Learning](#reinforcement-learning)
+- [14. Engineering Standards](#14-engineering-standards)
+- [15. Roadmap](#15-roadmap)
 
-Supported domains:
-- Exchange: `deribit`
-- Markets: `spot`, `perp`, `oi`, `funding`
-- Symbols: `BTC`, `ETH`, `SOL`
-- Storage: parquet lake with manifest and plot sidecars
+---
 
-Design principles:
-- reproducible, incremental pipeline runs
-- strong schema boundaries and typed service layers
-- idempotent persistence and safe operational defaults
-- explicit bronze/silver/gold medallion separation
+# 1. Project Goals
 
-## Quick start
+`crypto-market-loader` is designed as a reproducible market data platform for cryptocurrency quantitative research.
 
-Install and activate a virtual environment:
+Primary goals:
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e '.[dev]'
+- deterministic ingestion
+- schema-stable parquet datasets
+- reproducible feature engineering
+- medallion architecture separation
+- ML-ready dataset generation
+- scalable historical backfills
+- quantitative research workflows
+
+The repository is intended for:
+
+- systematic trading
+- market-neutral research
+- volatility forecasting
+- HMM regime detection
+- reinforcement learning
+- feature engineering pipelines
+- derivatives analytics
+
+---
+
+# 2. System Overview
+
+## 2.1 Core Design Principles
+
+The repository follows the engineering principles defined in `AGENTS.md`:
+
+- maintainability
+- modularity
+- reproducibility
+- deterministic processing
+- idempotent ingestion
+- explicit interfaces
+- production-grade architecture
+
+## 2.2 Medallion Architecture
+
+```text
+Exchange APIs
+      |
+      v
++----------------+
+| Bronze Layer   |
+| Raw normalized |
++----------------+
+      |
+      v
++----------------+
+| Silver Layer   |
+| Feature tables |
++----------------+
+      |
+      v
++----------------+
+| Gold Layer     |
+| ML datasets    |
++----------------+
 ```
 
-Run a sample bronze ingestion:
+## 2.3 Supported Data Domains
 
-```bash
-python3 main.py bronze-build \
-  --exchange deribit \
-  --market spot perp oi funding \
-  --symbols BTC ETH SOL \
-  --save-parquet-lake \
-  --lake-root lake/bronze
-```
+| Dataset | Description |
+|---|---|
+| Spot OHLCV | Physical spot market |
+| Perpetual OHLCV | Leveraged perpetual futures |
+| Funding | Long/short positioning pressure |
+| Open Interest | Aggregate leveraged exposure |
 
-Run a silver transform:
+Current exchange support:
 
-```bash
-python3 main.py silver-build \
-  --bronze-root lake/bronze \
-  --silver-root lake/silver \
-  --exchange deribit \
-  --market spot perp oi funding \
-  --timeframe 1m
-```
+- Deribit
 
-Run a gold build:
+Primary symbols:
 
-```bash
-python3 main.py gold-build \
-  --silver-root lake/silver \
-  --gold-root lake/gold \
-  --exchange deribit
-```
+- BTC
+- ETH
+- SOL
 
-## Repository layout
+---
+
+# 3. Repository Structure
 
 ```text
 api/
@@ -75,140 +158,511 @@ REPORT.md
 AGENTS.md
 ```
 
-## Configuration
+| Directory | Responsibility |
+|---|---|
+| `api/` | CLI entrypoints |
+| `application/` | Pipeline orchestration |
+| `ingestion/` | Exchange connectors |
+| `tests/` | Validation and regression tests |
+| `docs/` | Figures and documentation |
 
-Runtime configuration is mandatory via `config.yaml`.
+---
 
-- `config.yaml` is the canonical runtime config source
-- do not use `.env` for runtime configuration
-- keep permissions restrictive: `chmod 600 config.yaml`
-
-CLI flags override configuration defaults.
-
-## Bronze layer
-
-Bronze stores raw source records and does not engineer features.
-
-Command example:
+# 4. Installation
 
 ```bash
-python3 main.py bronze-build --exchange deribit --market spot perp oi funding --symbols BTC ETH SOL --save-parquet-lake --lake-root lake/bronze
+python -m venv .venv
+source .venv/bin/activate
+pip install -U pip
+pip install -e '.[dev]'
 ```
 
-Key Bronze semantics:
-- `spot` and `perp` are 1-minute OHLCV candles
-- `oi` and `funding` preserve native source event timestamps
-- incremental ingestion with tail-first and gap-fill behavior
-- optional start-date overrides are configurable via `config.yaml`
+Runtime configuration uses:
 
-Bronze output layout:
+```text
+config.yaml
+```
+
+Recommended permissions:
+
+```bash
+chmod 600 config.yaml
+```
+
+---
+
+# 5. Pipeline Architecture
+
+## 5.1 Bronze Layer
+
+Bronze stores raw normalized exchange data.
+
+Properties:
+
+- append-oriented
+- deterministic
+- audit-friendly
+- minimal transformations
+- preserves source fidelity
+
+Bronze stores:
+
+- OHLCV candles
+- funding events
+- open interest observations
+
+## 5.2 Silver Layer
+
+Silver transforms raw records into engineered feature datasets.
+
+Responsibilities:
+
+- rolling statistics
+- volatility features
+- funding transformations
+- OI transformations
+- canonical resampling
+- forward filling
+- feature manifests
+
+## 5.3 Gold Layer
+
+Gold produces final modeling datasets.
+
+Responsibilities:
+
+- canonical 1-minute alignment
+- joining feature families
+- versioned datasets
+- plot generation
+- manifests/provenance
+
+---
+
+# 6. Dataset Definitions
+
+## 6.1 Spot OHLCV
+
+Represents the underlying physical market.
+
+Typical fields:
+
+| Field | Meaning |
+|---|---|
+| open | First traded price |
+| high | Highest traded price |
+| low | Lowest traded price |
+| close | Last traded price |
+| volume | Base asset turnover |
+
+Quantitative importance:
+
+- baseline market direction
+- volatility estimation
+- trend structure
+- lead/lag modeling
+- spot/perp basis analysis
+
+## 6.2 Perpetual OHLCV
+
+Represents leveraged perpetual futures trading.
+
+Important because perpetuals often lead spot markets during:
+
+- liquidations
+- leverage expansions
+- speculative squeezes
+- volatility events
+
+Potential feature groups:
+
+| Feature | Interpretation |
+|---|---|
+| perp returns | Leveraged directional pressure |
+| perp volume | Speculative participation |
+| basis vs spot | Carry and leverage state |
+| volatility | Market stress |
+
+## 6.3 Open Interest
+
+Open Interest measures total leveraged exposure.
+
+Important conceptual distinction:
+
+| Concept | Meaning |
+|---|---|
+| observed OI | Native exchange observation |
+| OI 1m feature | Forward-filled modeling feature |
+
+Quantitative interpretation:
+
+| Price | OI | Meaning |
+|---|---|
+| Up | Up | New longs entering |
+| Down | Up | New shorts entering |
+| Up | Down | Short covering |
+| Down | Down | Long liquidation |
+
+OI is extremely important for:
+
+- leverage regime detection
+- squeeze prediction
+- volatility forecasting
+- systemic stress estimation
+
+## 6.4 Funding Rate
+
+Funding transfers capital between longs and shorts.
+
+Interpretation:
+
+| Funding State | Market Meaning |
+|---|---|
+| Positive funding | Long crowding |
+| Negative funding | Short crowding |
+| Neutral funding | Balanced positioning |
+
+Funding is highly valuable for:
+
+- carry strategies
+- market-neutral trading
+- crowding analysis
+- mean reversion systems
+- regime detection
+
+---
+
+# 7. Quantitative Interpretation Of Features
+
+## Price Features
+
+Describe:
+
+- trend
+- momentum
+- volatility clustering
+- regime shifts
+
+## Volume Features
+
+Describe:
+
+- participation intensity
+- speculative activity
+- stress conditions
+- liquidity conditions
+
+## Funding Features
+
+Describe:
+
+- directional crowding
+- leverage imbalance
+- carry state
+- sentiment extremes
+
+## Open Interest Features
+
+Describe:
+
+- leverage expansion
+- leverage unwinds
+- liquidation risk
+- structural market stress
+
+## Cross-Market Features
+
+Most powerful features usually come from interactions:
+
+| Combination | Interpretation |
+|---|---|
+| spot/perp spread | Futures premium |
+| funding + OI | Crowded leverage |
+| OI + volatility | Fragile market state |
+| volume + funding | Speculative frenzy |
+
+---
+
+# 8. Gold Dataset Definitions
+
+## gold.market.core.m1
+
+Contains:
+
+- spot features
+- perpetual features
+
+Use cases:
+
+- forecasting
+- volatility models
+- regime detection
+
+## gold.market.core_funding.m1
+
+Adds:
+
+- funding features
+
+Use cases:
+
+- carry modeling
+- crowding analysis
+- market-neutral systems
+
+## gold.market.full.m1
+
+Adds:
+
+- open interest
+- funding
+- full derivatives state
+
+Use cases:
+
+- advanced ML
+- systemic risk modeling
+- leverage-state analysis
+
+## gold.hybrid.full_l2.m1
+
+Extends gold datasets with L2 order book features.
+
+Potential L2 features:
+
+| Feature | Meaning |
+|---|---|
+| bid/ask imbalance | Liquidity pressure |
+| spread | Market quality |
+| order flow imbalance | Aggressive flow |
+| microprice | Near-term directional bias |
+
+---
+
+# 9. Recommended Additional Features
+
+Strong future feature candidates:
+
+| Feature | Importance |
+|---|---|
+| rolling z-scores | Regime normalization |
+| realized volatility | Risk estimation |
+| EWMA statistics | Adaptive state |
+| entropy measures | Market disorder |
+| rolling correlations | Dependency structure |
+| volatility-of-volatility | Stress estimation |
+| basis z-score | Relative-value modeling |
+| rolling hedge ratios | Market-neutral trading |
+
+Recommended regime features:
+
+- HMM probabilities
+- volatility state labels
+- liquidity regime labels
+- market stress indicators
+
+---
+
+# 10. Missing Datasets And Future Extensions
+
+## L2 Order Book Data
+
+Highest-priority extension.
+
+Enables:
+
+- microstructure modeling
+- execution research
+- liquidity imbalance features
+
+## Liquidation Data
+
+Important for crypto markets.
+
+Captures:
+
+- forced flows
+- liquidation cascades
+- leverage flushes
+
+## Trade-Level Data
+
+Enables:
+
+- signed volume
+- order flow imbalance
+- VPIN-style metrics
+
+## Options Surface Data
+
+Provides:
+
+- implied volatility
+- skew
+- term structure
+- volatility expectations
+
+## Cross-Exchange Data
+
+Currently missing but highly valuable:
+
+- Binance vs Deribit spreads
+- fragmented liquidity indicators
+- cross-exchange funding divergence
+
+---
+
+# 11. Storage Layout
+
+## Bronze Layout
 
 ```text
 dataset_type=spot|perp|oi|funding/
-  exchange=<exchange>/instrument_type=<spot|perp>/symbol=<symbol>/timeframe=<interval>/year=<YYYY>/month=<YYYY-MM>/date=<YYYY-MM-DD>/data.parquet
+  exchange=<exchange>/
+  symbol=<symbol>/
+  timeframe=<interval>/
+  year=<YYYY>/
+  month=<YYYY-MM>/
+  date=<YYYY-MM-DD>/
+  data.parquet
 ```
 
-## Silver layer
-
-Silver builds monthly feature artifacts and optional sidecars.
-
-Command examples:
-
-```bash
-python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp oi funding --timeframe 1m
-python3 main.py silver-build --bronze-root lake/bronze --silver-root lake/silver --exchange deribit --market spot perp oi funding --timeframe 1m --manifest --plot
-```
-
-Silver outputs:
+## Silver Layout
 
 ```text
-dataset_type=<spot|perp>/
-  exchange=<exchange>/symbol=<symbol>/timeframe=1m/year=<YYYY>/month=<YYYY-MM>/<SYMBOL>-<YYYY-MM>.parquet
-
-dataset_type=funding_observed/
-  exchange=<exchange>/symbol=<symbol>/timeframe=8h/year=<YYYY>/month=<YYYY-MM>/<SYMBOL>-<YYYY-MM>.parquet
-
-dataset_type=funding_1m_feature/
-  exchange=<exchange>/symbol=<symbol>/timeframe=1m/year=<YYYY>/month=<YYYY-MM>/<SYMBOL>-<YYYY-MM>.parquet
-
-dataset_type=oi_observed/
-  exchange=<exchange>/symbol=<symbol>/timeframe=1m/year=<YYYY>/month=<YYYY-MM>/<SYMBOL>-<YYYY-MM>.parquet
-
-dataset_type=oi_1m_feature/
-  exchange=<exchange>/symbol=<symbol>/timeframe=1m/year=<YYYY>/month=<YYYY-MM>/<SYMBOL>-<YYYY-MM>.parquet
+dataset_type=<dataset>/
+  exchange=<exchange>/
+  symbol=<symbol>/
+  timeframe=<interval>/
+  year=<YYYY>/
+  month=<YYYY-MM>/
+  <SYMBOL>-<YYYY-MM>.parquet
 ```
 
-Silver sidecars:
-- `--manifest` writes monthly JSON sidecars next to parquet
-- `--plot` writes monthly PNG plot sidecars next to parquet
-- silver manifests include contract metadata, feature hashes, and provenance
-
-## Gold layer
-
-Gold joins silver features onto a canonical 1-minute grid and produces final dataset artifacts.
-
-Command examples:
-
-```bash
-python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit
-python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --symbols BTC ETH SOL
-python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --dataset-id gold.market.full.m1 --dataset-version v1.0.0
-python3 main.py gold-build --silver-root lake/silver --gold-root lake/gold --exchange deribit --dataset-id gold.hybrid.full_l2.m1 --l2-root remote_l2_m1_features --l2-validation-mode lenient
-```
-
-Supported dataset IDs:
-- `gold.market.core.m1`
-- `gold.market.core_funding.m1`
-- `gold.market.full.m1`
-- `gold.hybrid.full_l2.m1`
-
-Gold dataset summary:
-
-| Dataset ID | Includes | Feature families |
-|---|---|---|
-| `gold.market.core.m1` | `spot`, `perp` | core candle fields |
-| `gold.market.core_funding.m1` | `spot`, `perp`, `funding_1m_feature` | funding carry state and last-known funding |
-| `gold.market.full.m1` | `spot`, `perp`, `oi_1m_feature`, `funding_1m_feature` | full market, funding, and position features |
-| `gold.hybrid.full_l2.m1` | full dataset + L2 | gold market features plus latest L2 feature fields |
-
-Gold outputs:
+## Gold Layout
 
 ```text
-lake/gold/dataset_id=<dataset_id>/dataset_type=gold_symbol_dataset/feature_set_version=<dataset_version>/exchange=<exchange>/symbol=<symbol>/<SYMBOL>_GOLD_<featurehash>_<sourcehash>.parquet
-lake/gold/dataset_id=<dataset_id>/dataset_type=gold_symbol_dataset/feature_set_version=<dataset_version>/exchange=<exchange>/symbol=<symbol>/<SYMBOL>_GOLD_<featurehash>_<sourcehash>.json
-lake/gold/dataset_id=<dataset_id>/dataset_type=gold_symbol_dataset/feature_set_version=<dataset_version>/exchange=<exchange>/symbol=<symbol>/<SYMBOL>_GOLD_<featurehash>_<sourcehash>.png
+lake/gold/
+  dataset_id=<dataset_id>/
+  feature_set_version=<version>/
+  exchange=<exchange>/
+  symbol=<symbol>/
 ```
 
-Gold notes:
-- `.json` manifest and `.png` plot are generated for every gold artifact
-- gold is always built on a canonical 1-minute time grid
-- missing source minutes are preserved as nulls instead of dropped
-- gold plots are capped to `3000` evenly sampled points for performance
+---
 
-## Feature profile example
+# 12. Example Commands
 
-The plot above illustrates the gold dataset profile output, including feature distributions and time-series summaries for each numeric field.
-
-## Testing & validation
-
-Run the targeted test suite:
+## Bronze Build
 
 ```bash
-python -m pytest tests/test_gold_service.py -q
+python3 main.py bronze-build \
+  --exchange deribit \
+  --market spot perp oi funding \
+  --symbols BTC ETH SOL
 ```
 
-Run full repository tests:
+## Silver Build
 
 ```bash
-python -m pytest -q
+python3 main.py silver-build \
+  --bronze-root lake/bronze \
+  --silver-root lake/silver \
+  --exchange deribit \
+  --market spot perp oi funding \
+  --timeframe 1m
 ```
 
-## Notes
-
-- `config.yaml` must exist before runtime
-- the pipeline is designed for repeatable monthly parity schema artifacts
-- use the CLI help output for command-specific options:
+## Gold Build
 
 ```bash
-python3 main.py --help
+python3 main.py gold-build \
+  --silver-root lake/silver \
+  --gold-root lake/gold \
+  --exchange deribit \
+  --dataset-id gold.market.full.m1
 ```
+
+---
+
+# 13. Quant Research Usage
+
+## Regime Detection
+
+Useful for:
+
+- Gaussian HMMs
+- Markov-switching models
+- volatility state estimation
+
+Most important features:
+
+- perp returns
+- OI changes
+- funding
+- realized volatility
+
+## Market-Neutral Strategies
+
+Important features:
+
+- basis spreads
+- funding carry
+- leverage state
+- hedge ratios
+
+## Forecasting
+
+Potential targets:
+
+- realized volatility
+- regime transitions
+- volatility expansions
+- return direction
+
+## Reinforcement Learning
+
+Gold datasets provide:
+
+- deterministic replay
+- aligned feature grids
+- reproducible state spaces
+
+---
+
+# 14. Engineering Standards
+
+The repository follows the engineering rules defined in `AGENTS.md`.
+
+Important principles:
+
+- typed code
+- modular design
+- reproducibility
+- scalable storage
+- deterministic outputs
+- documentation consistency
+
+Recommended tooling:
+
+- pytest
+- ruff
+- mypy
+- pyright
+
+---
+
+# 15. Roadmap
+
+Recommended future directions:
+
+| Priority | Area |
+|---|---|
+| High | Full L2 ingestion |
+| High | Multi-exchange support |
+| High | Liquidation datasets |
+| High | Cross-exchange basis features |
+| Medium | Options surface ingestion |
+| Medium | TimescaleDB integration |
+| Medium | MLFlow lineage tracking |
+| Medium | Streaming ingestion |
