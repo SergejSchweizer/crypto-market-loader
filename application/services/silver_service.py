@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -589,8 +589,18 @@ def build_funding_1m_feature_for_symbol(
     exchange: str,
     symbol: str,
     observed_timeframe: str = "8h",
+    cutoff_time: datetime | None = None,
 ) -> SilverBuildReport:
-    """Build monthly ``funding_1m_feature`` from ``funding_observed`` using backward asof joins."""
+    """Build monthly ``funding_1m_feature`` from ``funding_observed`` using backward asof joins.
+    
+    Args:
+        silver_root: Path to silver layer root.
+        exchange: Exchange identifier.
+        symbol: Trading symbol.
+        observed_timeframe: Funding observation timeframe (default: 8h).
+        cutoff_time: Latest timestamp to include in calendar. Defaults to now (UTC).
+            Prevents forward-carrying of funding data beyond current time.
+    """
 
     pl = _require_polars()
     observed_root = (
@@ -607,6 +617,9 @@ def build_funding_1m_feature_for_symbol(
             if path.parent.name.startswith("month=")
         }
     )
+    if cutoff_time is None:
+        cutoff_time = datetime.now(UTC)
+    
     agg_rows_in = 0
     agg_rows_out = 0
     min_timestamp: datetime | None = None
@@ -626,11 +639,12 @@ def build_funding_1m_feature_for_symbol(
         y, m = month.split("-")
         year = int(y)
         mon = int(m)
-        if mon == 12:
-            month_end_dt = datetime(year + 1, 1, 1, tzinfo=UTC)
-        else:
-            month_end_dt = datetime(year, mon + 1, 1, tzinfo=UTC)
-        month_end_exclusive = month_end_dt
+        observed_max = observed.select(pl.col("funding_time").max()).item()
+        if not isinstance(observed_max, datetime):
+            continue
+        month_end_exclusive = observed_max + timedelta(minutes=1)
+        if cutoff_time < observed_max:
+            month_end_exclusive = cutoff_time + timedelta(minutes=1)
         calendar = pl.DataFrame(
             {
                 "timestamp": pl.datetime_range(
@@ -868,8 +882,20 @@ def build_oi_1m_feature_for_symbol(
     exchange: str,
     symbol: str,
     observed_timeframe: str = "1m",
+    cutoff_time: datetime | None = None,
 ) -> SilverBuildReport:
-    """Build monthly ``oi_1m_feature`` from ``oi_observed`` using backward asof join."""
+    """Build monthly ``oi_1m_feature`` from ``oi_observed`` using backward asof join.
+
+    Args:
+        silver_root: Root path for silver datasets.
+        exchange: Exchange identifier.
+        symbol: Trading symbol.
+        observed_timeframe: Input observation timeframe.
+        cutoff_time: Latest timestamp to include in generated feature output.
+            Defaults to now (UTC)."""
+
+    if cutoff_time is None:
+        cutoff_time = datetime.now(UTC)
 
     pl = _require_polars()
     observed_root = (
@@ -901,10 +927,12 @@ def build_oi_1m_feature_for_symbol(
             continue
 
         month_start = datetime.fromisoformat(f"{month}-01T00:00:00+00:00")
-        y, m = month.split("-")
-        year = int(y)
-        mon = int(m)
-        month_end_exclusive = datetime(year + 1, 1, 1, tzinfo=UTC) if mon == 12 else datetime(year, mon + 1, 1, tzinfo=UTC)
+        observed_max = observed.select(pl.col("timestamp").max()).item()
+        if not isinstance(observed_max, datetime):
+            continue
+        month_end_exclusive = observed_max + timedelta(minutes=1)
+        if cutoff_time < observed_max:
+            month_end_exclusive = cutoff_time + timedelta(minutes=1)
         calendar = pl.DataFrame(
             {
                 "timestamp_m1": pl.datetime_range(

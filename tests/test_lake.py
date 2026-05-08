@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -350,3 +351,6 @@ def test_ensure_bronze_sidecars_backfills_missing_sidecars(tmp_path: Path) -> No
     assert repaired == [str(parquet_path.resolve())]
     assert parquet_path.with_suffix(".json").exists()
     assert parquet_path.with_suffix(".png").exists()
+    manifest = json.loads(parquet_path.with_suffix(".json").read_text(encoding="utf-8"))
+    assert "feature_metadata" in manifest
+    assert "open_price" in manifest["feature_metadata"]

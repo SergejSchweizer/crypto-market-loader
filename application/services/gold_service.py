@@ -93,6 +93,12 @@ def _iso_utc(value: datetime | None) -> str | None:
     return value.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _today_utc_date() -> str:
+    """Return current UTC calendar date as YYYY-MM-DD."""
+
+    return datetime.now(UTC).strftime("%Y-%m-%d")
+
+
 def _git_commit_hash() -> str:
     try:
         out = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
@@ -600,6 +606,7 @@ def _write_feature_distribution_plot(
     }
     full_time_range_by_col: dict[str, str] = {}
     full_numeric_stats_by_col: dict[str, dict[str, float | None]] = {}
+    today_utc = _today_utc_date()
     for col in numeric_cols:
         non_null_frame = full_frame.filter(pl.col(col).is_not_null())
         if non_null_frame.height == 0:
@@ -610,8 +617,7 @@ def _write_feature_distribution_plot(
         max_ts = non_null_frame.select(pl.col("timestamp_m1").max()).item()
         if isinstance(min_ts, datetime) and isinstance(max_ts, datetime):
             min_iso = _iso_utc(min_ts)
-            max_iso = _iso_utc(max_ts)
-            full_time_range_by_col[col] = f"{min_iso} -> {max_iso}"
+            full_time_range_by_col[col] = f"{min_iso} -> {today_utc}"
         else:
             full_time_range_by_col[col] = "n/a"
         stats_row = non_null_frame.select(
@@ -626,7 +632,7 @@ def _write_feature_distribution_plot(
             "std": float(stats_row["std"]) if stats_row["std"] is not None else None,
             "var": float(stats_row["var"]) if stats_row["var"] is not None else None,
         }
-    fig = plt.figure(figsize=(12, max(0.85 * row_count + 4.0, 12.0)), facecolor="#070b16", constrained_layout=True)
+    fig = plt.figure(figsize=(12, max(0.85 * row_count + 4.0, 12.0) * 1.2), facecolor="#070b16", constrained_layout=True)
     grid = fig.add_gridspec(
         row_count + 1,
         2,
@@ -662,7 +668,7 @@ def _write_feature_distribution_plot(
             ]
         ),
         color="#b8c2d6",
-        fontsize=6.3,
+        fontsize=5.6,
         family="monospace",
         ha="left",
         va="top",
@@ -801,7 +807,7 @@ def _write_feature_distribution_plot(
                 transform=left_ax.transAxes,
                 va="top",
                 ha="left",
-                fontsize=4.8,
+                fontsize=3.6,
                 family="monospace",
                 color="#d7e3f2",
                 bbox={"facecolor": "#0a1322", "edgecolor": "#334155", "alpha": 0.78, "pad": 2.0},

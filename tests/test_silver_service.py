@@ -312,6 +312,19 @@ def test_build_funding_observed_and_1m_feature(tmp_path: Path) -> None:
     assert "minutes_since_funding" in feature.columns
     assert "is_funding_observation_minute" in feature.columns
 
+    observed_file = (
+        silver
+        / "dataset_type=funding_observed"
+        / "exchange=deribit"
+        / f"symbol={symbol}"
+        / "timeframe=1m"
+        / "year=2026"
+        / "month=2026-05"
+        / f"{symbol}-2026-05.parquet"
+    )
+    observed = pl.read_parquet(observed_file)
+    assert feature.select(pl.col("timestamp").max()).item() == observed.select(pl.col("funding_time").max()).item()
+
 
 def test_build_oi_observed_and_1m_feature(tmp_path: Path) -> None:
     bronze = tmp_path / "bronze"
@@ -484,3 +497,4 @@ def test_build_oi_observed_and_1m_feature(tmp_path: Path) -> None:
     assert minute_1.select("oi_is_ffill").item() is True
     assert minute_1.select("minutes_since_oi_observation").item() == 1
     assert minute_2.select("oi_is_observed").item() is True
+    assert feature.select(pl.col("timestamp_m1").max()).item() == observed.select(pl.col("timestamp").max()).item()

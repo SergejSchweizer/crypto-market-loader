@@ -90,7 +90,7 @@ def save_candle_plots(
             figure, (price_axis, volume_axis) = plt.subplots(
                 2,
                 1,
-                figsize=(12, 7),
+                figsize=(12, 8.4),
                 sharex=True,
                 gridspec_kw={"height_ratios": [7, 3]},
             )
@@ -210,7 +210,7 @@ def save_open_interest_plot(
     figure, (axis, delta_axis) = plt.subplots(
         2,
         1,
-        figsize=(12, 6),
+        figsize=(12, 7.2),
         sharex=True,
         gridspec_kw={"height_ratios": [7, 3]},
     )
@@ -302,7 +302,7 @@ def save_funding_plot(
     figure, (axis, abs_axis) = plt.subplots(
         2,
         1,
-        figsize=(12, 6),
+        figsize=(12, 7.2),
         sharex=True,
         gridspec_kw={"height_ratios": [7, 3]},
     )

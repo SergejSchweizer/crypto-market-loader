@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any, cast
 
 from application.schema import dataset_contract
-from application.services.gold_service import _write_feature_distribution_plot
+from application.services.gold_service import _feature_metadata, _write_feature_distribution_plot
 from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import SpotCandle
@@ -337,6 +337,7 @@ def _write_bronze_sidecars(
                 ensure_ascii=True,
             ).encode("utf-8")
         ).hexdigest()[:12],
+        "feature_metadata": _feature_metadata(pl, frame, exchange),
     }
     manifest_path = file_path.with_suffix(".json")
     manifest_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
