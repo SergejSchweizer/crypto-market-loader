@@ -47,6 +47,7 @@ Production-grade cryptocurrency market data ingestion, normalization, feature en
   - [Silver Layout](#silver-layout)
   - [Gold Layout](#gold-layout)
 - [12. Example Commands](#12-example-commands)
+  - [Full Medallion Pipeline (Bronze+Silver+Gold)](#full-medallion-pipeline-bronzesilvergold)
   - [Bronze Build](#bronze-build)
   - [Silver Build](#silver-build)
   - [Gold Build](#gold-build)
@@ -552,6 +553,16 @@ lake/gold/
 ---
 
 # 12. Example Commands
+
+## Full Medallion Pipeline (Bronze+Silver+Gold)
+
+```bash
+python3 scripts/run_medallion_pipeline.py --config config.yaml
+```
+
+This script runs all three layers in sequence (`bronze-build` -> `silver-build` -> `gold-build`)
+using `medallion-pipeline` settings from `config.yaml`. It also enforces a non-blocking single-run
+lock via `.run/full-pipeline.lock` and writes a shared append-only pipeline log.
 
 ## Bronze Build
 

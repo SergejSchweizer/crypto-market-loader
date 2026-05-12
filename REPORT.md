@@ -99,6 +99,8 @@ Silver and gold plots share the same renderer style and are capped to **3000 eve
 
 - typed service interfaces and strict normalization
 - command-driven deterministic workflows
+- full medallion orchestration via `scripts/run_medallion_pipeline.py` driven by `config.yaml`
+  (`medallion-pipeline.execution_order` and per-layer CLI args)
 - manifest-level provenance and source summaries
 - quality gates: `pytest`, `ruff`, `mypy`
 - mandatory runtime config file (`config.yaml`) with restricted permissions
