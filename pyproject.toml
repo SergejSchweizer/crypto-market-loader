@@ -54,4 +54,4 @@ python_version = "3.11"
 strict = true
 warn_unused_configs = true
 mypy_path = "."
-exclude = ["notebooks/"]
+exclude = ["notebooks/", "tests/", "scripts/"]

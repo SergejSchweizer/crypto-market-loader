@@ -225,8 +225,8 @@ def save_open_interest_plot(
         panel.tick_params(axis="x", colors=_MUTED_TEXT_COLOR)
         panel.tick_params(axis="y", colors=_MUTED_TEXT_COLOR)
 
-    axis.plot(times, open_interest_values, color="#2dd4bf", linewidth=2.2, label="open interest")  # type: ignore[arg-type]
-    axis.fill_between(times, open_interest_values, min(open_interest_values), color="#14b8a6", alpha=0.14)  # type: ignore[arg-type]
+    axis.plot(times, open_interest_values, color="#2dd4bf", linewidth=2.2, label="open interest")
+    axis.fill_between(times, open_interest_values, min(open_interest_values), color="#14b8a6", alpha=0.14)
     axis.set_title(
         f"{exchange.upper()}  {symbol}  ({interval})  Open Interest",
         fontsize=12,
@@ -317,8 +317,8 @@ def save_funding_plot(
         panel.tick_params(axis="x", colors=_MUTED_TEXT_COLOR)
         panel.tick_params(axis="y", colors=_MUTED_TEXT_COLOR)
 
-    axis.plot(times, funding_values, color="#a78bfa", linewidth=2.2, label="funding rate")  # type: ignore[arg-type]
-    axis.fill_between(times, funding_values, 0.0, color="#8b5cf6", alpha=0.14)  # type: ignore[arg-type]
+    axis.plot(times, funding_values, color="#a78bfa", linewidth=2.2, label="funding rate")
+    axis.fill_between(times, funding_values, 0.0, color="#8b5cf6", alpha=0.14)
     axis.axhline(0.0, color="#64748b", linewidth=0.9, alpha=0.8)
     axis.set_title(
         f"{exchange.upper()}  {symbol}  ({interval})  Funding Rate",

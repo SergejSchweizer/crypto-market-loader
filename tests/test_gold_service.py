@@ -65,8 +65,26 @@ def test_build_gold_for_symbol_writes_hashed_parquet_and_manifest(tmp_path: Path
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 1.0, "high_price": 2.0, "low_price": 0.5, "close_price": 1.5, "volume": 10.0},
-            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 1.5, "high_price": 2.5, "low_price": 1.0, "close_price": 2.0, "volume": 11.0},
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 1.0,
+                "high_price": 2.0,
+                "low_price": 0.5,
+                "close_price": 1.5,
+                "volume": 10.0,
+            },
+            {
+                "open_time": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 1.5,
+                "high_price": 2.5,
+                "low_price": 1.0,
+                "close_price": 2.0,
+                "volume": 11.0,
+            },
         ],
     )
     _write_silver_month(
@@ -77,8 +95,26 @@ def test_build_gold_for_symbol_writes_hashed_parquet_and_manifest(tmp_path: Path
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 10.0, "high_price": 11.0, "low_price": 9.5, "close_price": 10.5, "volume": 110.0},
-            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 10.5, "high_price": 11.5, "low_price": 10.0, "close_price": 11.0, "volume": 111.0},
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 10.0,
+                "high_price": 11.0,
+                "low_price": 9.5,
+                "close_price": 10.5,
+                "volume": 110.0,
+            },
+            {
+                "open_time": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 10.5,
+                "high_price": 11.5,
+                "low_price": 10.0,
+                "close_price": 11.0,
+                "volume": 111.0,
+            },
         ],
     )
     _write_silver_month(
@@ -89,8 +125,26 @@ def test_build_gold_for_symbol_writes_hashed_parquet_and_manifest(tmp_path: Path
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"timestamp_m1": t0, "exchange": exchange, "symbol": symbol, "open_interest": 1000.0, "oi_is_observed": True, "oi_is_ffill": False, "minutes_since_oi_observation": 0, "oi_observation_lag_sec": 0},
-            {"timestamp_m1": t1, "exchange": exchange, "symbol": symbol, "open_interest": 1001.0, "oi_is_observed": False, "oi_is_ffill": True, "minutes_since_oi_observation": 1, "oi_observation_lag_sec": 60},
+            {
+                "timestamp_m1": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_interest": 1000.0,
+                "oi_is_observed": True,
+                "oi_is_ffill": False,
+                "minutes_since_oi_observation": 0,
+                "oi_observation_lag_sec": 0,
+            },
+            {
+                "timestamp_m1": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_interest": 1001.0,
+                "oi_is_observed": False,
+                "oi_is_ffill": True,
+                "minutes_since_oi_observation": 1,
+                "oi_observation_lag_sec": 60,
+            },
         ],
     )
     _write_silver_month(
@@ -101,8 +155,24 @@ def test_build_gold_for_symbol_writes_hashed_parquet_and_manifest(tmp_path: Path
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"timestamp": t0, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 0, "is_funding_observation_minute": True, "funding_data_available": True},
-            {"timestamp": t1, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 1, "is_funding_observation_minute": False, "funding_data_available": True},
+            {
+                "timestamp": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "funding_rate_last_known": 0.001,
+                "minutes_since_funding": 0,
+                "is_funding_observation_minute": True,
+                "funding_data_available": True,
+            },
+            {
+                "timestamp": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "funding_rate_last_known": 0.001,
+                "minutes_since_funding": 1,
+                "is_funding_observation_minute": False,
+                "funding_data_available": True,
+            },
         ],
     )
 
@@ -161,20 +231,74 @@ def test_build_gold_for_symbol_normalizes_input_symbol(tmp_path: Path) -> None:
     silver = tmp_path / "silver"
     gold = tmp_path / "gold"
     exchange = "deribit"
-    canonical = "BTC"
     t0 = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
 
     for dataset_type, rows in [
-        ("spot", [{"open_time": t0, "exchange": exchange, "symbol": "BTC_USDC", "open_price": 1.0, "high_price": 1.1, "low_price": 0.9, "close_price": 1.0, "volume": 1.0}]),
-        ("perp", [{"open_time": t0, "exchange": exchange, "symbol": "BTC-PERPETUAL", "open_price": 1.0, "high_price": 1.1, "low_price": 0.9, "close_price": 1.0, "volume": 1.0}]),
-        ("oi_1m_feature", [{"timestamp_m1": t0, "exchange": exchange, "symbol": "BTC-PERPETUAL", "open_interest": 1.0, "oi_is_observed": True, "oi_is_ffill": False, "minutes_since_oi_observation": 0, "oi_observation_lag_sec": 0}]),
-        ("funding_1m_feature", [{"timestamp": t0, "exchange": exchange, "symbol": "BTC-PERPETUAL", "funding_rate_last_known": 0.0, "minutes_since_funding": 0, "is_funding_observation_minute": True, "funding_data_available": True}]),
+        (
+            "spot",
+            [
+                {
+                    "open_time": t0,
+                    "exchange": exchange,
+                    "symbol": "BTC_USDC",
+                    "open_price": 1.0,
+                    "high_price": 1.1,
+                    "low_price": 0.9,
+                    "close_price": 1.0,
+                    "volume": 1.0,
+                }
+            ],
+        ),
+        (
+            "perp",
+            [
+                {
+                    "open_time": t0,
+                    "exchange": exchange,
+                    "symbol": "BTC-PERPETUAL",
+                    "open_price": 1.0,
+                    "high_price": 1.1,
+                    "low_price": 0.9,
+                    "close_price": 1.0,
+                    "volume": 1.0,
+                }
+            ],
+        ),
+        (
+            "oi_1m_feature",
+            [
+                {
+                    "timestamp_m1": t0,
+                    "exchange": exchange,
+                    "symbol": "BTC-PERPETUAL",
+                    "open_interest": 1.0,
+                    "oi_is_observed": True,
+                    "oi_is_ffill": False,
+                    "minutes_since_oi_observation": 0,
+                    "oi_observation_lag_sec": 0,
+                }
+            ],
+        ),
+        (
+            "funding_1m_feature",
+            [
+                {
+                    "timestamp": t0,
+                    "exchange": exchange,
+                    "symbol": "BTC-PERPETUAL",
+                    "funding_rate_last_known": 0.0,
+                    "minutes_since_funding": 0,
+                    "is_funding_observation_minute": True,
+                    "funding_data_available": True,
+                }
+            ],
+        ),
     ]:
         _write_silver_month(
             silver,
             dataset_type=dataset_type,
             exchange=exchange,
-        symbol="BTC-PERPETUAL",
+            symbol="BTC-PERPETUAL",
             timeframe="1m",
             month="2026-05",
             rows=rows,
@@ -209,8 +333,26 @@ def test_build_gold_hybrid_full_l2_contains_l2_features(tmp_path: Path) -> None:
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 1.0, "high_price": 2.0, "low_price": 0.5, "close_price": 1.5, "volume": 10.0},
-            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 1.5, "high_price": 2.5, "low_price": 1.0, "close_price": 2.0, "volume": 11.0},
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 1.0,
+                "high_price": 2.0,
+                "low_price": 0.5,
+                "close_price": 1.5,
+                "volume": 10.0,
+            },
+            {
+                "open_time": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 1.5,
+                "high_price": 2.5,
+                "low_price": 1.0,
+                "close_price": 2.0,
+                "volume": 11.0,
+            },
         ],
     )
     _write_silver_month(
@@ -221,8 +363,26 @@ def test_build_gold_hybrid_full_l2_contains_l2_features(tmp_path: Path) -> None:
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 10.0, "high_price": 11.0, "low_price": 9.5, "close_price": 10.5, "volume": 110.0},
-            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 10.5, "high_price": 11.5, "low_price": 10.0, "close_price": 11.0, "volume": 111.0},
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 10.0,
+                "high_price": 11.0,
+                "low_price": 9.5,
+                "close_price": 10.5,
+                "volume": 110.0,
+            },
+            {
+                "open_time": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 10.5,
+                "high_price": 11.5,
+                "low_price": 10.0,
+                "close_price": 11.0,
+                "volume": 111.0,
+            },
         ],
     )
     _write_silver_month(
@@ -233,8 +393,26 @@ def test_build_gold_hybrid_full_l2_contains_l2_features(tmp_path: Path) -> None:
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"timestamp_m1": t0, "exchange": exchange, "symbol": symbol, "open_interest": 1000.0, "oi_is_observed": True, "oi_is_ffill": False, "minutes_since_oi_observation": 0, "oi_observation_lag_sec": 0},
-            {"timestamp_m1": t1, "exchange": exchange, "symbol": symbol, "open_interest": 1001.0, "oi_is_observed": False, "oi_is_ffill": True, "minutes_since_oi_observation": 1, "oi_observation_lag_sec": 60},
+            {
+                "timestamp_m1": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_interest": 1000.0,
+                "oi_is_observed": True,
+                "oi_is_ffill": False,
+                "minutes_since_oi_observation": 0,
+                "oi_observation_lag_sec": 0,
+            },
+            {
+                "timestamp_m1": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_interest": 1001.0,
+                "oi_is_observed": False,
+                "oi_is_ffill": True,
+                "minutes_since_oi_observation": 1,
+                "oi_observation_lag_sec": 60,
+            },
         ],
     )
     _write_silver_month(
@@ -245,8 +423,24 @@ def test_build_gold_hybrid_full_l2_contains_l2_features(tmp_path: Path) -> None:
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"timestamp": t0, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 0, "is_funding_observation_minute": True, "funding_data_available": True},
-            {"timestamp": t1, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 1, "is_funding_observation_minute": False, "funding_data_available": True},
+            {
+                "timestamp": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "funding_rate_last_known": 0.001,
+                "minutes_since_funding": 0,
+                "is_funding_observation_minute": True,
+                "funding_data_available": True,
+            },
+            {
+                "timestamp": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "funding_rate_last_known": 0.001,
+                "minutes_since_funding": 1,
+                "is_funding_observation_minute": False,
+                "funding_data_available": True,
+            },
         ],
     )
     _write_l2_gold_parquet(
@@ -292,8 +486,26 @@ def test_build_gold_hybrid_full_l2_uses_requested_exchange_l2(tmp_path: Path) ->
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 1.0, "high_price": 2.0, "low_price": 0.5, "close_price": 1.5, "volume": 10.0},
-            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 1.5, "high_price": 2.5, "low_price": 1.0, "close_price": 2.0, "volume": 11.0},
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 1.0,
+                "high_price": 2.0,
+                "low_price": 0.5,
+                "close_price": 1.5,
+                "volume": 10.0,
+            },
+            {
+                "open_time": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 1.5,
+                "high_price": 2.5,
+                "low_price": 1.0,
+                "close_price": 2.0,
+                "volume": 11.0,
+            },
         ],
     )
     _write_silver_month(
@@ -304,8 +516,26 @@ def test_build_gold_hybrid_full_l2_uses_requested_exchange_l2(tmp_path: Path) ->
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 10.0, "high_price": 11.0, "low_price": 9.5, "close_price": 10.5, "volume": 110.0},
-            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 10.5, "high_price": 11.5, "low_price": 10.0, "close_price": 11.0, "volume": 111.0},
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 10.0,
+                "high_price": 11.0,
+                "low_price": 9.5,
+                "close_price": 10.5,
+                "volume": 110.0,
+            },
+            {
+                "open_time": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 10.5,
+                "high_price": 11.5,
+                "low_price": 10.0,
+                "close_price": 11.0,
+                "volume": 111.0,
+            },
         ],
     )
     _write_silver_month(
@@ -316,8 +546,26 @@ def test_build_gold_hybrid_full_l2_uses_requested_exchange_l2(tmp_path: Path) ->
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"timestamp_m1": t0, "exchange": exchange, "symbol": symbol, "open_interest": 1000.0, "oi_is_observed": True, "oi_is_ffill": False, "minutes_since_oi_observation": 0, "oi_observation_lag_sec": 0},
-            {"timestamp_m1": t1, "exchange": exchange, "symbol": symbol, "open_interest": 1001.0, "oi_is_observed": False, "oi_is_ffill": True, "minutes_since_oi_observation": 1, "oi_observation_lag_sec": 60},
+            {
+                "timestamp_m1": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_interest": 1000.0,
+                "oi_is_observed": True,
+                "oi_is_ffill": False,
+                "minutes_since_oi_observation": 0,
+                "oi_observation_lag_sec": 0,
+            },
+            {
+                "timestamp_m1": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_interest": 1001.0,
+                "oi_is_observed": False,
+                "oi_is_ffill": True,
+                "minutes_since_oi_observation": 1,
+                "oi_observation_lag_sec": 60,
+            },
         ],
     )
     _write_silver_month(
@@ -328,8 +576,24 @@ def test_build_gold_hybrid_full_l2_uses_requested_exchange_l2(tmp_path: Path) ->
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"timestamp": t0, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 0, "is_funding_observation_minute": True, "funding_data_available": True},
-            {"timestamp": t1, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 1, "is_funding_observation_minute": False, "funding_data_available": True},
+            {
+                "timestamp": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "funding_rate_last_known": 0.001,
+                "minutes_since_funding": 0,
+                "is_funding_observation_minute": True,
+                "funding_data_available": True,
+            },
+            {
+                "timestamp": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "funding_rate_last_known": 0.001,
+                "minutes_since_funding": 1,
+                "is_funding_observation_minute": False,
+                "funding_data_available": True,
+            },
         ],
     )
     # Valid artifact for requested exchange
@@ -385,8 +649,26 @@ def test_build_gold_hybrid_full_l2_rejects_invalid_l2_coverage_ratio(tmp_path: P
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 1.0, "high_price": 2.0, "low_price": 0.5, "close_price": 1.5, "volume": 10.0},
-            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 1.5, "high_price": 2.5, "low_price": 1.0, "close_price": 2.0, "volume": 11.0},
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 1.0,
+                "high_price": 2.0,
+                "low_price": 0.5,
+                "close_price": 1.5,
+                "volume": 10.0,
+            },
+            {
+                "open_time": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 1.5,
+                "high_price": 2.5,
+                "low_price": 1.0,
+                "close_price": 2.0,
+                "volume": 11.0,
+            },
         ],
     )
     _write_silver_month(
@@ -397,8 +679,26 @@ def test_build_gold_hybrid_full_l2_rejects_invalid_l2_coverage_ratio(tmp_path: P
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 10.0, "high_price": 11.0, "low_price": 9.5, "close_price": 10.5, "volume": 110.0},
-            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 10.5, "high_price": 11.5, "low_price": 10.0, "close_price": 11.0, "volume": 111.0},
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 10.0,
+                "high_price": 11.0,
+                "low_price": 9.5,
+                "close_price": 10.5,
+                "volume": 110.0,
+            },
+            {
+                "open_time": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 10.5,
+                "high_price": 11.5,
+                "low_price": 10.0,
+                "close_price": 11.0,
+                "volume": 111.0,
+            },
         ],
     )
     _write_silver_month(
@@ -409,8 +709,26 @@ def test_build_gold_hybrid_full_l2_rejects_invalid_l2_coverage_ratio(tmp_path: P
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"timestamp_m1": t0, "exchange": exchange, "symbol": symbol, "open_interest": 1000.0, "oi_is_observed": True, "oi_is_ffill": False, "minutes_since_oi_observation": 0, "oi_observation_lag_sec": 0},
-            {"timestamp_m1": t1, "exchange": exchange, "symbol": symbol, "open_interest": 1001.0, "oi_is_observed": False, "oi_is_ffill": True, "minutes_since_oi_observation": 1, "oi_observation_lag_sec": 60},
+            {
+                "timestamp_m1": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_interest": 1000.0,
+                "oi_is_observed": True,
+                "oi_is_ffill": False,
+                "minutes_since_oi_observation": 0,
+                "oi_observation_lag_sec": 0,
+            },
+            {
+                "timestamp_m1": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_interest": 1001.0,
+                "oi_is_observed": False,
+                "oi_is_ffill": True,
+                "minutes_since_oi_observation": 1,
+                "oi_observation_lag_sec": 60,
+            },
         ],
     )
     _write_silver_month(
@@ -421,8 +739,24 @@ def test_build_gold_hybrid_full_l2_rejects_invalid_l2_coverage_ratio(tmp_path: P
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"timestamp": t0, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 0, "is_funding_observation_minute": True, "funding_data_available": True},
-            {"timestamp": t1, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 1, "is_funding_observation_minute": False, "funding_data_available": True},
+            {
+                "timestamp": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "funding_rate_last_known": 0.001,
+                "minutes_since_funding": 0,
+                "is_funding_observation_minute": True,
+                "funding_data_available": True,
+            },
+            {
+                "timestamp": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "funding_rate_last_known": 0.001,
+                "minutes_since_funding": 1,
+                "is_funding_observation_minute": False,
+                "funding_data_available": True,
+            },
         ],
     )
     _write_l2_gold_parquet(
@@ -461,8 +795,26 @@ def test_build_gold_hybrid_full_l2_lenient_drops_invalid_rows(tmp_path: Path) ->
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 1.0, "high_price": 2.0, "low_price": 0.5, "close_price": 1.5, "volume": 10.0},
-            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 1.5, "high_price": 2.5, "low_price": 1.0, "close_price": 2.0, "volume": 11.0},
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 1.0,
+                "high_price": 2.0,
+                "low_price": 0.5,
+                "close_price": 1.5,
+                "volume": 10.0,
+            },
+            {
+                "open_time": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 1.5,
+                "high_price": 2.5,
+                "low_price": 1.0,
+                "close_price": 2.0,
+                "volume": 11.0,
+            },
         ],
     )
     _write_silver_month(
@@ -473,8 +825,26 @@ def test_build_gold_hybrid_full_l2_lenient_drops_invalid_rows(tmp_path: Path) ->
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 10.0, "high_price": 11.0, "low_price": 9.5, "close_price": 10.5, "volume": 110.0},
-            {"open_time": t1, "exchange": exchange, "symbol": symbol, "open_price": 10.5, "high_price": 11.5, "low_price": 10.0, "close_price": 11.0, "volume": 111.0},
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 10.0,
+                "high_price": 11.0,
+                "low_price": 9.5,
+                "close_price": 10.5,
+                "volume": 110.0,
+            },
+            {
+                "open_time": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 10.5,
+                "high_price": 11.5,
+                "low_price": 10.0,
+                "close_price": 11.0,
+                "volume": 111.0,
+            },
         ],
     )
     _write_silver_month(
@@ -485,8 +855,26 @@ def test_build_gold_hybrid_full_l2_lenient_drops_invalid_rows(tmp_path: Path) ->
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"timestamp_m1": t0, "exchange": exchange, "symbol": symbol, "open_interest": 1000.0, "oi_is_observed": True, "oi_is_ffill": False, "minutes_since_oi_observation": 0, "oi_observation_lag_sec": 0},
-            {"timestamp_m1": t1, "exchange": exchange, "symbol": symbol, "open_interest": 1001.0, "oi_is_observed": False, "oi_is_ffill": True, "minutes_since_oi_observation": 1, "oi_observation_lag_sec": 60},
+            {
+                "timestamp_m1": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_interest": 1000.0,
+                "oi_is_observed": True,
+                "oi_is_ffill": False,
+                "minutes_since_oi_observation": 0,
+                "oi_observation_lag_sec": 0,
+            },
+            {
+                "timestamp_m1": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_interest": 1001.0,
+                "oi_is_observed": False,
+                "oi_is_ffill": True,
+                "minutes_since_oi_observation": 1,
+                "oi_observation_lag_sec": 60,
+            },
         ],
     )
     _write_silver_month(
@@ -497,8 +885,24 @@ def test_build_gold_hybrid_full_l2_lenient_drops_invalid_rows(tmp_path: Path) ->
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"timestamp": t0, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 0, "is_funding_observation_minute": True, "funding_data_available": True},
-            {"timestamp": t1, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 1, "is_funding_observation_minute": False, "funding_data_available": True},
+            {
+                "timestamp": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "funding_rate_last_known": 0.001,
+                "minutes_since_funding": 0,
+                "is_funding_observation_minute": True,
+                "funding_data_available": True,
+            },
+            {
+                "timestamp": t1,
+                "exchange": exchange,
+                "symbol": symbol,
+                "funding_rate_last_known": 0.001,
+                "minutes_since_funding": 1,
+                "is_funding_observation_minute": False,
+                "funding_data_available": True,
+            },
         ],
     )
     _write_l2_gold_parquet(
@@ -544,8 +948,26 @@ def test_build_gold_full_keeps_minute_grid_and_reports_missing_values(tmp_path: 
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 1.0, "high_price": 2.0, "low_price": 0.5, "close_price": 1.5, "volume": 10.0},
-            {"open_time": t2, "exchange": exchange, "symbol": symbol, "open_price": 1.6, "high_price": 2.6, "low_price": 1.2, "close_price": 2.1, "volume": 12.0},
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 1.0,
+                "high_price": 2.0,
+                "low_price": 0.5,
+                "close_price": 1.5,
+                "volume": 10.0,
+            },
+            {
+                "open_time": t2,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 1.6,
+                "high_price": 2.6,
+                "low_price": 1.2,
+                "close_price": 2.1,
+                "volume": 12.0,
+            },
         ],
     )
     _write_silver_month(
@@ -556,8 +978,26 @@ def test_build_gold_full_keeps_minute_grid_and_reports_missing_values(tmp_path: 
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"open_time": t0, "exchange": exchange, "symbol": symbol, "open_price": 10.0, "high_price": 11.0, "low_price": 9.5, "close_price": 10.5, "volume": 110.0},
-            {"open_time": t2, "exchange": exchange, "symbol": symbol, "open_price": 10.6, "high_price": 11.6, "low_price": 10.1, "close_price": 11.1, "volume": 112.0},
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 10.0,
+                "high_price": 11.0,
+                "low_price": 9.5,
+                "close_price": 10.5,
+                "volume": 110.0,
+            },
+            {
+                "open_time": t2,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_price": 10.6,
+                "high_price": 11.6,
+                "low_price": 10.1,
+                "close_price": 11.1,
+                "volume": 112.0,
+            },
         ],
     )
     _write_silver_month(
@@ -568,8 +1008,26 @@ def test_build_gold_full_keeps_minute_grid_and_reports_missing_values(tmp_path: 
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"timestamp_m1": t0, "exchange": exchange, "symbol": symbol, "open_interest": 1000.0, "oi_is_observed": True, "oi_is_ffill": False, "minutes_since_oi_observation": 0, "oi_observation_lag_sec": 0},
-            {"timestamp_m1": t2, "exchange": exchange, "symbol": symbol, "open_interest": 1002.0, "oi_is_observed": False, "oi_is_ffill": True, "minutes_since_oi_observation": 2, "oi_observation_lag_sec": 120},
+            {
+                "timestamp_m1": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_interest": 1000.0,
+                "oi_is_observed": True,
+                "oi_is_ffill": False,
+                "minutes_since_oi_observation": 0,
+                "oi_observation_lag_sec": 0,
+            },
+            {
+                "timestamp_m1": t2,
+                "exchange": exchange,
+                "symbol": symbol,
+                "open_interest": 1002.0,
+                "oi_is_observed": False,
+                "oi_is_ffill": True,
+                "minutes_since_oi_observation": 2,
+                "oi_observation_lag_sec": 120,
+            },
         ],
     )
     _write_silver_month(
@@ -580,8 +1038,24 @@ def test_build_gold_full_keeps_minute_grid_and_reports_missing_values(tmp_path: 
         timeframe="1m",
         month="2026-05",
         rows=[
-            {"timestamp": t0, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 0, "is_funding_observation_minute": True, "funding_data_available": True},
-            {"timestamp": t2, "exchange": exchange, "symbol": symbol, "funding_rate_last_known": 0.001, "minutes_since_funding": 2, "is_funding_observation_minute": False, "funding_data_available": True},
+            {
+                "timestamp": t0,
+                "exchange": exchange,
+                "symbol": symbol,
+                "funding_rate_last_known": 0.001,
+                "minutes_since_funding": 0,
+                "is_funding_observation_minute": True,
+                "funding_data_available": True,
+            },
+            {
+                "timestamp": t2,
+                "exchange": exchange,
+                "symbol": symbol,
+                "funding_rate_last_known": 0.001,
+                "minutes_since_funding": 2,
+                "is_funding_observation_minute": False,
+                "funding_data_available": True,
+            },
         ],
     )
 

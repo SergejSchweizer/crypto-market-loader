@@ -56,12 +56,12 @@ def fetch_funding_range(
         )
         if on_page is not None and page:
             on_page(page)
-        dedup = {
+        dedup_page = {
             int(cast(Any, row["timestamp"])): row
             for row in page
             if start_open_ms <= int(cast(Any, row["timestamp"])) <= end_open_ms
         }
-        return [dedup[key] for key in sorted(dedup)]
+        return [dedup_page[key] for key in sorted(dedup_page)]
 
     cursor = start_open_ms
     rows: list[dict[str, object]] = []
@@ -85,9 +85,7 @@ def fetch_funding_range(
         if page:
             if on_page is not None:
                 on_page(page)
-            rows.extend(
-                [item for item in page if start_open_ms <= int(cast(Any, item["timestamp"])) <= end_open_ms]
-            )
+            rows.extend([item for item in page if start_open_ms <= int(cast(Any, item["timestamp"])) <= end_open_ms])
             page_ts = [int(cast(Any, item["timestamp"])) for item in page]
             min_ts = min(page_ts)
             max_ts = max(page_ts)

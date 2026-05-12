@@ -8,7 +8,12 @@ import logging
 import re
 from typing import cast
 
-from application.services.gold_service import SUPPORTED_GOLD_DATASET_IDS, build_gold_for_symbol, discover_gold_symbols, normalize_symbol
+from application.services.gold_service import (
+    SUPPORTED_GOLD_DATASET_IDS,
+    build_gold_for_symbol,
+    discover_gold_symbols,
+    normalize_symbol,
+)
 
 
 def add_gold_build_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
@@ -26,8 +31,12 @@ def add_gold_build_parser(subparsers: argparse._SubParsersAction[argparse.Argume
     parser.add_argument("--symbols", nargs="+", help="Optional symbol list; auto-discovered when omitted")
     parser.add_argument("--dataset-id", help="Gold dataset identifier (when omitted, build all supported datasets)")
     parser.add_argument("--dataset-version", default="v1.0.0", help="Semantic dataset version")
-    parser.add_argument("--auto-version", action="store_true", help="Auto-increment semantic version from prior manifests")
-    parser.add_argument("--version-base", default="v1.0.0", help="Base version used when auto-version has no prior manifest")
+    parser.add_argument(
+        "--auto-version", action="store_true", help="Auto-increment semantic version from prior manifests"
+    )
+    parser.add_argument(
+        "--version-base", default="v1.0.0", help="Base version used when auto-version has no prior manifest"
+    )
     parser.add_argument("--manifest", action="store_true", help="Deprecated: gold manifests are always generated")
     parser.add_argument("--plot", action="store_true", help="Deprecated: gold plots are always generated")
     parser.add_argument(

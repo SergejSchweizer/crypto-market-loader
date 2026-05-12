@@ -77,12 +77,12 @@ def fetch_open_interest_all_history(
     parsed: list[dict[str, object]] = []
     if exchange != "deribit":
         return []
+
     def _on_page(page: list[dict[str, object]]) -> None:
         if on_history_chunk is None:
             return
         parsed_page = [
-            deribit_open_interest.parse_open_interest_row(normalized_symbol, normalized_interval, row)
-            for row in page
+            deribit_open_interest.parse_open_interest_row(normalized_symbol, normalized_interval, row) for row in page
         ]
         on_history_chunk(
             [
@@ -120,8 +120,7 @@ def fetch_open_interest_all_history(
     if on_history_chunk is not None:
         return []
     parsed = [
-        deribit_open_interest.parse_open_interest_row(normalized_symbol, normalized_interval, row)
-        for row in rows
+        deribit_open_interest.parse_open_interest_row(normalized_symbol, normalized_interval, row) for row in rows
     ]
     return [
         OpenInterestPoint(
@@ -174,8 +173,7 @@ def fetch_open_interest_range(
         )
         return []
     parsed = [
-        deribit_open_interest.parse_open_interest_row(normalized_symbol, normalized_interval, row)
-        for row in rows
+        deribit_open_interest.parse_open_interest_row(normalized_symbol, normalized_interval, row) for row in rows
     ]
     points = [
         OpenInterestPoint(
@@ -200,4 +198,6 @@ def fetch_open_interest_range(
         time.monotonic() - started,
     )
     return points
+
+
 logger = logging.getLogger(__name__)

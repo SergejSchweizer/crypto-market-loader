@@ -61,9 +61,7 @@ def normalize_funding_timeframe(exchange: Exchange, value: str) -> str:
     normalized = value.strip().lower()
     if normalized not in {"1m", "m1", DERIBIT_FUNDING_NATIVE_INTERVAL}:
         supported = f"1m, M1, {DERIBIT_FUNDING_NATIVE_INTERVAL}"
-        raise ValueError(
-            f"Unsupported funding timeframe '{value}' for {exchange}. Supported values: {supported}"
-        )
+        raise ValueError(f"Unsupported funding timeframe '{value}' for {exchange}. Supported values: {supported}")
     return DERIBIT_FUNDING_NATIVE_INTERVAL
 
 
@@ -91,6 +89,7 @@ def fetch_funding_all_history(
     normalized_interval = normalize_funding_timeframe(exchange=exchange, value=interval)
     normalized_symbol = normalize_storage_symbol(exchange=exchange, symbol=symbol, market=market)
     try:
+
         def _on_page(page: list[dict[str, object]]) -> None:
             if on_history_chunk is None:
                 return

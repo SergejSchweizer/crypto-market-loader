@@ -183,8 +183,7 @@ def _add_ingest_parser(
         nargs="+",
         default=None,
         help=(
-            "Per exchange-symbol inclusive UTC start dates (EXCHANGE:SYMBOL=YYYY-MM-DD), "
-            "e.g. deribit:BTC=2023-04-24"
+            "Per exchange-symbol inclusive UTC start dates (EXCHANGE:SYMBOL=YYYY-MM-DD), e.g. deribit:BTC=2023-04-24"
         ),
     )
 
@@ -369,14 +368,10 @@ def _parse_exchange_symbol_start_dates(entries: list[str] | None) -> dict[str, i
         if not item:
             continue
         if "=" not in item:
-            raise ValueError(
-                f"Invalid exchange-symbol start date '{item}'. Expected EXCHANGE:SYMBOL=YYYY-MM-DD"
-            )
+            raise ValueError(f"Invalid exchange-symbol start date '{item}'. Expected EXCHANGE:SYMBOL=YYYY-MM-DD")
         pair_part, date_part = item.split("=", 1)
         if ":" not in pair_part:
-            raise ValueError(
-                f"Invalid exchange-symbol pair '{pair_part}'. Expected EXCHANGE:SYMBOL"
-            )
+            raise ValueError(f"Invalid exchange-symbol pair '{pair_part}'. Expected EXCHANGE:SYMBOL")
         exchange_part, symbol_part = pair_part.split(":", 1)
         exchange_key = exchange_part.strip().lower()
         symbol_key = _canonical_symbol_key(symbol_part)
@@ -537,7 +532,7 @@ def _fetch_all_task_groups(
     funding_errors: dict[tuple[Exchange, str, str], str] = {}
 
     if candle_tasks:
-        rows, errors = _fetch_candle_tasks_parallel(
+        candle_rows, candle_errors = _fetch_candle_tasks_parallel(
             tasks=candle_tasks,
             lake_root=lake_root,
             concurrency=candle_concurrency,
@@ -545,11 +540,11 @@ def _fetch_all_task_groups(
             on_task_complete=on_candle_task_complete,
             on_task_chunk=on_candle_task_chunk,
         )
-        task_results.update(rows)
-        task_errors.update(errors)
+        task_results.update(candle_rows)
+        task_errors.update(candle_errors)
 
     if oi_tasks:
-        rows, errors = _fetch_open_interest_tasks_parallel(
+        oi_rows, oi_task_errors = _fetch_open_interest_tasks_parallel(
             oi_tasks=oi_tasks,
             lake_root=lake_root,
             concurrency=oi_concurrency,
@@ -557,11 +552,11 @@ def _fetch_all_task_groups(
             on_task_complete=on_oi_task_complete,
             on_task_chunk=on_oi_task_chunk,
         )
-        oi_results.update(rows)
-        oi_errors.update(errors)
+        oi_results.update(oi_rows)
+        oi_errors.update(oi_task_errors)
 
     if funding_tasks:
-        rows, errors = _fetch_funding_tasks_parallel(
+        funding_rows, funding_task_errors = _fetch_funding_tasks_parallel(
             funding_tasks=funding_tasks,
             lake_root=lake_root,
             concurrency=funding_concurrency,
@@ -569,8 +564,8 @@ def _fetch_all_task_groups(
             on_task_complete=on_funding_task_complete,
             on_task_chunk=on_funding_task_chunk,
         )
-        funding_results.update(rows)
-        funding_errors.update(errors)
+        funding_results.update(funding_rows)
+        funding_errors.update(funding_task_errors)
 
     return task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors
 
@@ -645,11 +640,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 parquet_files: list[str],
             ) -> None:
                 days = sorted(
-                    {
-                        day
-                        for day in (_extract_date_partition(path) for path in parquet_files)
-                        if day is not None
-                    }
+                    {day for day in (_extract_date_partition(path) for path in parquet_files) if day is not None}
                 )
                 new_days = [
                     day
@@ -764,23 +755,29 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 funding_concurrency=funding_concurrency,
                 logger=logger,
                 on_candle_task_complete=(
-                    lambda task, rows: _persist_candle_task(task, rows)
-                    if (task.exchange, task.market, task.symbol, task.timeframe) not in streamed_candle_tasks
-                    else None
+                    lambda task, rows: (
+                        _persist_candle_task(task, rows)
+                        if (task.exchange, task.market, task.symbol, task.timeframe) not in streamed_candle_tasks
+                        else None
+                    )
                 )
                 if incremental_parquet_on_fetch
                 else None,
                 on_oi_task_complete=(
-                    lambda task, rows: _persist_oi_task(task, rows)
-                    if (task.exchange, task.symbol, task.timeframe) not in streamed_oi_tasks
-                    else None
+                    lambda task, rows: (
+                        _persist_oi_task(task, rows)
+                        if (task.exchange, task.symbol, task.timeframe) not in streamed_oi_tasks
+                        else None
+                    )
                 )
                 if incremental_parquet_on_fetch
                 else None,
                 on_funding_task_complete=(
-                    lambda task, rows: _persist_funding_task(task, rows)
-                    if (task.exchange, task.symbol, task.timeframe) not in streamed_funding_tasks
-                    else None
+                    lambda task, rows: (
+                        _persist_funding_task(task, rows)
+                        if (task.exchange, task.symbol, task.timeframe) not in streamed_funding_tasks
+                        else None
+                    )
                 )
                 if incremental_parquet_on_fetch
                 else None,

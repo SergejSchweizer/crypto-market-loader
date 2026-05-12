@@ -90,8 +90,7 @@ def _dataset_data_files(lake_root: str, dataset_type: str) -> list[Path]:
             "symbol=*/timeframe=*/year=*/month=*/date=*/data.parquet"
         ),
         *root.glob(
-            f"dataset_type={dataset_type}/exchange=*/instrument_type=*/"
-            "symbol=*/timeframe=*/month=*/date=*/data.parquet"
+            f"dataset_type={dataset_type}/exchange=*/instrument_type=*/symbol=*/timeframe=*/month=*/date=*/data.parquet"
         ),
     }
     return sorted(files)
@@ -382,7 +381,16 @@ def _partition_key_from_parquet_path(file_path: Path) -> tuple[str, PartitionKey
 
     if not all([dataset_type, exchange, instrument_type, symbol, timeframe, date_partition]):
         return None
-    return dataset_type, (exchange, instrument_type, symbol, timeframe, date_partition)
+    return (
+        cast(str, dataset_type),
+        (
+            cast(str, exchange),
+            cast(str, instrument_type),
+            cast(str, symbol),
+            cast(str, timeframe),
+            cast(str, date_partition),
+        ),
+    )
 
 
 def ensure_bronze_sidecars(
@@ -512,9 +520,7 @@ def _write_grouped_rows(
         # Render sidecars on the main thread: matplotlib backends are not reliably thread-safe.
         key_by_path: dict[str, PartitionKey] = {
             str(
-                (
-                    partition_path(lake_root=lake_root, dataset_type=dataset_type, key=key) / "data.parquet"
-                ).resolve()
+                (partition_path(lake_root=lake_root, dataset_type=dataset_type, key=key) / "data.parquet").resolve()
             ): key
             for key in grouped
         }

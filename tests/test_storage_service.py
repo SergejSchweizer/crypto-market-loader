@@ -42,9 +42,7 @@ def test_persist_loader_outputs_writes_parquet_outputs() -> None:
     candles: dict[Market, dict[str, dict[str, list[SpotCandle]]]] = {
         "spot": {"deribit": {"BTCUSDT": [_sample_candle()]}}
     }
-    oi: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = {
-        "perp": {"deribit": {"BTCUSDT": [_sample_oi()]}}
-    }
+    oi: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = {"perp": {"deribit": {"BTCUSDT": [_sample_oi()]}}}
     calls: dict[str, int] = {"spot": 0, "oi": 0}
 
     def fake_save_spot_lake_fn(**kwargs: object) -> list[str]:

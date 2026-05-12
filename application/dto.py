@@ -143,6 +143,7 @@ class PersistResultDTO:
     """
 
     parquet_files: list[str] = field(default_factory=list)
+
     def to_output_dict(self) -> dict[str, object]:
         """Convert DTO to existing CLI output keys."""
 
@@ -150,4 +151,3 @@ class PersistResultDTO:
         if self.parquet_files:
             output["_parquet_files"] = self.parquet_files
         return output
-

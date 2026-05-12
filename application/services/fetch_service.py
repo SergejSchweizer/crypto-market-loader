@@ -52,6 +52,10 @@ TTimeout = TypeVar("TTimeout")
 TRow = TypeVar("TRow")
 
 
+class _ResultQueueProtocol:
+    def put(self, item: object) -> object: ...
+
+
 def _row_open_time_ms(row: TRow) -> int:
     """Return row open timestamp in epoch milliseconds."""
 
@@ -86,17 +90,16 @@ def _filter_chunk_callback(
 
 
 def _timeout_worker(
-    result_queue: object,
+    result_queue: _ResultQueueProtocol,
     fn: Callable[..., object],
     kwargs: dict[str, object],
 ) -> None:
     """Execute one fetch call in a child process and return result state via queue."""
 
-    queue = result_queue
     try:
-        queue.put(("ok", fn(**kwargs)))
+        result_queue.put(("ok", fn(**kwargs)))
     except Exception as exc:  # noqa: BLE001
-        queue.put(("err", (exc.__class__.__name__, str(exc))))
+        result_queue.put(("err", (exc.__class__.__name__, str(exc))))
 
 
 def _ranges_in_random_order(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
@@ -147,8 +150,10 @@ def _split_range_into_utc_days(start_open_ms: int, end_open_ms: int) -> list[tup
     cursor = start_dt
     windows: list[tuple[int, int]] = []
     while cursor.date() < end_dt.date():
-        day_end = datetime.combine(cursor.date(), datetime.min.time(), tzinfo=UTC) + timedelta(days=1) - timedelta(
-            milliseconds=1
+        day_end = (
+            datetime.combine(cursor.date(), datetime.min.time(), tzinfo=UTC)
+            + timedelta(days=1)
+            - timedelta(milliseconds=1)
         )
         windows.append((int(cursor.timestamp() * 1000), int(day_end.timestamp() * 1000)))
         cursor = day_end + timedelta(milliseconds=1)
@@ -236,7 +241,7 @@ def _run_with_optional_timeout(
 
             status, payload = result_queue.get_nowait()
             if status == "ok":
-                return payload  # type: ignore[return-value]
+                return cast(TTimeout, payload)
             exc_name, exc_message = payload
             if exc_name == "TypeError":
                 raise TypeError(exc_message)
@@ -678,6 +683,7 @@ def fetch_candle_tasks_parallel(
                 tf,
                 elapsed_s,
             )
+
         try:
             try:
                 candles = _run_with_optional_timeout(
@@ -771,6 +777,32 @@ def fetch_open_interest_tasks_parallel(
         hb_exchange = task.exchange
         hb_symbol = task.symbol
         hb_timeframe = task.timeframe
+        history_chunk_cb: Callable[[list[OpenInterestPoint]], None] | None = None
+        if on_task_chunk is not None:
+            task_for_chunk = task
+
+            def _history_chunk_oi(
+                values: list[OpenInterestPoint],
+                _task: OpenInterestFetchTaskDTO = task_for_chunk,
+            ) -> None:
+                on_task_chunk(_task, values)
+
+            history_chunk_cb = _history_chunk_oi
+
+        def _heartbeat_oi(
+            elapsed_s: int,
+            ex: Exchange = hb_exchange,
+            sy: str = hb_symbol,
+            tf: str = hb_timeframe,
+        ) -> None:
+            logger.info(
+                "Fetch heartbeat type=oi exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
+                ex,
+                sy,
+                tf,
+                elapsed_s,
+            )
+
         try:
             try:
                 rows = _run_with_optional_timeout(
@@ -778,21 +810,13 @@ def fetch_open_interest_tasks_parallel(
                     timeout_s=task_timeout_s,
                     heartbeat_s=heartbeat_s,
                     use_process_timeout=True,
-                    heartbeat=lambda elapsed_s, ex=hb_exchange, sy=hb_symbol, tf=hb_timeframe: logger.info(
-                        "Fetch heartbeat type=oi exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
-                        ex,
-                        sy,
-                        tf,
-                        elapsed_s,
-                    ),
+                    heartbeat=_heartbeat_oi,
                     exchange=task.exchange,
                     market="perp",
                     symbol=task.symbol,
                     timeframe=task.timeframe,
                     lake_root=lake_root,
-                    on_history_chunk=(lambda values, _task=task: on_task_chunk(_task, values))
-                    if on_task_chunk is not None
-                    else None,
+                    on_history_chunk=history_chunk_cb,
                 )
             except TypeError as exc:
                 if "on_history_chunk" not in str(exc):
@@ -802,13 +826,7 @@ def fetch_open_interest_tasks_parallel(
                     timeout_s=task_timeout_s,
                     heartbeat_s=heartbeat_s,
                     use_process_timeout=True,
-                    heartbeat=lambda elapsed_s, ex=hb_exchange, sy=hb_symbol, tf=hb_timeframe: logger.info(
-                        "Fetch heartbeat type=oi exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
-                        ex,
-                        sy,
-                        tf,
-                        elapsed_s,
-                    ),
+                    heartbeat=_heartbeat_oi,
                     exchange=task.exchange,
                     market="perp",
                     symbol=task.symbol,
@@ -875,6 +893,32 @@ def fetch_funding_tasks_parallel(
         hb_exchange = task.exchange
         hb_symbol = task.symbol
         hb_timeframe = task.timeframe
+        history_chunk_cb: Callable[[list[FundingPoint]], None] | None = None
+        if on_task_chunk is not None:
+            task_for_chunk = task
+
+            def _history_chunk_funding(
+                values: list[FundingPoint],
+                _task: FundingFetchTaskDTO = task_for_chunk,
+            ) -> None:
+                on_task_chunk(_task, values)
+
+            history_chunk_cb = _history_chunk_funding
+
+        def _heartbeat_funding(
+            elapsed_s: int,
+            ex: Exchange = hb_exchange,
+            sy: str = hb_symbol,
+            tf: str = hb_timeframe,
+        ) -> None:
+            logger.info(
+                "Fetch heartbeat type=funding exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
+                ex,
+                sy,
+                tf,
+                elapsed_s,
+            )
+
         try:
             try:
                 rows = _run_with_optional_timeout(
@@ -882,21 +926,13 @@ def fetch_funding_tasks_parallel(
                     timeout_s=task_timeout_s,
                     heartbeat_s=heartbeat_s,
                     use_process_timeout=False,
-                    heartbeat=lambda elapsed_s, ex=hb_exchange, sy=hb_symbol, tf=hb_timeframe: logger.info(
-                        "Fetch heartbeat type=funding exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
-                        ex,
-                        sy,
-                        tf,
-                        elapsed_s,
-                    ),
+                    heartbeat=_heartbeat_funding,
                     exchange=task.exchange,
                     market="perp",
                     symbol=task.symbol,
                     timeframe=task.timeframe,
                     lake_root=lake_root,
-                    on_history_chunk=(lambda values, _task=task: on_task_chunk(_task, values))
-                    if on_task_chunk is not None
-                    else None,
+                    on_history_chunk=history_chunk_cb,
                 )
             except TypeError as exc:
                 if "on_history_chunk" not in str(exc):
@@ -906,13 +942,7 @@ def fetch_funding_tasks_parallel(
                     timeout_s=task_timeout_s,
                     heartbeat_s=heartbeat_s,
                     use_process_timeout=False,
-                    heartbeat=lambda elapsed_s, ex=hb_exchange, sy=hb_symbol, tf=hb_timeframe: logger.info(
-                        "Fetch heartbeat type=funding exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
-                        ex,
-                        sy,
-                        tf,
-                        elapsed_s,
-                    ),
+                    heartbeat=_heartbeat_funding,
                     exchange=task.exchange,
                     market="perp",
                     symbol=task.symbol,

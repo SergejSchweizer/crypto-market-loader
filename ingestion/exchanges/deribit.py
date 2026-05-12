@@ -91,8 +91,7 @@ def normalize_symbol(symbol: str, market: str) -> str:
         if upper.endswith("-PERPETUAL"):
             return upper
         raise ValueError(
-            "Unsupported Deribit perp symbol. Use BTC-PERPETUAL/ETH-PERPETUAL/SOL-PERPETUAL "
-            "or BTC/ETH/SOL aliases."
+            "Unsupported Deribit perp symbol. Use BTC-PERPETUAL/ETH-PERPETUAL/SOL-PERPETUAL or BTC/ETH/SOL aliases."
         )
 
     if market == "spot":

@@ -165,6 +165,7 @@ def fetch_candles_all_history(
 
     if exchange != "deribit":
         raise ValueError(f"Unsupported exchange '{exchange}'")
+
     def _on_page(page: list[list[object]]) -> None:
         if on_history_chunk is None:
             return

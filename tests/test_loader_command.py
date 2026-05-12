@@ -15,9 +15,7 @@ from application.dto import CandleFetchTaskDTO, PersistResultDTO
 from ingestion.spot import SpotCandle
 
 
-def test_run_bronze_build_emits_manifest_and_plot_file_lists(
-    tmp_path: Path, monkeypatch, capsys
-) -> None:  # type: ignore[no-untyped-def]
+def test_run_bronze_build_emits_manifest_and_plot_file_lists(tmp_path: Path, monkeypatch, capsys) -> None:  # type: ignore[no-untyped-def]
     class _NoopLock:
         def __init__(self, lock_path: str) -> None:
             del lock_path

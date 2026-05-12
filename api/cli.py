@@ -140,7 +140,7 @@ def _load_yaml_config(path: str) -> dict[str, object]:
             "Remove all permissions for 'others' (recommended: chmod 600 config.yaml)."
         )
     try:
-        import yaml
+        import yaml  # type: ignore[import-untyped]
     except ImportError as exc:
         raise RuntimeError("PyYAML is required to parse config.yaml. Install project dependencies.") from exc
     with config_path.open("r", encoding="utf-8") as handle:
@@ -165,7 +165,7 @@ def _subparser_for_command(parser: argparse.ArgumentParser, command: str) -> arg
     """Return subparser object for selected command."""
 
     for action in parser._actions:
-        if isinstance(action, argparse._SubParsersAction):  # type: ignore[attr-defined]
+        if isinstance(action, argparse._SubParsersAction):
             candidate = action.choices.get(command)
             if isinstance(candidate, argparse.ArgumentParser):
                 return candidate

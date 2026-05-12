@@ -227,12 +227,7 @@ def discover_symbols(
     """Discover symbols available in bronze for selected market/exchange/timeframe."""
 
     instrument = instrument_type or market
-    root = (
-        Path(bronze_root)
-        / f"dataset_type={market}"
-        / f"exchange={exchange}"
-        / f"instrument_type={instrument}"
-    )
+    root = Path(bronze_root) / f"dataset_type={market}" / f"exchange={exchange}" / f"instrument_type={instrument}"
     if not root.exists():
         return []
     symbols: list[str] = []
@@ -288,7 +283,9 @@ def _iso_utc(value: datetime | None) -> str | None:
 
 def _write_silver_plot(frame: Any, output_path: Path) -> str | None:
     pl = _require_polars()
-    ts_col = next((candidate for candidate in ("timestamp_m1", "open_time", "timestamp") if candidate in frame.columns), None)
+    ts_col = next(
+        (candidate for candidate in ("timestamp_m1", "open_time", "timestamp") if candidate in frame.columns), None
+    )
     if ts_col is None:
         return None
     if ts_col != "timestamp_m1":
@@ -302,7 +299,9 @@ def _write_silver_plot(frame: Any, output_path: Path) -> str | None:
 
 def _with_timestamp_m1(frame: Any) -> Any:
     pl = _require_polars()
-    ts_col = next((candidate for candidate in ("timestamp_m1", "open_time", "timestamp") if candidate in frame.columns), None)
+    ts_col = next(
+        (candidate for candidate in ("timestamp_m1", "open_time", "timestamp") if candidate in frame.columns), None
+    )
     if ts_col is None or ts_col == "timestamp_m1":
         return frame
     return frame.with_columns(pl.col(ts_col).alias("timestamp_m1"))
@@ -368,9 +367,8 @@ def build_silver_for_symbol(
             | pl.col("low_price").is_null()
             | pl.col("close_price").is_null()
         )
-        invalid_ohlc_expr = (
-            (pl.col("high_price") < pl.max_horizontal("open_price", "close_price"))
-            | (pl.col("low_price") > pl.min_horizontal("open_price", "close_price"))
+        invalid_ohlc_expr = (pl.col("high_price") < pl.max_horizontal("open_price", "close_price")) | (
+            pl.col("low_price") > pl.min_horizontal("open_price", "close_price")
         )
 
         null_price_rows = frame.select(null_price_expr.cast(pl.Int64).sum().alias("count")).item()
@@ -592,7 +590,7 @@ def build_funding_1m_feature_for_symbol(
     cutoff_time: datetime | None = None,
 ) -> SilverBuildReport:
     """Build monthly ``funding_1m_feature`` from ``funding_observed`` using backward asof joins.
-    
+
     Args:
         silver_root: Path to silver layer root.
         exchange: Exchange identifier.
@@ -619,7 +617,7 @@ def build_funding_1m_feature_for_symbol(
     )
     if cutoff_time is None:
         cutoff_time = datetime.now(UTC)
-    
+
     agg_rows_in = 0
     agg_rows_out = 0
     min_timestamp: datetime | None = None
@@ -636,9 +634,6 @@ def build_funding_1m_feature_for_symbol(
         month_start = datetime.fromisoformat(f"{month}-01T00:00:00+00:00")
         if month == "9999-12":
             continue
-        y, m = month.split("-")
-        year = int(y)
-        mon = int(m)
         observed_max = observed.select(pl.col("funding_time").max()).item()
         if not isinstance(observed_max, datetime):
             continue
@@ -675,12 +670,12 @@ def build_funding_1m_feature_for_symbol(
                 [
                     pl.lit(exchange).alias("exchange"),
                     pl.lit(symbol).alias("symbol"),
-                    (
-                        (pl.col("timestamp") - pl.col("funding_observed_at")).dt.total_minutes().cast(pl.Int64)
-                    ).alias("minutes_since_funding"),
-                    (pl.col("timestamp") == pl.col("funding_observed_at")).fill_null(False).alias(
-                        "is_funding_observation_minute"
+                    ((pl.col("timestamp") - pl.col("funding_observed_at")).dt.total_minutes().cast(pl.Int64)).alias(
+                        "minutes_since_funding"
                     ),
+                    (pl.col("timestamp") == pl.col("funding_observed_at"))
+                    .fill_null(False)
+                    .alias("is_funding_observation_minute"),
                     pl.col("funding_observed_at").is_not_null().alias("funding_data_available"),
                 ]
             )

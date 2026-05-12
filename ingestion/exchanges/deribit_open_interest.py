@@ -94,11 +94,7 @@ def fetch_open_interest_range(
         history = fetch_open_interest_all(symbol=symbol, period=period)
         _OPEN_INTEREST_HISTORY_CACHE[symbol] = history
 
-    return [
-        item
-        for item in history
-        if start_open_ms <= int(cast(Any, item["timestamp"])) <= end_open_ms
-    ]
+    return [item for item in history if start_open_ms <= int(cast(Any, item["timestamp"])) <= end_open_ms]
 
 
 def parse_open_interest_row(symbol: str, period: str, row: dict[str, object]) -> dict[str, object]:

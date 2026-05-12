@@ -158,7 +158,6 @@ def test_main_loader_command_still_uses_single_instance_lock(
         cli.main()
 
 
-
 def test_main_loader_randomizes_symbol_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
     class NoopLock:
         def __init__(self, lock_path: str) -> None:

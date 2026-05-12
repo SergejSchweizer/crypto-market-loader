@@ -142,11 +142,13 @@ def configure_logging(module_name: str = "crypto-market-loader") -> logging.Logg
     logger.propagate = False
     formatter = logging.Formatter("%(asctime)s %(levelname)s %(message)s")
     log_file_env = os.getenv("DEPTH_SYNC_LOG_FILE", "").strip()
-    if log_file_env:
+    use_explicit_log_file = bool(log_file_env) and safe_module_name in {"", "crypto-market-loader"}
+    if use_explicit_log_file:
         log_path = Path(log_file_env)
     else:
         log_dir = Path(os.getenv("DEPTH_SYNC_LOG_DIR", DEFAULT_LOG_DIR))
-        log_path = log_dir / DEFAULT_LOG_FILE
+        default_name = f"{safe_module_name}.log" if safe_module_name else DEFAULT_LOG_FILE
+        log_path = log_dir / default_name
     try:
         log_path.parent.mkdir(parents=True, exist_ok=True)
         file_handler = TimedRotatingFileHandler(

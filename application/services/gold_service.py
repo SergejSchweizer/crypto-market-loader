@@ -134,13 +134,10 @@ def _bump_semver(version: str, level: str) -> str:
     raise ValueError(f"Unsupported semver bump level: {level}")
 
 
-def _latest_manifest_for_dataset(gold_root: Path, exchange: str, symbol: str, dataset_id: str) -> dict[str, object] | None:
-    dataset_root = (
-        gold_root
-        / f"dataset_id={dataset_id}"
-        / f"exchange={exchange}"
-        / f"symbol={symbol}"
-    )
+def _latest_manifest_for_dataset(
+    gold_root: Path, exchange: str, symbol: str, dataset_id: str
+) -> dict[str, object] | None:
+    dataset_root = gold_root / f"dataset_id={dataset_id}" / f"exchange={exchange}" / f"symbol={symbol}"
     if not dataset_root.exists():
         return None
     latest_payload: dict[str, object] | None = None
@@ -173,12 +170,12 @@ def _contract_bump_level(
     prev_contract = previous.get("contract_signature")
     if not isinstance(prev_contract, dict):
         # Backward-compatible fallback for older manifests.
+        source_silver_datasets = previous.get("source_silver_datasets")
+        source_dataset_keys = sorted(source_silver_datasets.keys()) if isinstance(source_silver_datasets, dict) else []
         prev_contract = {
             "columns": previous.get("columns"),
             "join_policy": "full_outer_coalesce",
-            "source_dataset_keys": sorted((previous.get("source_silver_datasets") or {}).keys())
-            if isinstance(previous.get("source_silver_datasets"), dict)
-            else [],
+            "source_dataset_keys": source_dataset_keys,
         }
 
     prev_columns = prev_contract.get("columns")
@@ -534,7 +531,7 @@ def _ordered_numeric_columns(frame: Any) -> list[str]:
 
 
 def _normalized_series(values_all: list[object]) -> tuple[list[float], list[float], int]:
-    arr = [float(v) for v in values_all if v is not None]
+    arr = [float(v) for v in values_all if isinstance(v, (int, float))]
     missing_values = len(values_all) - len(arr)
     if not arr:
         return [], [], missing_values
@@ -544,7 +541,7 @@ def _normalized_series(values_all: list[object]) -> tuple[list[float], list[floa
         arr_plot = [0.0 if v is not None else float("nan") for v in values_all]
     else:
         scale = arr_max - arr_min
-        arr_plot = [((float(v) - arr_min) / scale) if v is not None else float("nan") for v in values_all]
+        arr_plot = [((float(v) - arr_min) / scale) if isinstance(v, (int, float)) else float("nan") for v in values_all]
     return arr, arr_plot, missing_values
 
 
@@ -585,8 +582,8 @@ def _write_feature_distribution_plot(
 ) -> str | None:
     try:
         import matplotlib.dates as mdates
-        import matplotlib.ticker as mticker
         import matplotlib.pyplot as plt
+        import matplotlib.ticker as mticker
     except ImportError:
         return None
 
@@ -632,7 +629,9 @@ def _write_feature_distribution_plot(
             "std": float(stats_row["std"]) if stats_row["std"] is not None else None,
             "var": float(stats_row["var"]) if stats_row["var"] is not None else None,
         }
-    fig = plt.figure(figsize=(12, max(0.85 * row_count + 4.0, 12.0) * 1.2), facecolor="#070b16", constrained_layout=True)
+    fig = plt.figure(
+        figsize=(12, max(0.85 * row_count + 4.0, 12.0) * 1.2), facecolor="#070b16", constrained_layout=True
+    )
     grid = fig.add_gridspec(
         row_count + 1,
         2,
@@ -646,8 +645,14 @@ def _write_feature_distribution_plot(
     profile_ax.set_facecolor("#070b16")
     ts_min = frame.select(pl.col("timestamp_m1").min()).item() if "timestamp_m1" in frame.columns else None
     ts_max = frame.select(pl.col("timestamp_m1").max()).item() if "timestamp_m1" in frame.columns else None
-    exchange_val = str(frame.get_column("exchange")[0]) if "exchange" in frame.columns and frame.height > 0 else "unknown"
+    exchange_val = (
+        str(frame.get_column("exchange")[0]) if "exchange" in frame.columns and frame.height > 0 else "unknown"
+    )
     symbol_val = str(frame.get_column("symbol")[0]) if "symbol" in frame.columns and frame.height > 0 else "unknown"
+    time_window = (
+        f"{_iso_utc(ts_min if isinstance(ts_min, datetime) else None)} -> "
+        f"{_iso_utc(ts_max if isinstance(ts_max, datetime) else None)}"
+    )
     profile_ax.text(
         0.5,
         0.94,
@@ -663,7 +668,7 @@ def _write_feature_distribution_plot(
         "\n".join(
             [
                 f"numeric features: {row_count}",
-                f"window: {_iso_utc(ts_min if isinstance(ts_min, datetime) else None)} -> {_iso_utc(ts_max if isinstance(ts_max, datetime) else None)}",
+                f"window: {time_window}",
                 f"output: {output_path.name}",
             ]
         ),
@@ -733,7 +738,9 @@ def _write_feature_distribution_plot(
                 y_max = max(arr)
                 if y_max > y_min:
                     baseline = y_min
-                    left_ax.fill_between(ts, arr_plot, [baseline] * len(arr_plot), where=mask, color="#234b6e", alpha=0.10)
+                    left_ax.fill_between(
+                        ts, arr_plot, [baseline] * len(arr_plot), where=mask, color="#234b6e", alpha=0.10
+                    )
             major_locator, minor_locator, major_formatter = _time_axis_style(mdates, mticker, ts)
             left_ax.xaxis.set_major_locator(major_locator)
             if minor_locator is not None:
@@ -764,15 +771,18 @@ def _write_feature_distribution_plot(
             left_ax.set_ylabel(col, color="#cbd5e1", fontsize=6.8)
             right_ax.hist(arr, bins=24, color="#a8be8f", alpha=0.92, edgecolor="#a8be8f")
             right_ax.xaxis.set_major_formatter(mticker.StrMethodFormatter("{x:,.4g}"))
+            if full_available_by_col[col] > 0:
+                missing_ratio = 100.0 * full_missing_by_col[col] / full_available_by_col[col]
+            else:
+                missing_ratio = 0.0
+            std_value = full_numeric_stats_by_col[col]["std"]
+            std_scalar = float(std_value) if isinstance(std_value, (int, float)) else None
             stats_box = "\n".join(
                 [
                     f"feature: {col}",
                     f"time range: {full_time_range_by_col[col]}",
                     f"all rows: {full_available_by_col[col]}",
-                    (
-                        f"missing rows: "
-                        f"{(100.0 * full_missing_by_col[col] / full_available_by_col[col]) if full_available_by_col[col] > 0 else 0.0:.2f}%"
-                    ),
+                    f"missing rows: {missing_ratio:.2f}%",
                     (
                         f"mean: {full_numeric_stats_by_col[col]['mean']:.6g}"
                         if full_numeric_stats_by_col[col]["mean"] is not None
@@ -784,19 +794,13 @@ def _write_feature_distribution_plot(
                         else "var: n/a"
                     ),
                     (
-                        f"1std: {abs(full_numeric_stats_by_col[col]['std']):.6g}"
-                        if full_numeric_stats_by_col[col]["std"] is not None
-                        else "1std: n/a"
+                        f"1std: {abs(std_scalar):.6g}" if std_scalar is not None else "1std: n/a"
                     ),
                     (
-                        f"2std: {abs(2.0 * full_numeric_stats_by_col[col]['std']):.6g}"
-                        if full_numeric_stats_by_col[col]["std"] is not None
-                        else "2std: n/a"
+                        f"2std: {abs(2.0 * std_scalar):.6g}" if std_scalar is not None else "2std: n/a"
                     ),
                     (
-                        f"3std: {abs(3.0 * full_numeric_stats_by_col[col]['std']):.6g}"
-                        if full_numeric_stats_by_col[col]["std"] is not None
-                        else "3std: n/a"
+                        f"3std: {abs(3.0 * std_scalar):.6g}" if std_scalar is not None else "3std: n/a"
                     ),
                 ]
             )
@@ -854,8 +858,12 @@ def _feature_metadata(pl: Any, frame: Any, exchange: str) -> dict[str, dict[str,
     for col, dtype in zip(frame.columns, frame.dtypes, strict=False):
         null_count = int(frame.select(pl.col(col).is_null().sum()).item())
         time_filtered = frame.filter(pl.col(col).is_not_null()) if col != "timestamp_m1" else frame
-        feature_min_ts = time_filtered.select(pl.col("timestamp_m1").min()).item() if "timestamp_m1" in frame.columns else None
-        feature_max_ts = time_filtered.select(pl.col("timestamp_m1").max()).item() if "timestamp_m1" in frame.columns else None
+        feature_min_ts = (
+            time_filtered.select(pl.col("timestamp_m1").min()).item() if "timestamp_m1" in frame.columns else None
+        )
+        feature_max_ts = (
+            time_filtered.select(pl.col("timestamp_m1").max()).item() if "timestamp_m1" in frame.columns else None
+        )
         row: dict[str, object] = {
             "dtype": str(dtype),
             "null_count": null_count,
@@ -898,14 +906,14 @@ def _time_span_coverage(frame: Any) -> tuple[datetime | None, datetime | None, i
     return min_ts, max_ts, expected_minutes, missing_minutes, observed_coverage_ratio
 
 
-def _source_dataset_summary(pl: Any, raw_by_dataset: dict[str, Any], l2_source_path: Path | None) -> dict[str, dict[str, object]]:
+def _source_dataset_summary(
+    pl: Any, raw_by_dataset: dict[str, Any], l2_source_path: Path | None
+) -> dict[str, dict[str, object]]:
     summary: dict[str, dict[str, object]] = {}
     for dataset_type, raw in raw_by_dataset.items():
         source_key = f"{dataset_type}_1m" if dataset_type in {"spot", "perp"} else dataset_type
         source_symbols = (
-            sorted(set(raw.get_column("symbol").cast(pl.Utf8).to_list()))
-            if "symbol" in raw.columns
-            else []
+            sorted(set(raw.get_column("symbol").cast(pl.Utf8).to_list())) if "symbol" in raw.columns else []
         )
         summary[source_key] = {
             "columns": raw.columns,
@@ -1054,8 +1062,12 @@ def build_gold_for_symbol(
         "missing_minutes_in_span": missing_minutes,
         "observed_row_coverage_ratio": observed_coverage_ratio,
         "l2_validation_mode": l2_validation_mode if _dataset_includes_l2(dataset_id) else None,
-        "l2_invalid_rows_found": l2_validation_audit["l2_invalid_rows_found"] if _dataset_includes_l2(dataset_id) else None,
-        "l2_invalid_rows_dropped": l2_validation_audit["l2_invalid_rows_dropped"] if _dataset_includes_l2(dataset_id) else None,
+        "l2_invalid_rows_found": l2_validation_audit["l2_invalid_rows_found"]
+        if _dataset_includes_l2(dataset_id)
+        else None,
+        "l2_invalid_rows_dropped": l2_validation_audit["l2_invalid_rows_dropped"]
+        if _dataset_includes_l2(dataset_id)
+        else None,
         "missing_value_count_total": missing_total,
         "missing_value_count_by_column": missing_by_column,
         "source_silver_datasets": source_silver_datasets,

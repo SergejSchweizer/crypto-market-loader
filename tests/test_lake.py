@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import re
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -317,9 +317,7 @@ def test_bronze_all_symbols_use_same_daily_partition_format(tmp_path: Path) -> N
     )
     assert len(files) == 2
     for file_path in files:
-        assert (
-            re.search(r"/year=\d{4}/month=\d{4}-\d{2}/date=\d{4}-\d{2}-\d{2}/data\.parquet$", file_path) is not None
-        )
+        assert re.search(r"/year=\d{4}/month=\d{4}-\d{2}/date=\d{4}-\d{2}-\d{2}/data\.parquet$", file_path) is not None
 
 
 def test_ensure_bronze_sidecars_backfills_missing_sidecars(tmp_path: Path) -> None:

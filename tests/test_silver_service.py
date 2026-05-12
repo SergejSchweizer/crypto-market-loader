@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from application.services.silver_service import (
-    SilverBuildReport,
     build_funding_1m_feature_for_symbol,
     build_funding_observed_for_symbol,
     build_oi_1m_feature_for_symbol,
