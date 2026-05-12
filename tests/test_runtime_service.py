@@ -61,3 +61,28 @@ def test_load_env_file_populates_missing_environment_values(
     assert env_list("SYMBOLS", []) == ["BTC", "ETH"]
     assert env_list("MISSING_LIST", ["BTC"]) == ["BTC"]
     assert env_list("EXISTING_VALUE", []) == ["from_process"]
+
+
+def test_configure_logging_ignores_global_file_override_for_module_logger(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Module logger should keep per-module file naming even if global file env var is set."""
+
+    monkeypatch.setenv("DEPTH_SYNC_LOG_DIR", str(tmp_path))
+    monkeypatch.setenv("DEPTH_SYNC_LOG_FILE", str(tmp_path / "global.log"))
+    logger = configure_logging(module_name="silver-build")
+
+    try:
+        file_names = [
+            Path(cast(Any, handler).baseFilename).name
+            for handler in logger.handlers
+            if hasattr(handler, "baseFilename")
+        ]
+        assert "silver-build.log" in file_names
+        assert "global.log" not in file_names
+    finally:
+        for handler in list(logger.handlers):
+            logger.removeHandler(handler)
+            handler.close()
+        logging.getLogger("crypto_market_loader.silver-build").handlers.clear()

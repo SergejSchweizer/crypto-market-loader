@@ -9,12 +9,13 @@ from typing import Any, cast
 import pytest
 
 import application.services.fetch_service as fetch_service_module
-from application.dto import CandleFetchTaskDTO, OpenInterestFetchTaskDTO
+from application.dto import CandleFetchTaskDTO, FundingFetchTaskDTO, OpenInterestFetchTaskDTO
 from application.services.fetch_service import (
     _run_with_optional_timeout,
     _split_range_into_utc_days,
     _task_timeout_seconds,
     fetch_candle_tasks_parallel,
+    fetch_funding_tasks_parallel,
     fetch_open_interest_tasks_parallel,
     fetch_symbol_candles,
 )
@@ -374,3 +375,76 @@ def test_fetch_open_interest_tasks_parallel_times_out_when_configured(monkeypatc
     key = (task.exchange, task.symbol, task.timeframe)
     assert key in result.errors
     assert "timed out" in result.errors[key]
+
+
+def test_fetch_open_interest_tasks_parallel_wires_task_chunk_callback(monkeypatch: pytest.MonkeyPatch) -> None:
+    task = OpenInterestFetchTaskDTO(exchange="deribit", symbol="BTCUSDT", timeframe="1m")
+    point = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
+        open_interest=1000.0,
+        open_interest_value=2000.0,
+    )
+    seen: list[tuple[str, str, int]] = []
+
+    def _fetcher(**kwargs: object) -> list[OpenInterestPoint]:
+        cb = cast(Any, kwargs["on_history_chunk"])
+        cb([point])
+        return [point]
+
+    def _on_chunk(task_dto: OpenInterestFetchTaskDTO, rows: list[OpenInterestPoint]) -> None:
+        seen.append((task_dto.exchange, task_dto.symbol, len(rows)))
+
+    def _run_inline(
+        fn: Any,
+        *,
+        timeout_s: float | None,
+        heartbeat_s: float,
+        heartbeat: Any,
+        use_process_timeout: bool = False,
+        **kwargs: object,
+    ) -> Any:
+        del timeout_s, heartbeat_s, heartbeat, use_process_timeout
+        return fn(**kwargs)
+
+    monkeypatch.setattr(fetch_service_module, "_run_with_optional_timeout", _run_inline)
+
+    result = fetch_open_interest_tasks_parallel(
+        tasks=[task],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=cast(Any, _fetcher),
+        on_task_chunk=_on_chunk,
+    )
+
+    assert seen == [("deribit", "BTCUSDT", 1)]
+    assert (task.exchange, task.symbol, task.timeframe) in result.rows
+
+
+def test_fetch_funding_tasks_parallel_emits_task_chunks() -> None:
+    task = FundingFetchTaskDTO(exchange="deribit", symbol="BTCUSDT", timeframe="8h")
+    seen: list[tuple[str, str, int]] = []
+
+    def _fetcher(**kwargs: object) -> list[object]:
+        cb = cast(Any, kwargs["on_history_chunk"])
+        cb([object()])
+        return [object()]
+
+    def _on_chunk(task_dto: FundingFetchTaskDTO, rows: list[object]) -> None:
+        seen.append((task_dto.exchange, task_dto.symbol, len(rows)))
+
+    result = fetch_funding_tasks_parallel(
+        tasks=[task],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=cast(Any, _fetcher),
+        on_task_chunk=cast(Any, _on_chunk),
+    )
+
+    assert seen == [("deribit", "BTCUSDT", 1)]
+    assert (task.exchange, task.symbol, task.timeframe) in result.rows
