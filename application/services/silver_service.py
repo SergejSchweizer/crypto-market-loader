@@ -145,6 +145,16 @@ SILVER_TRADES_M1_FEATURE_COLUMNS = [
     "sell_trade_count",
     "buy_volume_share",
 ]
+SILVER_TRADES_OBSERVED_COLUMNS = [
+    "trade_time",
+    "exchange",
+    "symbol",
+    "instrument_type",
+    "trade_id",
+    "price",
+    "quantity",
+    "side",
+]
 
 
 def _silver_month_path(
@@ -1049,79 +1059,44 @@ def build_oi_1m_feature_for_symbol(
 
 def build_trades_1m_feature_for_symbol(
     *,
-    bronze_root: str,
     silver_root: str,
     exchange: str,
     symbol: str,
-    instrument_type: str = "perp",
-    timeframe: str = "tick",
+    observed_timeframe: str = "tick",
 ) -> SilverBuildReport:
-    """Build monthly ``trades_1m_feature`` from bronze tick trades."""
+    """Build monthly ``trades_1m_feature`` from ``trades_observed`` tick trades."""
 
     pl = _require_polars()
-    months = discover_months(
-        bronze_root=bronze_root,
-        market="trades",
-        exchange=exchange,
-        symbol=symbol,
-        timeframe=timeframe,
-        instrument_type=instrument_type,
+    observed_root = (
+        Path(silver_root)
+        / "dataset_type=trades_observed"
+        / f"exchange={exchange}"
+        / f"symbol={symbol}"
+        / f"timeframe={observed_timeframe}"
+    )
+    months = sorted(
+        {
+            path.parent.name.split("=", 1)[1]
+            for path in observed_root.glob("year=*/month=*/*.parquet")
+            if path.parent.name.startswith("month=")
+        }
     )
     agg_rows_in = 0
     agg_rows_out = 0
-    agg_duplicates_removed = 0
-    agg_invalid_rows = 0
     min_timestamp: datetime | None = None
     max_timestamp: datetime | None = None
 
     for month in months:
-        files = _bronze_month_files(
-            bronze_root=bronze_root,
-            market="trades",
-            exchange=exchange,
-            symbol=symbol,
-            timeframe=timeframe,
-            month=month,
-            instrument_type=instrument_type,
-        )
-        if not files:
+        year = month.split("-", 1)[0]
+        month_file = observed_root / f"year={year}" / f"month={month}" / f"{symbol}-{month}.parquet"
+        if not month_file.exists():
             continue
-        frame = pl.scan_parquet(files).collect()
+        frame = pl.read_parquet(month_file).sort("trade_time")
         rows_in = frame.height
         if rows_in == 0:
             continue
 
-        frame = frame.with_columns(
-            [
-                pl.col("open_time").cast(pl.Datetime(time_unit="us", time_zone="UTC")).alias("trade_time"),
-                pl.col("price").cast(pl.Float64),
-                pl.col("quantity").cast(pl.Float64),
-                pl.col("trade_id").cast(pl.Utf8),
-                pl.col("side").cast(pl.Utf8).str.to_lowercase(),
-                pl.col("symbol").cast(pl.Utf8).alias("symbol"),
-                pl.col("exchange").cast(pl.Utf8).str.to_lowercase().alias("exchange"),
-                pl.col("instrument_type").cast(pl.Utf8).str.to_lowercase().alias("instrument_type"),
-            ]
-        )
-        invalid_expr = (
-            pl.col("trade_time").is_null()
-            | pl.col("trade_id").is_null()
-            | pl.col("price").is_null()
-            | (~pl.col("price").is_finite())
-            | (pl.col("price") <= 0.0)
-            | pl.col("quantity").is_null()
-            | (~pl.col("quantity").is_finite())
-            | (pl.col("quantity") <= 0.0)
-        )
-        invalid_rows = int(frame.select(invalid_expr.cast(pl.Int64).sum()).item() or 0)
-        cleaned = frame.filter(~invalid_expr)
-        deduped = cleaned.unique(
-            subset=["exchange", "instrument_type", "symbol", "trade_time", "trade_id"],
-            keep="last",
-            maintain_order=True,
-        )
-        duplicates_removed = cleaned.height - deduped.height
-        enriched = deduped.with_columns(
+        enriched = frame.with_columns(
             [
                 pl.col("trade_time").dt.truncate("1m").alias("timestamp_m1"),
                 (pl.col("price") * pl.col("quantity")).alias("notional"),
@@ -1178,8 +1153,6 @@ def build_trades_1m_feature_for_symbol(
 
         agg_rows_in += rows_in
         agg_rows_out += feature.height
-        agg_duplicates_removed += int(duplicates_removed)
-        agg_invalid_rows += int(invalid_rows)
 
     return SilverBuildReport(
         dataset="trades_1m_feature",
@@ -1191,13 +1164,134 @@ def build_trades_1m_feature_for_symbol(
         months_processed=months,
         rows_in=agg_rows_in,
         rows_out=agg_rows_out,
+        duplicates_removed=0,
+        invalid_ohlc_rows=0,
+        null_price_rows=0,
+        min_timestamp=_iso_utc(min_timestamp),
+        max_timestamp=_iso_utc(max_timestamp),
+        symbols=[symbol],
+        columns=SILVER_TRADES_M1_FEATURE_COLUMNS,
+    )
+
+
+def build_trades_observed_for_symbol(
+    *,
+    bronze_root: str,
+    silver_root: str,
+    exchange: str,
+    symbol: str,
+    instrument_type: str = "perp",
+    timeframe: str = "tick",
+) -> SilverBuildReport:
+    """Build monthly ``trades_observed`` from bronze tick trades."""
+
+    pl = _require_polars()
+    months = discover_months(
+        bronze_root=bronze_root,
+        market="trades",
+        exchange=exchange,
+        symbol=symbol,
+        timeframe=timeframe,
+        instrument_type=instrument_type,
+    )
+    agg_rows_in = 0
+    agg_rows_out = 0
+    agg_duplicates_removed = 0
+    agg_invalid_rows = 0
+    min_timestamp: datetime | None = None
+    max_timestamp: datetime | None = None
+
+    for month in months:
+        files = _bronze_month_files(
+            bronze_root=bronze_root,
+            market="trades",
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+            month=month,
+            instrument_type=instrument_type,
+        )
+        if not files:
+            continue
+        frame = pl.scan_parquet(files).collect()
+        rows_in = frame.height
+        if rows_in == 0:
+            continue
+        frame = frame.with_columns(
+            [
+                pl.col("open_time").cast(pl.Datetime(time_unit="us", time_zone="UTC")).alias("trade_time"),
+                pl.col("price").cast(pl.Float64),
+                pl.col("quantity").cast(pl.Float64),
+                pl.col("trade_id").cast(pl.Utf8),
+                pl.col("side").cast(pl.Utf8).str.to_lowercase(),
+                pl.col("symbol").cast(pl.Utf8).alias("symbol"),
+                pl.col("exchange").cast(pl.Utf8).str.to_lowercase().alias("exchange"),
+                pl.col("instrument_type").cast(pl.Utf8).str.to_lowercase().alias("instrument_type"),
+            ]
+        )
+        invalid_expr = (
+            pl.col("trade_time").is_null()
+            | pl.col("trade_id").is_null()
+            | pl.col("price").is_null()
+            | (~pl.col("price").is_finite())
+            | (pl.col("price") <= 0.0)
+            | pl.col("quantity").is_null()
+            | (~pl.col("quantity").is_finite())
+            | (pl.col("quantity") <= 0.0)
+        )
+        invalid_rows = int(frame.select(invalid_expr.cast(pl.Int64).sum()).item() or 0)
+        cleaned = frame.filter(~invalid_expr)
+        observed = (
+            cleaned.sort(["trade_time", "ingested_at"])
+            .unique(
+                subset=["exchange", "instrument_type", "symbol", "trade_time", "trade_id"],
+                keep="last",
+                maintain_order=True,
+            )
+            .sort("trade_time")
+            .select(SILVER_TRADES_OBSERVED_COLUMNS)
+        )
+        duplicates_removed = cleaned.height - observed.height
+        target = _silver_month_path(
+            silver_root=silver_root,
+            market="trades_observed",
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+            month=month,
+        )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        observed.write_parquet(target)
+
+        month_min = observed.select(pl.col("trade_time").min()).item()
+        month_max = observed.select(pl.col("trade_time").max()).item()
+        if isinstance(month_min, datetime) and (min_timestamp is None or month_min < min_timestamp):
+            min_timestamp = month_min
+        if isinstance(month_max, datetime) and (max_timestamp is None or month_max > max_timestamp):
+            max_timestamp = month_max
+
+        agg_rows_in += rows_in
+        agg_rows_out += observed.height
+        agg_duplicates_removed += int(duplicates_removed)
+        agg_invalid_rows += int(invalid_rows)
+
+    return SilverBuildReport(
+        dataset="trades_observed",
+        exchange=exchange,
+        symbol=symbol,
+        timeframe=timeframe,
+        period_start=months[0] if months else None,
+        period_end=months[-1] if months else None,
+        months_processed=months,
+        rows_in=agg_rows_in,
+        rows_out=agg_rows_out,
         duplicates_removed=agg_duplicates_removed,
         invalid_ohlc_rows=agg_invalid_rows,
         null_price_rows=0,
         min_timestamp=_iso_utc(min_timestamp),
         max_timestamp=_iso_utc(max_timestamp),
         symbols=[symbol],
-        columns=SILVER_TRADES_M1_FEATURE_COLUMNS,
+        columns=SILVER_TRADES_OBSERVED_COLUMNS,
     )
 
 

@@ -16,6 +16,7 @@ from api.commands.loader import add_bronze_build_parser
 from api.commands.silver import add_silver_build_parser, run_silver_build
 from api.commands.stats import add_export_descriptive_stats_parser, run_export_descriptive_stats
 from api.commands.timeframes import add_list_spot_timeframes_parser, run_list_spot_timeframes
+from application.services.config_validation import validate_runtime_config
 from application.services.gapfill_service import _last_closed_open_ms, _missing_ranges_ms
 from application.services.runtime_service import (
     SingleInstanceError,
@@ -55,6 +56,7 @@ from ingestion.trades import fetch_trades_all_history, fetch_trades_range
 
 __all__ = ["SingleInstanceError", "SingleInstanceLock", "build_parser", "main"]
 _TAIL_DELTA_ONLY = True
+_BRONZE_CONFIG_ALIASES: tuple[str, ...] = ("bronze-build", "bronze-ingest", "loader")
 
 
 # Backward-compatible wrappers used by tests.
@@ -160,6 +162,7 @@ def _load_yaml_config(path: str) -> dict[str, object]:
         raise ValueError(f"config.yaml missing required section(s): {', '.join(sorted(missing))}")
     if not isinstance(config.get("env"), dict):
         raise ValueError("config.yaml section 'env' must be a mapping")
+    validate_runtime_config(config)
 
     return config
 
@@ -202,22 +205,30 @@ def _apply_yaml_defaults(
 ) -> None:
     """Apply global and command-level YAML defaults unless overridden by CLI."""
 
-    global_config = config.get("global")
-    if isinstance(global_config, dict):
-        for key, value in global_config.items():
-            if key in explicit_dests or not hasattr(args, key):
+    def _apply_mapping_defaults(section: object) -> None:
+        if not isinstance(section, dict):
+            return
+        for raw_key, value in section.items():
+            if not isinstance(raw_key, str):
                 continue
-            setattr(args, key, value)
-    command_config = config.get(command)
-    if not isinstance(command_config, dict) and command == "bronze-build":
-        command_config = config.get("bronze-ingest")
-    if not isinstance(command_config, dict) and command == "bronze-build":
-        command_config = config.get("loader")
-    if isinstance(command_config, dict):
-        for key, value in command_config.items():
-            if key in explicit_dests or not hasattr(args, key):
+            if raw_key in explicit_dests or not hasattr(args, raw_key):
                 continue
-            setattr(args, key, value)
+            setattr(args, raw_key, value)
+
+    _apply_mapping_defaults(config.get("global"))
+    _apply_mapping_defaults(_resolve_command_config(command=command, config=config))
+
+
+def _resolve_command_config(command: str, config: dict[str, object]) -> object:
+    """Resolve command config section, including legacy aliases."""
+
+    if command != "bronze-build":
+        return config.get(command)
+    for candidate in _BRONZE_CONFIG_ALIASES:
+        section = config.get(candidate)
+        if isinstance(section, dict):
+            return section
+    return None
 
 
 def _apply_env_from_config(config: dict[str, object]) -> None:
@@ -226,12 +237,12 @@ def _apply_env_from_config(config: dict[str, object]) -> None:
     env_config = config.get("env")
     if not isinstance(env_config, dict):
         return
-    for key, value in env_config.items():
-        if not isinstance(key, str):
+    for raw_key, value in env_config.items():
+        if not isinstance(raw_key, str):
             continue
         if value is None:
             continue
-        os.environ[key] = str(value)
+        os.environ[raw_key] = str(value)
 
 
 def main() -> None:
@@ -249,9 +260,7 @@ def main() -> None:
     command = cast(str, args.command)
     if (
         command == "bronze-build"
-        and "bronze-build" not in config_data
-        and "bronze-ingest" not in config_data
-        and "loader" not in config_data
+        and not any(alias in config_data for alias in _BRONZE_CONFIG_ALIASES)
     ):
         raise ValueError("config.yaml missing required section: bronze-build")
     command_parser = _subparser_for_command(parser, command)

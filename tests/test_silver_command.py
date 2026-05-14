@@ -85,10 +85,11 @@ def test_run_silver_build_uses_tick_timeframe_for_trades_discovery(
         return []
 
     def fake_build_trades(**kwargs: object) -> silver_cmd.SilverBuildReport:
-        built.append((str(kwargs["symbol"]), str(kwargs["timeframe"])))
+        built.append((str(kwargs["symbol"]), str(kwargs.get("timeframe", kwargs.get("observed_timeframe", "")))))
         return _report("trades_1m_feature")
 
     monkeypatch.setattr(silver_cmd, "discover_symbols", fake_discover_symbols)
+    monkeypatch.setattr(silver_cmd, "build_trades_observed_for_symbol", fake_build_trades)
     monkeypatch.setattr(silver_cmd, "build_trades_1m_feature_for_symbol", fake_build_trades)
     monkeypatch.setattr(silver_cmd, "write_monthly_sidecars", lambda **kwargs: ([], []))
 
@@ -106,7 +107,7 @@ def test_run_silver_build_uses_tick_timeframe_for_trades_discovery(
     silver_cmd.run_silver_build(args=args, logger=logging.getLogger("test"))
 
     assert captured == [("trades", "tick")]
-    assert built == [("BTC-PERPETUAL", "tick")]
+    assert built == [("BTC-PERPETUAL", "tick"), ("BTC-PERPETUAL", "tick")]
 
 
 def _report(dataset: str) -> silver_cmd.SilverBuildReport:

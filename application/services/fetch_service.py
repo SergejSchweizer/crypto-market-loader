@@ -718,7 +718,30 @@ def fetch_symbol_trades(
         filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
         unique = {(item.trade_time, item.trade_id): item for item in filtered_rows}
         return [unique[key] for key in sorted(unique)]
-    return []
+
+    # For trades we cannot infer "gaps" from fixed-interval clocks, so full-gap mode
+    # re-fetches the requested bounded span in day windows and relies on lake dedup.
+    # When a start bound is provided, treat it as the explicit lower fetch boundary,
+    # consistent with other dataset backfill behavior.
+    earliest_existing_ms = int(min(stored_open_times).timestamp() * 1000)
+    span_start_ms = start_open_ms_bound if start_open_ms_bound is not None else earliest_existing_ms
+    if span_start_ms > end_open_ms:
+        return []
+
+    gap_rows: list[TradeTick] = []
+    for day_start_ms, day_end_ms in _day_windows_in_random_order(span_start_ms, end_open_ms):
+        gap_rows.extend(
+            range_fetcher(
+                exchange=exchange,
+                symbol=symbol,
+                market=market,
+                start_open_ms=day_start_ms,
+                end_open_ms=day_end_ms,
+            )
+        )
+    filtered = _filter_rows_by_start_bound(gap_rows, start_open_ms_bound)
+    unique = {(item.trade_time, item.trade_id): item for item in filtered}
+    return [unique[key] for key in sorted(unique)]
 
 
 def fetch_candle_tasks_parallel(

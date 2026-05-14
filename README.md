@@ -175,10 +175,7 @@ AGENTS.md
 # 4. Installation
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -U pip
-pip install -e '.[dev]'
+uv sync --extra dev
 ```
 
 Runtime configuration uses:
@@ -589,7 +586,7 @@ lake/gold/
 ## Full Medallion Pipeline (Bronze+Silver+Gold)
 
 ```bash
-python3 scripts/run_medallion_pipeline.py --config config.yaml
+uv run python scripts/run_medallion_pipeline.py --config config.yaml
 ```
 
 This script runs all three layers in sequence (`bronze-build` -> `silver-build` -> `gold-build`)
@@ -599,7 +596,7 @@ lock via `.run/full-pipeline.lock` and writes a shared append-only pipeline log.
 ## Bronze Build
 
 ```bash
-python3 main.py bronze-build \
+uv run python main.py bronze-build \
   --exchange deribit \
   --market spot perp oi funding trades \
   --symbols BTC ETH SOL
@@ -608,7 +605,7 @@ python3 main.py bronze-build \
 ## Silver Build
 
 ```bash
-python3 main.py silver-build \
+uv run python main.py silver-build \
   --bronze-root lake/bronze \
   --silver-root lake/silver \
   --exchange deribit \
@@ -619,12 +616,28 @@ python3 main.py silver-build \
 ## Gold Build
 
 ```bash
-python3 main.py gold-build \
+uv run python main.py gold-build \
   --silver-root lake/silver \
   --gold-root lake/gold \
   --exchange deribit \
   --dataset-id gold.market.full.m1
 ```
+
+## Quality Checks
+
+```bash
+uv run ruff check .
+uv run mypy .
+uv run ty check .
+uv run lint-imports --config .importlinter
+uv run python scripts/validate_config_with_pydantic.py --config config.yaml
+uv run pytest
+```
+
+`pytest` includes coverage reporting for `application`, `ingestion`, and `api` via
+`pyproject.toml` defaults. The same test+coverage command is enforced in `.pre-commit-config.yaml`.
+Architecture import boundaries are validated with `import-linter` using `.importlinter`.
+Runtime configuration schema is validated with Pydantic via `scripts/validate_config_with_pydantic.py`.
 
 ---
 
@@ -691,6 +704,7 @@ Recommended tooling:
 - pytest
 - ruff
 - mypy
+- ty
 - pyright
 
 ---

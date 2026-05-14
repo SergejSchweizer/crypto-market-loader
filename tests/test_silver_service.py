@@ -15,6 +15,7 @@ from application.services.silver_service import (
     build_oi_observed_for_symbol,
     build_silver_for_symbol,
     build_trades_1m_feature_for_symbol,
+    build_trades_observed_for_symbol,
     discover_months,
     discover_symbols,
     write_monthly_sidecars,
@@ -574,13 +575,20 @@ def test_build_trades_1m_feature_for_symbol(tmp_path: Path) -> None:
         dataset_type="trades",
         instrument_type="perp",
     )
-    report = build_trades_1m_feature_for_symbol(
+    observed_report = build_trades_observed_for_symbol(
         bronze_root=str(bronze),
         silver_root=str(silver),
         exchange="deribit",
         symbol=symbol,
         instrument_type="perp",
         timeframe="tick",
+    )
+    assert observed_report.dataset == "trades_observed"
+    report = build_trades_1m_feature_for_symbol(
+        silver_root=str(silver),
+        exchange="deribit",
+        symbol=symbol,
+        observed_timeframe="tick",
     )
     assert report.dataset == "trades_1m_feature"
     assert report.rows_in == 3
@@ -674,7 +682,7 @@ def test_build_trades_1m_feature_filters_invalid_and_deduplicates(tmp_path: Path
         dataset_type="trades",
         instrument_type="perp",
     )
-    report = build_trades_1m_feature_for_symbol(
+    observed_report = build_trades_observed_for_symbol(
         bronze_root=str(bronze),
         silver_root=str(silver),
         exchange="deribit",
@@ -682,7 +690,15 @@ def test_build_trades_1m_feature_filters_invalid_and_deduplicates(tmp_path: Path
         instrument_type="perp",
         timeframe="tick",
     )
-    assert report.rows_in == 3
+    assert observed_report.rows_in == 3
+    assert observed_report.rows_out == 1
+    assert observed_report.duplicates_removed == 1
+    assert observed_report.invalid_ohlc_rows == 1
+    report = build_trades_1m_feature_for_symbol(
+        silver_root=str(silver),
+        exchange="deribit",
+        symbol=symbol,
+        observed_timeframe="tick",
+    )
+    assert report.rows_in == 1
     assert report.rows_out == 1
-    assert report.duplicates_removed == 1
-    assert report.invalid_ohlc_rows == 1

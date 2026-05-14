@@ -9,23 +9,15 @@ description = "Framework for crypto market data ingestion"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-  "numpy>=1.26.0",
-  "pandas>=2.2.0",
-  "polars>=1.8.0",
-  "duckdb>=1.0.0",
-  "matplotlib>=3.8.0",
-  "pyarrow>=16.0.0",
-  "PyYAML>=6.0.0",
-  "psycopg[binary]>=3.2.0",
-]
-
-[project.optional-dependencies]
-dev = [
-  "pytest>=8.0.0",
-  "ruff>=0.6.0",
-  "mypy>=1.10.0",
-  "pandas-stubs>=2.2.0.240218",
-  "pre-commit>=3.7.0",
+  "numpy>=2.4.4",
+  "pandas>=3.0.2",
+  "polars>=1.40.1",
+  "duckdb>=1.5.2",
+  "matplotlib>=3.10.9",
+  "pyarrow>=24.0.0",
+  "PyYAML>=6.0.3",
+  "pydantic>=2.13.4",
+  "psycopg[binary]>=3.3.4",
 ]
 
 [tool.setuptools.packages.find]
@@ -40,7 +32,7 @@ exclude = ["tests*", "notebooks*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-addopts = "-q"
+addopts = "-q --cov=application --cov=ingestion --cov=api --cov-report=term-missing"
 
 [tool.ruff]
 line-length = 120

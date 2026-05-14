@@ -711,7 +711,8 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             )
             tasks = _items_in_random_order(tasks)
 
-            concurrency_value = fetch_concurrency()
+            configured_concurrency = fetch_concurrency()
+            concurrency_value = 1
             candle_concurrency = concurrency_value
             oi_concurrency = concurrency_value
             funding_concurrency = concurrency_value
@@ -724,8 +725,12 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             streamed_funding_tasks: set[tuple[Exchange, str, str]] = set()
             streamed_trade_tasks: set[tuple[Exchange, TradeMarket, str]] = set()
             logger.info(
-                "Fetch mode enabled for spot/perp, oi, funding, and trades with concurrency=%s",
+                (
+                    "Fetch mode enabled for spot/perp, oi, funding, and trades with "
+                    "concurrency=%s (configured=%s; parallelization disabled)"
+                ),
                 concurrency_value,
+                configured_concurrency,
             )
             if incremental_parquet_on_fetch:
                 logger.info("Incremental parquet flush enabled during fetch execution")
@@ -1038,6 +1043,35 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     output["_parquet_files"] = parquet_files
                 output["_manifest_files"] = _sidecar_path_list(parquet_files, ".json")
                 output["_plot_files"] = _sidecar_path_list(parquet_files, ".png")
+
+            if trades_requested:
+                trade_task_total = len(trade_tasks)
+                trade_error_total = len(trade_errors)
+                trade_success_total = trade_task_total - trade_error_total
+                trade_rows_total = sum(len(rows) for rows in trade_results.values())
+                trade_parquet_files = sorted(
+                    {
+                        str(Path(path).resolve())
+                        for path in cast(list[str], output.get("_parquet_files", []))
+                        if "dataset_type=trades" in path and path.endswith(".parquet")
+                    }
+                )
+                logger.info(
+                    (
+                        "Trades bronze summary tasks_total=%s tasks_success=%s tasks_failed=%s "
+                        "rows_total=%s parquet_files_written=%s lake_root=%s"
+                    ),
+                    trade_task_total,
+                    trade_success_total,
+                    trade_error_total,
+                    trade_rows_total,
+                    len(trade_parquet_files),
+                    cast(str, args.lake_root),
+                )
+                if trade_parquet_files:
+                    logger.info("Trades bronze parquet files: %s", trade_parquet_files)
+                if trade_errors:
+                    logger.error("Trades bronze task errors: %s", trade_errors)
 
             if not args.no_json_output:
                 print(json.dumps(output, indent=2))

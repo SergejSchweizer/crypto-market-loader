@@ -494,19 +494,18 @@ def _prepare_trades(pl: Any, frame: Any, symbol: str) -> Any:
 
 
 def _prepare_dataset_frame(pl: Any, dataset_type: str, frame: Any, symbol: str) -> Any:
-    if dataset_type == "spot":
-        return _prepare_spot_or_perp(pl, frame, "spot", symbol)
-    if dataset_type == "perp":
-        return _prepare_spot_or_perp(pl, frame, "perp", symbol)
-    if dataset_type == "oi_1m_feature":
-        return _prepare_oi(pl, frame, symbol)
-    if dataset_type == "funding_1m_feature":
-        return _prepare_funding(pl, frame, symbol)
-    if dataset_type == "trades_1m_feature":
-        return _prepare_trades(pl, frame, symbol)
-    if dataset_type == "gold_l2_m1":
-        return _prepare_l2(pl, frame, symbol)
-    raise ValueError(f"Unsupported dataset_type for preparation: {dataset_type}")
+    dataset_preparers: dict[str, Any] = {
+        "spot": lambda: _prepare_spot_or_perp(pl, frame, "spot", symbol),
+        "perp": lambda: _prepare_spot_or_perp(pl, frame, "perp", symbol),
+        "oi_1m_feature": lambda: _prepare_oi(pl, frame, symbol),
+        "funding_1m_feature": lambda: _prepare_funding(pl, frame, symbol),
+        "trades_1m_feature": lambda: _prepare_trades(pl, frame, symbol),
+        "gold_l2_m1": lambda: _prepare_l2(pl, frame, symbol),
+    }
+    preparer = dataset_preparers.get(dataset_type)
+    if preparer is None:
+        raise ValueError(f"Unsupported dataset_type for preparation: {dataset_type}")
+    return preparer()
 
 
 def _build_minute_grid(pl: Any, prepared: list[Any], exchange: str, symbol: str) -> Any:

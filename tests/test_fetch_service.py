@@ -18,9 +18,11 @@ from application.services.fetch_service import (
     fetch_funding_tasks_parallel,
     fetch_open_interest_tasks_parallel,
     fetch_symbol_candles,
+    fetch_symbol_trades,
 )
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import SpotCandle
+from ingestion.trades import TradeTick
 
 
 def _sleep_then_empty(**kwargs: object) -> list[SpotCandle]:
@@ -271,6 +273,78 @@ def test_fetch_symbol_candles_tail_delta_only_passes_history_chunk_callback() ->
     assert candles == []
     assert "on_history_chunk" in captured
     assert callable(captured["on_history_chunk"])
+
+
+def test_fetch_symbol_trades_full_gap_fill_respects_start_bound_for_existing_symbol() -> None:
+    earliest_existing = datetime(2022, 4, 29, 0, 0, tzinfo=UTC)
+    start_bound = datetime(2022, 4, 29, 0, 1, tzinfo=UTC)
+    end_open_time = datetime(2022, 4, 29, 0, 1, 30, tzinfo=UTC)
+    start_bound_ms = int(start_bound.timestamp() * 1000)
+    end_open_ms = int(end_open_time.timestamp() * 1000)
+    calls: list[tuple[int, int]] = []
+
+    def _range_fetcher(**kwargs: object) -> list[TradeTick]:
+        start_open_ms = int(cast(Any, kwargs["start_open_ms"]))
+        gap_end_ms = int(cast(Any, kwargs["end_open_ms"]))
+        calls.append((start_open_ms, gap_end_ms))
+        return [
+            TradeTick(
+                exchange="deribit",
+                symbol="BTC",
+                instrument_type="trades",
+                trade_id="b",
+                trade_time=datetime(2022, 4, 29, 0, 1, 1, tzinfo=UTC),
+                price=100.0,
+                quantity=1.0,
+                side="buy",
+                is_maker=False,
+                source_endpoint="public_trades",
+            ),
+            TradeTick(
+                exchange="deribit",
+                symbol="BTC",
+                instrument_type="trades",
+                trade_id="a",
+                trade_time=datetime(2022, 4, 29, 0, 1, 0, tzinfo=UTC),
+                price=99.0,
+                quantity=1.0,
+                side="sell",
+                is_maker=False,
+                source_endpoint="public_trades",
+            ),
+            TradeTick(
+                exchange="deribit",
+                symbol="BTC",
+                instrument_type="trades",
+                trade_id="a",
+                trade_time=datetime(2022, 4, 29, 0, 1, 0, tzinfo=UTC),
+                price=99.0,
+                quantity=1.0,
+                side="sell",
+                is_maker=False,
+                source_endpoint="public_trades",
+            ),
+        ]
+
+    rows = fetch_symbol_trades(
+        exchange="deribit",
+        market="trades",
+        symbol="BTC",
+        lake_root="lake/bronze",
+        open_times_reader=lambda **kwargs: [earliest_existing],
+        symbol_normalizer=lambda **kwargs: "BTC",
+        now_open_resolver=lambda **kwargs: end_open_ms,
+        history_fetcher=lambda **kwargs: pytest.fail("history_fetcher should not be called when open_times exist"),
+        range_fetcher=_range_fetcher,
+        tail_delta_only=False,
+        start_open_ms_bound=start_bound_ms,
+    )
+
+    assert calls == [(start_bound_ms, end_open_ms)]
+    assert [(row.trade_time, row.trade_id) for row in rows] == [
+        (datetime(2022, 4, 29, 0, 1, 0, tzinfo=UTC), "a"),
+        (datetime(2022, 4, 29, 0, 1, 1, tzinfo=UTC), "b"),
+    ]
 
 
 def test_fetch_candle_tasks_parallel_records_rows_for_slow_fetcher(monkeypatch: pytest.MonkeyPatch) -> None:
