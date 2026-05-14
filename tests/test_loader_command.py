@@ -66,6 +66,8 @@ def test_run_bronze_build_emits_manifest_and_plot_file_lists(tmp_path: Path, mon
             {},
             {},
             {},
+            {},
+            {},
         )
 
     monkeypatch.setattr(loader_cmd, "SingleInstanceLock", _NoopLock)
@@ -163,7 +165,7 @@ def test_run_bronze_build_drops_invalid_symbols_before_scheduling(monkeypatch) -
         scheduled_candle_tasks.extend(kwargs["candle_tasks"])
         scheduled_oi_tasks.extend(kwargs["oi_tasks"])
         scheduled_funding_tasks.extend(kwargs["funding_tasks"])
-        return ({}, {}, {}, {}, {}, {})
+        return ({}, {}, {}, {}, {}, {}, {}, {})
 
     monkeypatch.setattr(loader_cmd, "SingleInstanceLock", _NoopLock)
     monkeypatch.setattr(loader_cmd, "_fetch_all_task_groups", _fake_fetch_all_task_groups)

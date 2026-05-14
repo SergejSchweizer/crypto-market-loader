@@ -5,7 +5,7 @@ This project provides a reproducible, maintainable data pipeline for Deribit cry
 
 ## Problem Statement
 Early-stage market-data stacks often fail due to ad-hoc scripts, schema drift, and weak reproducibility. This repository addresses that by enforcing:
-- explicit datatype contracts (`spot`, `perp`, `oi`, `funding`)
+- explicit datatype contracts (`spot`, `perp`, `oi`, `funding`, `trades`)
 - modular service boundaries
 - deterministic parquet output layouts
 - test-backed command workflows
@@ -28,6 +28,7 @@ Layers:
 ### Bronze
 - `spot`, `perp`: 1-minute OHLCV bars
 - `oi`, `funding`: source event-time rows
+- `trades`: source event-time tick trades
 - idempotent persistence via natural-key partition rewrites
 - artifact policy per partition file: `data.parquet` + `data.json` + `data.png`
 - sidecar backfill: Bronze runs can repair missing sidecars for existing matching parquet partitions when parquet persistence is enabled
@@ -38,6 +39,7 @@ Layers:
   - `spot`, `perp`
   - `funding_observed`, `funding_1m_feature`
   - `oi_observed`, `oi_1m_feature`
+  - `trades_1m_feature`
 - Optional monthly sidecars (`.json`, `.png`) with gold-style metadata
 
 ### Gold
@@ -53,8 +55,8 @@ Gold dataset feature matrix:
 |---|---|---|
 | `gold.market.core.m1` | spot + perp | spot/perp OHLCV feature set |
 | `gold.market.core_funding.m1` | spot + perp + funding_1m_feature | core OHLCV + funding state/timing features |
-| `gold.market.full.m1` | spot + perp + oi_1m_feature + funding_1m_feature | core + OI + funding feature families |
-| `gold.hybrid.full_l2.m1` | full market set + latest L2 gold parquet | full market features + prefixed L2 microstructure features (`l2_*`) |
+| `gold.market.full.m1` | spot + perp + oi_1m_feature + funding_1m_feature + trades_1m_feature | core + OI + funding + trade-flow feature families |
+| `gold.hybrid.full_l2.m1` | full market set + latest L2 gold parquet | full market + trade-flow + prefixed L2 microstructure features (`l2_*`) |
 
 Join policy for all gold datasets: canonical 1-minute time grid with left joins on
 `timestamp_m1` + (`exchange`, `symbol`) across included source datasets. Missing source
@@ -109,15 +111,16 @@ Silver and gold plots share the same renderer style and are capped to **3000 eve
 ## Current Limitations
 
 - Deribit-only scope
-- no trade-level stream ingestion
+- no websocket/live trade stream ingestion (historical REST backfill is implemented)
 - no multi-exchange reconciliation
 
 ## Recommended Next Steps
 
 1. Add continuous data quality checks (coverage/null/drift thresholds) per dataset variant.
 2. Add retention/compaction jobs for long-horizon parquet maintenance.
-3. Introduce contract migration tooling for future schema evolution.
-4. Expand adapters to additional exchanges with unified symbol canonicalization.
+3. Add execution-quality and aggressor-side validation metrics for `trades_1m_feature`.
+4. Introduce contract migration tooling for future schema evolution.
+5. Expand adapters to additional exchanges with unified symbol canonicalization.
 
 ## References
 1. Deribit API documentation (market chart, settlements/open-interest, funding history).

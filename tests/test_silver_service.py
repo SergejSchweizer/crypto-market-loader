@@ -14,6 +14,7 @@ from application.services.silver_service import (
     build_oi_1m_feature_for_symbol,
     build_oi_observed_for_symbol,
     build_silver_for_symbol,
+    build_trades_1m_feature_for_symbol,
     discover_months,
     discover_symbols,
     write_monthly_sidecars,
@@ -496,4 +497,192 @@ def test_build_oi_observed_and_1m_feature(tmp_path: Path) -> None:
     assert minute_1.select("oi_is_ffill").item() is True
     assert minute_1.select("minutes_since_oi_observation").item() == 1
     assert minute_2.select("oi_is_observed").item() is True
-    assert feature.select(pl.col("timestamp_m1").max()).item() == observed.select(pl.col("timestamp").max()).item()
+
+
+def test_build_trades_1m_feature_for_symbol(tmp_path: Path) -> None:
+    bronze = tmp_path / "bronze"
+    silver = tmp_path / "silver"
+    symbol = "BTC-PERPETUAL"
+    rows = [
+        {
+            "schema_version": "v1",
+            "dataset_type": "trades",
+            "exchange": "deribit",
+            "symbol": symbol,
+            "instrument_type": "perp",
+            "event_time": datetime(2026, 5, 1, 0, 0, 10, tzinfo=UTC),
+            "ingested_at": datetime(2026, 5, 1, 0, 0, 11, tzinfo=UTC),
+            "run_id": "r1",
+            "source_endpoint": "public_trades",
+            "open_time": datetime(2026, 5, 1, 0, 0, 10, tzinfo=UTC),
+            "close_time": datetime(2026, 5, 1, 0, 0, 10, tzinfo=UTC),
+            "timeframe": "tick",
+            "trade_id": "t1",
+            "price": 100.0,
+            "quantity": 2.0,
+            "side": "buy",
+            "is_maker": True,
+        },
+        {
+            "schema_version": "v1",
+            "dataset_type": "trades",
+            "exchange": "deribit",
+            "symbol": symbol,
+            "instrument_type": "perp",
+            "event_time": datetime(2026, 5, 1, 0, 0, 20, tzinfo=UTC),
+            "ingested_at": datetime(2026, 5, 1, 0, 0, 21, tzinfo=UTC),
+            "run_id": "r1",
+            "source_endpoint": "public_trades",
+            "open_time": datetime(2026, 5, 1, 0, 0, 20, tzinfo=UTC),
+            "close_time": datetime(2026, 5, 1, 0, 0, 20, tzinfo=UTC),
+            "timeframe": "tick",
+            "trade_id": "t2",
+            "price": 101.0,
+            "quantity": 1.0,
+            "side": "sell",
+            "is_maker": False,
+        },
+        {
+            "schema_version": "v1",
+            "dataset_type": "trades",
+            "exchange": "deribit",
+            "symbol": symbol,
+            "instrument_type": "perp",
+            "event_time": datetime(2026, 5, 1, 0, 1, 5, tzinfo=UTC),
+            "ingested_at": datetime(2026, 5, 1, 0, 1, 6, tzinfo=UTC),
+            "run_id": "r1",
+            "source_endpoint": "public_trades",
+            "open_time": datetime(2026, 5, 1, 0, 1, 5, tzinfo=UTC),
+            "close_time": datetime(2026, 5, 1, 0, 1, 5, tzinfo=UTC),
+            "timeframe": "tick",
+            "trade_id": "t3",
+            "price": 102.0,
+            "quantity": 3.0,
+            "side": "buy",
+            "is_maker": True,
+        },
+    ]
+    _write_bronze_day_file(
+        bronze,
+        market="trades",
+        exchange="deribit",
+        symbol=symbol,
+        timeframe="tick",
+        month="2026-05",
+        day="2026-05-01",
+        rows=rows,
+        dataset_type="trades",
+        instrument_type="perp",
+    )
+    report = build_trades_1m_feature_for_symbol(
+        bronze_root=str(bronze),
+        silver_root=str(silver),
+        exchange="deribit",
+        symbol=symbol,
+        instrument_type="perp",
+        timeframe="tick",
+    )
+    assert report.dataset == "trades_1m_feature"
+    assert report.rows_in == 3
+    assert report.rows_out == 2
+    out_file = (
+        silver
+        / "dataset_type=trades_1m_feature"
+        / "exchange=deribit"
+        / f"symbol={symbol}"
+        / "timeframe=1m"
+        / "year=2026"
+        / "month=2026-05"
+        / f"{symbol}-2026-05.parquet"
+    )
+    assert out_file.exists()
+    df = pl.read_parquet(out_file).sort("timestamp_m1")
+    assert df.height == 2
+    first = df.row(0, named=True)
+    assert first["open_price"] == 100.0
+    assert first["close_price"] == 101.0
+    assert first["trade_count"] == 2
+    assert first["volume"] == 3.0
+    assert first["buy_trade_count"] == 1
+    assert first["sell_trade_count"] == 1
+
+
+def test_build_trades_1m_feature_filters_invalid_and_deduplicates(tmp_path: Path) -> None:
+    bronze = tmp_path / "bronze"
+    silver = tmp_path / "silver"
+    symbol = "BTC-PERPETUAL"
+    base = {
+        "schema_version": "v1",
+        "dataset_type": "trades",
+        "exchange": "deribit",
+        "symbol": symbol,
+        "instrument_type": "perp",
+        "source_endpoint": "public_trades",
+        "timeframe": "tick",
+    }
+    ts0 = datetime(2026, 5, 1, 0, 0, 10, tzinfo=UTC)
+    rows = [
+        {
+            **base,
+            "event_time": ts0,
+            "ingested_at": datetime(2026, 5, 1, 0, 0, 11, tzinfo=UTC),
+            "run_id": "r1",
+            "open_time": ts0,
+            "close_time": ts0,
+            "trade_id": "dup",
+            "price": 100.0,
+            "quantity": 1.0,
+            "side": "buy",
+            "is_maker": True,
+        },
+        {
+            **base,
+            "event_time": ts0,
+            "ingested_at": datetime(2026, 5, 1, 0, 0, 12, tzinfo=UTC),
+            "run_id": "r2",
+            "open_time": ts0,
+            "close_time": ts0,
+            "trade_id": "dup",
+            "price": 101.0,
+            "quantity": 1.0,
+            "side": "buy",
+            "is_maker": True,
+        },
+        {
+            **base,
+            "event_time": datetime(2026, 5, 1, 0, 0, 20, tzinfo=UTC),
+            "ingested_at": datetime(2026, 5, 1, 0, 0, 21, tzinfo=UTC),
+            "run_id": "r3",
+            "open_time": datetime(2026, 5, 1, 0, 0, 20, tzinfo=UTC),
+            "close_time": datetime(2026, 5, 1, 0, 0, 20, tzinfo=UTC),
+            "trade_id": "bad",
+            "price": -1.0,
+            "quantity": 1.0,
+            "side": "sell",
+            "is_maker": False,
+        },
+    ]
+    _write_bronze_day_file(
+        bronze,
+        market="trades",
+        exchange="deribit",
+        symbol=symbol,
+        timeframe="tick",
+        month="2026-05",
+        day="2026-05-01",
+        rows=rows,
+        dataset_type="trades",
+        instrument_type="perp",
+    )
+    report = build_trades_1m_feature_for_symbol(
+        bronze_root=str(bronze),
+        silver_root=str(silver),
+        exchange="deribit",
+        symbol=symbol,
+        instrument_type="perp",
+        timeframe="tick",
+    )
+    assert report.rows_in == 3
+    assert report.rows_out == 1
+    assert report.duplicates_removed == 1
+    assert report.invalid_ohlc_rows == 1

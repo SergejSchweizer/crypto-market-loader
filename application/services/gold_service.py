@@ -12,6 +12,13 @@ from pathlib import Path
 from typing import Any
 
 MAX_PLOT_POINTS = 3_000
+_FULL_MARKET_REQUIREMENTS: list[tuple[str, str]] = [
+    ("spot", "1m"),
+    ("perp", "1m"),
+    ("oi_1m_feature", "1m"),
+    ("funding_1m_feature", "1m"),
+    ("trades_1m_feature", "1m"),
+]
 GOLD_DATASET_SPECS: dict[str, dict[str, object]] = {
     "gold.market.core.m1": {
         "requirements": [("spot", "1m"), ("perp", "1m")],
@@ -22,11 +29,11 @@ GOLD_DATASET_SPECS: dict[str, dict[str, object]] = {
         "include_l2": False,
     },
     "gold.market.full.m1": {
-        "requirements": [("spot", "1m"), ("perp", "1m"), ("oi_1m_feature", "1m"), ("funding_1m_feature", "1m")],
+        "requirements": _FULL_MARKET_REQUIREMENTS,
         "include_l2": False,
     },
     "gold.hybrid.full_l2.m1": {
-        "requirements": [("spot", "1m"), ("perp", "1m"), ("oi_1m_feature", "1m"), ("funding_1m_feature", "1m")],
+        "requirements": _FULL_MARKET_REQUIREMENTS,
         "include_l2": True,
     },
 }
@@ -230,12 +237,7 @@ def normalize_symbol(value: str) -> str:
 def discover_gold_symbols(silver_root: str, exchange: str) -> list[str]:
     """Discover symbols that have at least one required silver dataset."""
 
-    required = [
-        ("spot", "1m"),
-        ("perp", "1m"),
-        ("oi_1m_feature", "1m"),
-        ("funding_1m_feature", "1m"),
-    ]
+    required = _FULL_MARKET_REQUIREMENTS
     by_dataset: list[set[str]] = []
     for dataset_type, timeframe in required:
         root = Path(silver_root) / f"dataset_type={dataset_type}" / f"exchange={exchange}"
@@ -460,6 +462,37 @@ def _prepare_funding(pl: Any, frame: Any, symbol: str) -> Any:
     )
 
 
+def _prepare_trades(pl: Any, frame: Any, symbol: str) -> Any:
+    return (
+        frame.with_columns(
+            [
+                pl.col("timestamp_m1").cast(pl.Datetime(time_unit="us", time_zone="UTC")),
+                pl.lit(symbol).alias("symbol"),
+            ]
+        )
+        .select(
+            [
+                "timestamp_m1",
+                "exchange",
+                "symbol",
+                pl.col("open_price").cast(pl.Float64).alias("trades_open_price"),
+                pl.col("high_price").cast(pl.Float64).alias("trades_high_price"),
+                pl.col("low_price").cast(pl.Float64).alias("trades_low_price"),
+                pl.col("close_price").cast(pl.Float64).alias("trades_close_price"),
+                pl.col("volume").cast(pl.Float64).alias("trades_volume"),
+                pl.col("quote_volume").cast(pl.Float64).alias("trades_quote_volume"),
+                pl.col("trade_count").cast(pl.Int64).alias("trades_trade_count"),
+                pl.col("buy_volume").cast(pl.Float64).alias("trades_buy_volume"),
+                pl.col("sell_volume").cast(pl.Float64).alias("trades_sell_volume"),
+                pl.col("buy_trade_count").cast(pl.Int64).alias("trades_buy_trade_count"),
+                pl.col("sell_trade_count").cast(pl.Int64).alias("trades_sell_trade_count"),
+                pl.col("buy_volume_share").cast(pl.Float64).alias("trades_buy_volume_share"),
+            ]
+        )
+        .sort("timestamp_m1")
+    )
+
+
 def _prepare_dataset_frame(pl: Any, dataset_type: str, frame: Any, symbol: str) -> Any:
     if dataset_type == "spot":
         return _prepare_spot_or_perp(pl, frame, "spot", symbol)
@@ -469,6 +502,8 @@ def _prepare_dataset_frame(pl: Any, dataset_type: str, frame: Any, symbol: str) 
         return _prepare_oi(pl, frame, symbol)
     if dataset_type == "funding_1m_feature":
         return _prepare_funding(pl, frame, symbol)
+    if dataset_type == "trades_1m_feature":
+        return _prepare_trades(pl, frame, symbol)
     if dataset_type == "gold_l2_m1":
         return _prepare_l2(pl, frame, symbol)
     raise ValueError(f"Unsupported dataset_type for preparation: {dataset_type}")
@@ -850,6 +885,8 @@ def _feature_source_dataset(column_name: str) -> str:
         return "oi_1m_feature"
     if column_name.startswith("funding_"):
         return "funding_1m_feature"
+    if column_name.startswith("trades_"):
+        return "trades_1m_feature"
     return "gold_merged"
 
 

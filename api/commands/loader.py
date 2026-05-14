@@ -12,12 +12,20 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Literal, TypeVar, cast
 
+from api.commands.loader_dataset_handlers import (
+    build_trade_tasks,
+    populate_funding_output,
+    populate_ohlcv_output,
+    populate_oi_output,
+    populate_trades_output,
+)
 from application.dto import (
     CandleFetchTaskDTO,
     FundingFetchTaskDTO,
     LoaderStorageDTO,
     OpenInterestFetchTaskDTO,
     PersistOptionsDTO,
+    TradeFetchTaskDTO,
 )
 from application.schema import dataset_contract
 from application.services.fetch_service import (
@@ -27,6 +35,8 @@ from application.services.fetch_service import (
     fetch_symbol_candles,
     fetch_symbol_funding,
     fetch_symbol_open_interest,
+    fetch_symbol_trades,
+    fetch_trade_tasks_parallel,
 )
 from application.services.gapfill_service import _last_closed_open_ms, _missing_ranges_ms
 from application.services.runtime_service import SingleInstanceError, SingleInstanceLock, fetch_concurrency
@@ -62,8 +72,9 @@ from ingestion.spot import (
     normalize_storage_symbol,
     normalize_timeframe,
 )
+from ingestion.trades import TradeMarket, TradeTick, fetch_trades_all_history, fetch_trades_range
 
-DataType = Literal["spot", "perp", "oi", "funding"]
+DataType = Literal["spot", "perp", "oi", "funding", "trades"]
 _TAIL_DELTA_ONLY = True
 _BRONZE_START_OPEN_MS: int | None = None
 _BRONZE_SYMBOL_START_OPEN_MS: dict[str, int] = {}
@@ -129,7 +140,7 @@ def _add_ingest_parser(
     parser.add_argument(
         "--market",
         nargs="+",
-        choices=["spot", "perp", "oi", "funding"],
+        choices=["spot", "perp", "oi", "funding", "trades"],
         default=["spot"],
         help="One or more data types to fetch, e.g. --market spot perp oi funding",
     )
@@ -296,6 +307,28 @@ def _fetch_symbol_funding(
         ranges_builder=_missing_ranges_ms,
         history_fetcher=fetch_funding_all_history,
         range_fetcher=fetch_funding_range,
+        latest_open_time_reader=latest_open_time_in_lake_by_dataset,
+        tail_delta_only=_TAIL_DELTA_ONLY,
+        on_history_chunk=on_history_chunk,
+        start_open_ms_bound=_symbol_start_open_ms_bound(exchange=exchange, symbol=symbol),
+    )
+
+
+def _fetch_symbol_trades(
+    exchange: Exchange,
+    market: TradeMarket,
+    symbol: str,
+    lake_root: str,
+    on_history_chunk: Callable[[list[TradeTick]], None] | None = None,
+) -> list[TradeTick]:
+    return fetch_symbol_trades(
+        exchange=exchange,
+        market=market,
+        symbol=symbol,
+        lake_root=lake_root,
+        symbol_normalizer=normalize_storage_symbol,
+        history_fetcher=fetch_trades_all_history,
+        range_fetcher=fetch_trades_range,
         latest_open_time_reader=latest_open_time_in_lake_by_dataset,
         tail_delta_only=_TAIL_DELTA_ONLY,
         on_history_chunk=on_history_chunk,
@@ -499,6 +532,31 @@ def _fetch_funding_tasks_parallel(
     return result.rows, result.errors
 
 
+def _fetch_trade_tasks_parallel(
+    trade_tasks: list[tuple[Exchange, TradeMarket, str]],
+    lake_root: str,
+    concurrency: int,
+    logger: logging.Logger,
+    shared_semaphore: object | None = None,
+    on_task_complete: Callable[[TradeFetchTaskDTO, list[TradeTick]], None] | None = None,
+    on_task_chunk: Callable[[TradeFetchTaskDTO, list[TradeTick]], None] | None = None,
+) -> tuple[dict[tuple[Exchange, TradeMarket, str], list[TradeTick]], dict[tuple[Exchange, TradeMarket, str], str]]:
+    service_tasks = [
+        TradeFetchTaskDTO(exchange=exchange, market=market, symbol=symbol) for exchange, market, symbol in trade_tasks
+    ]
+    result = fetch_trade_tasks_parallel(
+        tasks=service_tasks,
+        lake_root=lake_root,
+        concurrency=concurrency,
+        logger=logger,
+        symbol_fetcher=_fetch_symbol_trades,
+        shared_semaphore=shared_semaphore,
+        on_task_complete=on_task_complete,
+        on_task_chunk=on_task_chunk,
+    )
+    return result.rows, result.errors
+
+
 def _fetch_all_task_groups(
     candle_tasks: list[tuple[Exchange, Market, str, str]],
     oi_tasks: list[tuple[Exchange, str, str]],
@@ -511,9 +569,13 @@ def _fetch_all_task_groups(
     on_candle_task_complete: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
     on_oi_task_complete: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
     on_funding_task_complete: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
+    trade_tasks: list[tuple[Exchange, TradeMarket, str]] | None = None,
+    trade_concurrency: int = 1,
+    on_trade_task_complete: Callable[[TradeFetchTaskDTO, list[TradeTick]], None] | None = None,
     on_candle_task_chunk: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
     on_oi_task_chunk: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
     on_funding_task_chunk: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
+    on_trade_task_chunk: Callable[[TradeFetchTaskDTO, list[TradeTick]], None] | None = None,
 ) -> tuple[
     dict[tuple[Exchange, Market, str, str], list[SpotCandle]],
     dict[tuple[Exchange, Market, str, str], str],
@@ -521,6 +583,8 @@ def _fetch_all_task_groups(
     dict[tuple[Exchange, str, str], str],
     dict[tuple[Exchange, str, str], list[FundingPoint]],
     dict[tuple[Exchange, str, str], str],
+    dict[tuple[Exchange, TradeMarket, str], list[TradeTick]],
+    dict[tuple[Exchange, TradeMarket, str], str],
 ]:
     """Fetch task groups sequentially across dataset types."""
 
@@ -530,6 +594,8 @@ def _fetch_all_task_groups(
     oi_errors: dict[tuple[Exchange, str, str], str] = {}
     funding_results: dict[tuple[Exchange, str, str], list[FundingPoint]] = {}
     funding_errors: dict[tuple[Exchange, str, str], str] = {}
+    trade_results: dict[tuple[Exchange, TradeMarket, str], list[TradeTick]] = {}
+    trade_errors: dict[tuple[Exchange, TradeMarket, str], str] = {}
 
     if candle_tasks:
         candle_rows, candle_errors = _fetch_candle_tasks_parallel(
@@ -567,7 +633,28 @@ def _fetch_all_task_groups(
         funding_results.update(funding_rows)
         funding_errors.update(funding_task_errors)
 
-    return task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors
+    if trade_tasks:
+        trade_rows, trade_task_errors = _fetch_trade_tasks_parallel(
+            trade_tasks=trade_tasks,
+            lake_root=lake_root,
+            concurrency=trade_concurrency,
+            logger=logger,
+            on_task_complete=on_trade_task_complete,
+            on_task_chunk=on_trade_task_chunk,
+        )
+        trade_results.update(trade_rows)
+        trade_errors.update(trade_task_errors)
+
+    return (
+        task_results,
+        task_errors,
+        oi_results,
+        oi_errors,
+        funding_results,
+        funding_errors,
+        trade_results,
+        trade_errors,
+    )
 
 
 def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
@@ -585,14 +672,17 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             data_types = randomized_data_types
             oi_requested = "oi" in data_types
             funding_requested = "funding" in data_types
+            trades_requested = "trades" in data_types
             multi_market = len(data_types) > 1
             output: dict[str, object] = {}
             candles_for_storage: dict[Market, dict[str, dict[str, list[SpotCandle]]]] = {}
             open_interest_for_storage: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = {}
             funding_for_storage: dict[Market, dict[str, dict[str, list[FundingPoint]]]] = {}
+            trades_for_storage: dict[TradeMarket, dict[str, dict[str, list[TradeTick]]]] = {}
             tasks: list[tuple[Exchange, Market, str, str]] = []
             oi_tasks: list[tuple[Exchange, str, str]] = []
             funding_tasks: list[tuple[Exchange, str, str]] = []
+            trade_tasks: list[tuple[Exchange, TradeMarket, str]] = []
             validated_symbols = _sanitize_symbols(cast(object, args.symbols), logger=logger)
             randomized_symbols = _items_in_random_order(validated_symbols)
             logger.info("Randomized schedule markets=%s symbols=%s", data_types, randomized_symbols)
@@ -611,20 +701,30 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 if funding_requested:
                     for symbol in randomized_symbols:
                         funding_tasks.append((exchange, symbol, normalized_timeframe))
+            trade_tasks.extend(
+                build_trade_tasks(
+                    exchanges=exchanges,
+                    randomized_symbols=randomized_symbols,
+                    ohlcv_markets=cast(list[Market], ohlcv_markets),
+                    trades_requested=trades_requested,
+                )
+            )
             tasks = _items_in_random_order(tasks)
 
             concurrency_value = fetch_concurrency()
             candle_concurrency = concurrency_value
             oi_concurrency = concurrency_value
             funding_concurrency = concurrency_value
+            trade_concurrency = concurrency_value
             incremental_parquet_on_fetch = bool(args.save_parquet_lake)
             incremental_parquet_files: list[str] = []
             logged_daily_partitions: set[tuple[str, str, str, str, str, str]] = set()
             streamed_candle_tasks: set[tuple[Exchange, Market, str, str]] = set()
             streamed_oi_tasks: set[tuple[Exchange, str, str]] = set()
             streamed_funding_tasks: set[tuple[Exchange, str, str]] = set()
+            streamed_trade_tasks: set[tuple[Exchange, TradeMarket, str]] = set()
             logger.info(
-                "Fetch mode enabled for spot/perp, oi, and funding with concurrency=%s",
+                "Fetch mode enabled for spot/perp, oi, funding, and trades with concurrency=%s",
                 concurrency_value,
             )
             if incremental_parquet_on_fetch:
@@ -671,6 +771,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                         lake_root=cast(str, args.lake_root),
                         oi_requested=False,
                         funding_requested=False,
+                        trades_requested=False,
                     ),
                 )
                 incremental_parquet_files.extend(storage_result.parquet_files)
@@ -693,6 +794,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                         lake_root=cast(str, args.lake_root),
                         oi_requested=True,
                         funding_requested=False,
+                        trades_requested=False,
                     ),
                 )
                 incremental_parquet_files.extend(storage_result.parquet_files)
@@ -715,6 +817,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                         lake_root=cast(str, args.lake_root),
                         oi_requested=False,
                         funding_requested=True,
+                        trades_requested=False,
                     ),
                 )
                 incremental_parquet_files.extend(storage_result.parquet_files)
@@ -726,6 +829,27 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     timeframe=task.timeframe,
                     parquet_files=storage_result.parquet_files,
                 )
+
+            def _persist_trade_task(task: TradeFetchTaskDTO, rows: list[TradeTick]) -> None:
+                if not rows:
+                    return
+                storage_result = persist_loader_outputs_dto(
+                    storage=LoaderStorageDTO(trades={task.market: {task.exchange: {task.symbol.upper(): rows}}}),
+                    options=PersistOptionsDTO(
+                        save_parquet_lake=True,
+                        lake_root=cast(str, args.lake_root),
+                        oi_requested=False,
+                        funding_requested=False,
+                        trades_requested=True,
+                    ),
+                )
+                incremental_parquet_files.extend(storage_result.parquet_files)
+
+            def _persist_trade_chunk(task: TradeFetchTaskDTO, rows: list[TradeTick]) -> None:
+                if not rows:
+                    return
+                streamed_trade_tasks.add((task.exchange, task.market, task.symbol))
+                _persist_trade_task(task, rows)
 
             def _persist_candle_chunk(task: CandleFetchTaskDTO, rows: list[SpotCandle]) -> None:
                 if not rows:
@@ -745,14 +869,25 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 streamed_funding_tasks.add((task.exchange, task.symbol, task.timeframe))
                 _persist_funding_task(task, rows)
 
-            task_results, task_errors, oi_results, oi_errors, funding_results, funding_errors = _fetch_all_task_groups(
+            (
+                task_results,
+                task_errors,
+                oi_results,
+                oi_errors,
+                funding_results,
+                funding_errors,
+                trade_results,
+                trade_errors,
+            ) = _fetch_all_task_groups(
                 candle_tasks=tasks,
                 oi_tasks=oi_tasks,
                 funding_tasks=funding_tasks,
+                trade_tasks=trade_tasks,
                 lake_root=cast(str, args.lake_root),
                 candle_concurrency=candle_concurrency,
                 oi_concurrency=oi_concurrency,
                 funding_concurrency=funding_concurrency,
+                trade_concurrency=trade_concurrency,
                 logger=logger,
                 on_candle_task_complete=(
                     lambda task, rows: (
@@ -784,6 +919,16 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 on_candle_task_chunk=_persist_candle_chunk if incremental_parquet_on_fetch else None,
                 on_oi_task_chunk=_persist_oi_chunk if incremental_parquet_on_fetch else None,
                 on_funding_task_chunk=_persist_funding_chunk if incremental_parquet_on_fetch else None,
+                on_trade_task_complete=(
+                    lambda task, rows: (
+                        _persist_trade_task(task, rows)
+                        if (task.exchange, task.market, task.symbol) not in streamed_trade_tasks
+                        else None
+                    )
+                )
+                if incremental_parquet_on_fetch
+                else None,
+                on_trade_task_chunk=_persist_trade_chunk if incremental_parquet_on_fetch else None,
             )
             ohlcv_success_count = len(task_results)
             ohlcv_error_count = len(task_errors)
@@ -791,92 +936,60 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             oi_error_count = len(oi_errors)
             funding_success_count = len(funding_results)
             funding_error_count = len(funding_errors)
+            trade_success_count = len(trade_results)
+            trade_error_count = len(trade_errors)
             logger.info(
                 "Fetch summary spot/perp: success=%s failed=%s | "
-                "oi: success=%s failed=%s | funding: success=%s failed=%s",
+                "oi: success=%s failed=%s | funding: success=%s failed=%s | trades: success=%s failed=%s",
                 ohlcv_success_count,
                 ohlcv_error_count,
                 oi_success_count,
                 oi_error_count,
                 funding_success_count,
                 funding_error_count,
+                trade_success_count,
+                trade_error_count,
             )
 
-            for exchange, market, symbol, timeframe in tasks:
-                exchange_output = cast(dict[str, object], output[exchange])
-                symbol_key = symbol.upper()
-                result_key = (exchange, market, symbol, timeframe)
-                if multi_market:
-                    market_bucket = cast(dict[str, object], exchange_output.setdefault(market, {}))
-                else:
-                    market_bucket = exchange_output
-                if result_key in task_errors:
-                    market_bucket[symbol_key] = {"error": task_errors[result_key]}
-                    continue
-                candles = task_results.get(result_key, [])
-                market_bucket[symbol_key] = [_serialize_candle(item) for item in candles]
-                by_market = candles_for_storage.setdefault(market, {})
-                exchange_candles = by_market.setdefault(exchange, {})
-                exchange_candles[symbol_key] = candles
+            populate_ohlcv_output(
+                output=output,
+                tasks=tasks,
+                task_results=task_results,
+                task_errors=task_errors,
+                multi_market=multi_market,
+                candle_serializer=_serialize_candle,
+                candles_for_storage=candles_for_storage,
+            )
 
             if oi_requested:
-                for exchange, symbol, timeframe in oi_tasks:
-                    symbol_key = symbol.upper()
-                    oi_key = (exchange, symbol, timeframe)
-                    exchange_output = cast(dict[str, object], output[exchange])
-                    if multi_market:
-                        market_bucket = cast(dict[str, object], exchange_output.setdefault("oi", {}))
-                    else:
-                        market_bucket = exchange_output
-                    if oi_key in oi_errors:
-                        market_bucket[symbol_key] = {"error": oi_errors[oi_key]}
-                        continue
-                    oi_rows = oi_results.get(oi_key, [])
-                    market_bucket[symbol_key] = [
-                        {
-                            "exchange": item.exchange,
-                            "symbol": item.symbol,
-                            "interval": item.interval,
-                            "open_time": item.open_time.isoformat(),
-                            "close_time": item.close_time.isoformat(),
-                            "open_interest": item.open_interest,
-                            "open_interest_value": item.open_interest_value,
-                        }
-                        for item in oi_rows
-                    ]
-                    oi_by_market = open_interest_for_storage.setdefault("perp", {})
-                    oi_exchange_rows = oi_by_market.setdefault(exchange, {})
-                    oi_exchange_rows[symbol_key] = oi_rows
+                populate_oi_output(
+                    output=output,
+                    tasks=oi_tasks,
+                    results=oi_results,
+                    errors=oi_errors,
+                    multi_market=multi_market,
+                    storage=open_interest_for_storage,
+                )
 
             if funding_requested:
-                for exchange, symbol, timeframe in funding_tasks:
-                    symbol_key = symbol.upper()
-                    funding_key = (exchange, symbol, timeframe)
-                    exchange_output = cast(dict[str, object], output[exchange])
-                    if multi_market:
-                        market_bucket = cast(dict[str, object], exchange_output.setdefault("funding", {}))
-                    else:
-                        market_bucket = exchange_output
-                    if funding_key in funding_errors:
-                        market_bucket[symbol_key] = {"error": funding_errors[funding_key]}
-                        continue
-                    funding_rows = funding_results.get(funding_key, [])
-                    market_bucket[symbol_key] = [
-                        {
-                            "exchange": item.exchange,
-                            "symbol": item.symbol,
-                            "interval": item.interval,
-                            "open_time": item.open_time.isoformat(),
-                            "close_time": item.close_time.isoformat(),
-                            "funding_rate": item.funding_rate,
-                            "index_price": item.index_price,
-                            "mark_price": item.mark_price,
-                        }
-                        for item in funding_rows
-                    ]
-                    funding_by_market = funding_for_storage.setdefault("perp", {})
-                    funding_exchange_rows = funding_by_market.setdefault(exchange, {})
-                    funding_exchange_rows[symbol_key] = funding_rows
+                populate_funding_output(
+                    output=output,
+                    tasks=funding_tasks,
+                    results=funding_results,
+                    errors=funding_errors,
+                    multi_market=multi_market,
+                    storage=funding_for_storage,
+                )
+
+            if trades_requested:
+                populate_trades_output(
+                    output=output,
+                    tasks=trade_tasks,
+                    results=trade_results,
+                    errors=trade_errors,
+                    multi_market=multi_market,
+                    storage=trades_for_storage,
+                )
 
             if args.save_parquet_lake and not incremental_parquet_on_fetch:
                 try:
@@ -885,12 +998,14 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                             candles=candles_for_storage,
                             open_interest=open_interest_for_storage,
                             funding=funding_for_storage,
+                            trades=trades_for_storage,
                         ),
                         options=PersistOptionsDTO(
                             save_parquet_lake=True,
                             lake_root=cast(str, args.lake_root),
                             oi_requested=oi_requested,
                             funding_requested=funding_requested,
+                            trades_requested=trades_requested,
                         ),
                     )
                     output.update(storage_result.to_output_dict())
@@ -911,6 +1026,8 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     selected_dataset_types.add(OI_DATASET_TYPE)
                 if funding_requested:
                     selected_dataset_types.add("funding")
+                if trades_requested:
+                    selected_dataset_types.add("trades")
                 repaired_parquet_files = ensure_bronze_sidecars(
                     lake_root=cast(str, args.lake_root),
                     dataset_types=sorted(selected_dataset_types),

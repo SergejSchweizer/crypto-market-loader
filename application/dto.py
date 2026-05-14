@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import Exchange, Market, SpotCandle
+from ingestion.trades import TradeMarket, TradeTick
 
 
 @dataclass(frozen=True)
@@ -55,6 +56,15 @@ class FundingFetchTaskDTO:
     timeframe: str
 
 
+@dataclass(frozen=True)
+class TradeFetchTaskDTO:
+    """One trades fetch task request."""
+
+    exchange: Exchange
+    market: TradeMarket
+    symbol: str
+
+
 @dataclass
 class CandleFetchResultDTO:
     """OHLCV fetch outcomes keyed by task tuple.
@@ -98,6 +108,14 @@ class FundingFetchResultDTO:
 
 
 @dataclass
+class TradeFetchResultDTO:
+    """Trades fetch outcomes keyed by task tuple."""
+
+    rows: dict[tuple[Exchange, TradeMarket, str], list[TradeTick]] = field(default_factory=dict)
+    errors: dict[tuple[Exchange, TradeMarket, str], str] = field(default_factory=dict)
+
+
+@dataclass
 class LoaderStorageDTO:
     """Normalized in-memory storage payload for loader side effects.
 
@@ -110,6 +128,7 @@ class LoaderStorageDTO:
     candles: dict[Market, dict[str, dict[str, list[SpotCandle]]]] = field(default_factory=dict)
     open_interest: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = field(default_factory=dict)
     funding: dict[Market, dict[str, dict[str, list[FundingPoint]]]] = field(default_factory=dict)
+    trades: dict[TradeMarket, dict[str, dict[str, list[TradeTick]]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -130,6 +149,7 @@ class PersistOptionsDTO:
     lake_root: str
     oi_requested: bool
     funding_requested: bool = False
+    trades_requested: bool = False
 
 
 @dataclass

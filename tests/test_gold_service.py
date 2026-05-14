@@ -49,6 +49,47 @@ def _write_l2_gold_parquet(root: Path, *, symbol: str, exchange: str, rows: list
     pl.DataFrame(rows).write_parquet(target)
 
 
+def _write_trades_1m_feature_month(
+    root: Path,
+    *,
+    exchange: str,
+    symbol: str,
+    month: str,
+    timestamps: list[datetime],
+) -> None:
+    rows: list[dict[str, object]] = []
+    for idx, ts in enumerate(timestamps):
+        rows.append(
+            {
+                "timestamp_m1": ts,
+                "exchange": exchange,
+                "symbol": symbol,
+                "instrument_type": "perp",
+                "open_price": 100.0 + idx,
+                "high_price": 101.0 + idx,
+                "low_price": 99.0 + idx,
+                "close_price": 100.5 + idx,
+                "volume": 10.0 + idx,
+                "quote_volume": 1000.0 + idx,
+                "trade_count": 5 + idx,
+                "buy_volume": 6.0 + idx,
+                "sell_volume": 4.0,
+                "buy_trade_count": 3 + idx,
+                "sell_trade_count": 2,
+                "buy_volume_share": 0.6,
+            }
+        )
+    _write_silver_month(
+        root,
+        dataset_type="trades_1m_feature",
+        exchange=exchange,
+        symbol=symbol,
+        timeframe="1m",
+        month=month,
+        rows=rows,
+    )
+
+
 def test_build_gold_for_symbol_writes_hashed_parquet_and_manifest(tmp_path: Path) -> None:
     silver = tmp_path / "silver"
     gold = tmp_path / "gold"
@@ -175,6 +216,13 @@ def test_build_gold_for_symbol_writes_hashed_parquet_and_manifest(tmp_path: Path
             },
         ],
     )
+    _write_trades_1m_feature_month(
+        silver,
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        month="2026-05",
+        timestamps=[t0, t1],
+    )
 
     assert discover_gold_symbols(str(silver), exchange) == [symbol]
 
@@ -212,6 +260,7 @@ def test_build_gold_for_symbol_writes_hashed_parquet_and_manifest(tmp_path: Path
     assert "perp_1m" in payload["source_silver_datasets"]
     assert "oi_1m_feature" in payload["source_silver_datasets"]
     assert "funding_1m_feature" in payload["source_silver_datasets"]
+    assert "trades_1m_feature" in payload["source_silver_datasets"]
     assert payload["source_silver_datasets"]["spot_1m"]["source_symbols"] == ["BTC"]
     assert payload["source_silver_datasets"]["perp_1m"]["source_symbols"] == ["BTC"]
     assert "feature_metadata" in payload
@@ -293,6 +342,29 @@ def test_build_gold_for_symbol_normalizes_input_symbol(tmp_path: Path) -> None:
                 }
             ],
         ),
+        (
+            "trades_1m_feature",
+            [
+                {
+                    "timestamp_m1": t0,
+                    "exchange": exchange,
+                    "symbol": "BTC-PERPETUAL",
+                    "instrument_type": "perp",
+                    "open_price": 1.0,
+                    "high_price": 1.1,
+                    "low_price": 0.9,
+                    "close_price": 1.0,
+                    "volume": 1.0,
+                    "quote_volume": 1.0,
+                    "trade_count": 1,
+                    "buy_volume": 1.0,
+                    "sell_volume": 0.0,
+                    "buy_trade_count": 1,
+                    "sell_trade_count": 0,
+                    "buy_volume_share": 1.0,
+                }
+            ],
+        ),
     ]:
         _write_silver_month(
             silver,
@@ -315,6 +387,92 @@ def test_build_gold_for_symbol_normalizes_input_symbol(tmp_path: Path) -> None:
     assert report.plot_path is not None
     assert Path(report.manifest_path).exists()
     assert Path(report.plot_path).exists()
+
+
+def test_discover_gold_symbols_requires_trades_dataset(tmp_path: Path) -> None:
+    silver = tmp_path / "silver"
+    exchange = "deribit"
+    t0 = datetime(2026, 5, 1, 0, 0, tzinfo=UTC)
+    _write_silver_month(
+        silver,
+        dataset_type="spot",
+        exchange=exchange,
+        symbol="BTC_USDC",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": "BTC",
+                "open_price": 1.0,
+                "high_price": 1.0,
+                "low_price": 1.0,
+                "close_price": 1.0,
+                "volume": 1.0,
+            }
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="perp",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {
+                "open_time": t0,
+                "exchange": exchange,
+                "symbol": "BTC",
+                "open_price": 1.0,
+                "high_price": 1.0,
+                "low_price": 1.0,
+                "close_price": 1.0,
+                "volume": 1.0,
+            }
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="oi_1m_feature",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {
+                "timestamp_m1": t0,
+                "exchange": exchange,
+                "symbol": "BTC",
+                "open_interest": 1.0,
+                "oi_is_observed": True,
+                "oi_is_ffill": False,
+                "minutes_since_oi_observation": 0,
+                "oi_observation_lag_sec": 0,
+            }
+        ],
+    )
+    _write_silver_month(
+        silver,
+        dataset_type="funding_1m_feature",
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        timeframe="1m",
+        month="2026-05",
+        rows=[
+            {
+                "timestamp": t0,
+                "exchange": exchange,
+                "symbol": "BTC",
+                "funding_rate_last_known": 0.0,
+                "minutes_since_funding": 0,
+                "is_funding_observation_minute": True,
+                "funding_data_available": True,
+            }
+        ],
+    )
+    assert discover_gold_symbols(str(silver), exchange) == []
 
 
 def test_build_gold_hybrid_full_l2_contains_l2_features(tmp_path: Path) -> None:
@@ -442,6 +600,13 @@ def test_build_gold_hybrid_full_l2_contains_l2_features(tmp_path: Path) -> None:
                 "funding_data_available": True,
             },
         ],
+    )
+    _write_trades_1m_feature_month(
+        silver,
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        month="2026-05",
+        timestamps=[t0, t1],
     )
     _write_l2_gold_parquet(
         gold,
@@ -595,6 +760,13 @@ def test_build_gold_hybrid_full_l2_uses_requested_exchange_l2(tmp_path: Path) ->
                 "funding_data_available": True,
             },
         ],
+    )
+    _write_trades_1m_feature_month(
+        silver,
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        month="2026-05",
+        timestamps=[t0, t1],
     )
     # Valid artifact for requested exchange
     _write_l2_gold_parquet(
@@ -759,6 +931,13 @@ def test_build_gold_hybrid_full_l2_rejects_invalid_l2_coverage_ratio(tmp_path: P
             },
         ],
     )
+    _write_trades_1m_feature_month(
+        silver,
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        month="2026-05",
+        timestamps=[t0, t1],
+    )
     _write_l2_gold_parquet(
         gold,
         symbol=symbol,
@@ -904,6 +1083,13 @@ def test_build_gold_hybrid_full_l2_lenient_drops_invalid_rows(tmp_path: Path) ->
                 "funding_data_available": True,
             },
         ],
+    )
+    _write_trades_1m_feature_month(
+        silver,
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        month="2026-05",
+        timestamps=[t0, t1],
     )
     _write_l2_gold_parquet(
         gold,
@@ -1057,6 +1243,13 @@ def test_build_gold_full_keeps_minute_grid_and_reports_missing_values(tmp_path: 
                 "funding_data_available": True,
             },
         ],
+    )
+    _write_trades_1m_feature_month(
+        silver,
+        exchange=exchange,
+        symbol="BTC-PERPETUAL",
+        month="2026-05",
+        timestamps=[t0, t2],
     )
 
     report = build_gold_for_symbol(

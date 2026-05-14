@@ -65,6 +65,50 @@ def test_run_silver_build_uses_native_funding_timeframe_for_symbol_discovery(
     assert captured == [("funding", "8h")]
 
 
+def test_run_silver_build_uses_tick_timeframe_for_trades_discovery(
+    monkeypatch,
+) -> None:  # type: ignore[no-untyped-def]
+    captured: list[tuple[str, str]] = []
+    built: list[tuple[str, str]] = []
+
+    def fake_discover_symbols(
+        bronze_root: str,
+        market: str,
+        exchange: str,
+        timeframe: str = "1m",
+        instrument_type: str | None = None,
+    ) -> list[str]:
+        del bronze_root, exchange, instrument_type
+        captured.append((market, timeframe))
+        if market == "trades":
+            return ["BTC-PERPETUAL"]
+        return []
+
+    def fake_build_trades(**kwargs: object) -> silver_cmd.SilverBuildReport:
+        built.append((str(kwargs["symbol"]), str(kwargs["timeframe"])))
+        return _report("trades_1m_feature")
+
+    monkeypatch.setattr(silver_cmd, "discover_symbols", fake_discover_symbols)
+    monkeypatch.setattr(silver_cmd, "build_trades_1m_feature_for_symbol", fake_build_trades)
+    monkeypatch.setattr(silver_cmd, "write_monthly_sidecars", lambda **kwargs: ([], []))
+
+    args = argparse.Namespace(
+        bronze_root="lake/bronze",
+        silver_root="lake/silver",
+        exchange="deribit",
+        market=["trades"],
+        symbols=None,
+        timeframe="1m",
+        manifest=False,
+        plot=False,
+        no_json_output=True,
+    )
+    silver_cmd.run_silver_build(args=args, logger=logging.getLogger("test"))
+
+    assert captured == [("trades", "tick")]
+    assert built == [("BTC-PERPETUAL", "tick")]
+
+
 def _report(dataset: str) -> silver_cmd.SilverBuildReport:
     return silver_cmd.SilverBuildReport(
         dataset=dataset,

@@ -24,9 +24,11 @@ Production-grade cryptocurrency market data ingestion, normalization, feature en
   - [6.2 Perpetual OHLCV](#62-perpetual-ohlcv)
   - [6.3 Open Interest](#63-open-interest)
   - [6.4 Funding Rate](#64-funding-rate)
+  - [6.5 Tick Trades](#65-tick-trades)
 - [7. Quantitative Interpretation Of Features](#7-quantitative-interpretation-of-features)
   - [Price Features](#price-features)
   - [Volume Features](#volume-features)
+  - [Trade Flow Features](#trade-flow-features)
   - [Funding Features](#funding-features)
   - [Open Interest Features](#open-interest-features)
   - [Cross-Market Features](#cross-market-features)
@@ -133,6 +135,7 @@ Exchange APIs
 | Perpetual OHLCV | Leveraged perpetual futures |
 | Funding | Long/short positioning pressure |
 | Open Interest | Aggregate leveraged exposure |
+| Tick Trades | Historical trade-by-trade prints (REST backfill) |
 
 Current exchange support:
 
@@ -211,6 +214,7 @@ Bronze stores:
 - OHLCV candles
 - funding events
 - open interest observations
+- tick trades (historical REST backfill)
 
 ## 5.2 Silver Layer
 
@@ -222,6 +226,7 @@ Responsibilities:
 - volatility features
 - funding transformations
 - OI transformations
+- trade-tick to 1m aggregation
 - canonical resampling
 - forward filling
 - feature manifests
@@ -331,6 +336,20 @@ Funding is highly valuable for:
 - mean reversion systems
 - regime detection
 
+## 6.5 Tick Trades
+
+Tick trades represent per-execution market prints.
+
+Silver builds `trades_1m_feature` from tick data and derives:
+
+| Feature | Meaning |
+|---|---|
+| open/high/low/close | Minute-level trade-price path |
+| volume / quote_volume | Executed flow intensity |
+| trade_count | Activity/participation |
+| buy/sell volume + counts | Directional aggressor pressure proxy |
+| buy_volume_share | Buy-side flow dominance |
+
 ---
 
 # 7. Quantitative Interpretation Of Features
@@ -352,6 +371,15 @@ Describe:
 - speculative activity
 - stress conditions
 - liquidity conditions
+
+## Trade Flow Features
+
+Describe:
+
+- execution-level pressure
+- buy/sell imbalance
+- participation bursts
+- short-horizon microstructure regime shifts
 
 ## Funding Features
 
@@ -417,6 +445,7 @@ Adds:
 
 - open interest
 - funding
+- trades (tick-to-1m flow features)
 - full derivatives state
 
 Use cases:
@@ -424,10 +453,12 @@ Use cases:
 - advanced ML
 - systemic risk modeling
 - leverage-state analysis
+- flow-aware leverage-state modeling
 
 ## gold.hybrid.full_l2.m1
 
 Extends gold datasets with L2 order book features.
+Includes spot/perp/funding/open-interest/trades-derived 1m features plus L2.
 
 Potential L2 features:
 
@@ -518,10 +549,11 @@ Currently missing but highly valuable:
 ## Bronze Layout
 
 ```text
-dataset_type=spot|perp|oi|funding/
+dataset_type=spot|perp|oi|funding|trades/
   exchange=<exchange>/
+  instrument_type=<spot|perp>/
   symbol=<symbol>/
-  timeframe=<interval>/
+  timeframe=<interval|tick>/
   year=<YYYY>/
   month=<YYYY-MM>/
   date=<YYYY-MM-DD>/
@@ -569,7 +601,7 @@ lock via `.run/full-pipeline.lock` and writes a shared append-only pipeline log.
 ```bash
 python3 main.py bronze-build \
   --exchange deribit \
-  --market spot perp oi funding \
+  --market spot perp oi funding trades \
   --symbols BTC ETH SOL
 ```
 
@@ -580,7 +612,7 @@ python3 main.py silver-build \
   --bronze-root lake/bronze \
   --silver-root lake/silver \
   --exchange deribit \
-  --market spot perp oi funding \
+  --market spot perp oi funding trades \
   --timeframe 1m
 ```
 

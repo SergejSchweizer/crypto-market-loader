@@ -19,6 +19,8 @@ from application.dto import (
     FundingFetchTaskDTO,
     OpenInterestFetchResultDTO,
     OpenInterestFetchTaskDTO,
+    TradeFetchResultDTO,
+    TradeFetchTaskDTO,
 )
 from application.schema import dataset_contract
 from application.services.gapfill_service import _last_closed_open_ms, _missing_ranges_ms
@@ -46,6 +48,7 @@ from ingestion.spot import (
     interval_to_milliseconds,
     normalize_storage_symbol,
 )
+from ingestion.trades import TradeMarket, TradeTick, fetch_trades_all_history, fetch_trades_range
 
 OI_DATASET_TYPE = dataset_contract("oi").dataset_type
 TTimeout = TypeVar("TTimeout")
@@ -59,7 +62,13 @@ class _ResultQueueProtocol:
 def _row_open_time_ms(row: TRow) -> int:
     """Return row open timestamp in epoch milliseconds."""
 
-    return int(cast(Any, row).open_time.timestamp() * 1000)
+    row_any = cast(Any, row)
+    timestamp = getattr(row_any, "open_time", None)
+    if timestamp is None:
+        timestamp = getattr(row_any, "trade_time", None)
+    if not isinstance(timestamp, datetime):
+        raise ValueError("row is missing open_time/trade_time datetime attribute")
+    return int(timestamp.timestamp() * 1000)
 
 
 def _filter_rows_by_start_bound(rows: list[TRow], start_open_ms_bound: int | None) -> list[TRow]:
@@ -632,6 +641,86 @@ def fetch_symbol_funding(
     return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
 
 
+def fetch_symbol_trades(
+    exchange: Exchange,
+    market: TradeMarket,
+    symbol: str,
+    lake_root: str,
+    open_times_reader: Callable[..., list[datetime]] = open_times_in_lake_by_dataset,
+    symbol_normalizer: Callable[..., str] = normalize_storage_symbol,
+    now_open_resolver: Callable[..., int] = _last_closed_open_ms,
+    history_fetcher: Callable[..., list[TradeTick]] = fetch_trades_all_history,
+    range_fetcher: Callable[..., list[TradeTick]] = fetch_trades_range,
+    latest_open_time_reader: Callable[..., datetime | None] | None = None,
+    tail_delta_only: bool = False,
+    on_history_chunk: Callable[[list[TradeTick]], None] | None = None,
+    start_open_ms_bound: int | None = None,
+) -> list[TradeTick]:
+    """Fetch trades for one symbol with auto bootstrap/tail behavior."""
+
+    storage_symbol = symbol_normalizer(exchange=exchange, symbol=symbol, market=market)
+    end_open_ms = now_open_resolver(interval_ms=60_000)
+    if start_open_ms_bound is not None and end_open_ms < start_open_ms_bound:
+        return []
+
+    if tail_delta_only:
+        latest_reader = latest_open_time_reader
+        if latest_reader is None:
+            raise ValueError("latest_open_time_reader is required when tail_delta_only is enabled")
+        latest_open_time = latest_reader(
+            lake_root=lake_root,
+            dataset_type="trades",
+            market=market,
+            exchange=exchange,
+            symbol=storage_symbol,
+            timeframe="tick",
+        )
+        if latest_open_time is None:
+            rows = history_fetcher(
+                exchange=exchange,
+                symbol=symbol,
+                market=market,
+                on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
+            )
+            filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
+            unique = {(item.trade_time, item.trade_id): item for item in filtered_rows}
+            return [unique[key] for key in sorted(unique)]
+        start_open_ms = int(latest_open_time.timestamp() * 1000) + 1
+        if start_open_ms_bound is not None:
+            start_open_ms = max(start_open_ms, start_open_ms_bound)
+        if start_open_ms > end_open_ms:
+            return []
+        fetched_rows = range_fetcher(
+            exchange=exchange,
+            symbol=symbol,
+            market=market,
+            start_open_ms=start_open_ms,
+            end_open_ms=end_open_ms,
+        )
+        unique = {(item.trade_time, item.trade_id): item for item in fetched_rows}
+        return [unique[key] for key in sorted(unique)]
+
+    stored_open_times = open_times_reader(
+        lake_root=lake_root,
+        dataset_type="trades",
+        market=market,
+        exchange=exchange,
+        symbol=storage_symbol,
+        timeframe="tick",
+    )
+    if not stored_open_times:
+        rows = history_fetcher(
+            exchange=exchange,
+            symbol=symbol,
+            market=market,
+            on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
+        )
+        filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
+        unique = {(item.trade_time, item.trade_id): item for item in filtered_rows}
+        return [unique[key] for key in sorted(unique)]
+    return []
+
+
 def fetch_candle_tasks_parallel(
     tasks: list[CandleFetchTaskDTO],
     lake_root: str,
@@ -974,3 +1063,91 @@ def fetch_funding_tasks_parallel(
             )
             task_errors[key] = str(exc)
     return FundingFetchResultDTO(rows=task_results, errors=task_errors)
+
+
+def fetch_trade_tasks_parallel(
+    tasks: list[TradeFetchTaskDTO],
+    lake_root: str,
+    concurrency: int,
+    logger: logging.Logger,
+    symbol_fetcher: Callable[..., list[TradeTick]] = fetch_symbol_trades,
+    shared_semaphore: object | None = None,
+    on_task_complete: Callable[[TradeFetchTaskDTO, list[TradeTick]], None] | None = None,
+    on_task_chunk: Callable[[TradeFetchTaskDTO, list[TradeTick]], None] | None = None,
+) -> TradeFetchResultDTO:
+    """Fetch trade tasks sequentially."""
+
+    del concurrency, shared_semaphore
+    total_tasks = len(tasks)
+    task_results: dict[tuple[Exchange, TradeMarket, str], list[TradeTick]] = {}
+    task_errors: dict[tuple[Exchange, TradeMarket, str], str] = {}
+    task_timeout_s = _task_timeout_seconds()
+    heartbeat_s = _heartbeat_seconds()
+    for idx, task in enumerate(tasks, start=1):
+        logger.info(
+            "Fetch start [%s/%s] type=trades exchange=%s market=%s symbol=%s mode=%s",
+            idx,
+            total_tasks,
+            task.exchange,
+            task.market,
+            task.symbol,
+            "auto-bootstrap-or-tail",
+        )
+        key = (task.exchange, task.market, task.symbol)
+        started_at = datetime.now(UTC)
+
+        hb_exchange = task.exchange
+        hb_market = task.market
+        hb_symbol = task.symbol
+
+        def _hb_trades(
+            elapsed_s: int,
+            ex: str = hb_exchange,
+            mk: TradeMarket = hb_market,
+            sy: str = hb_symbol,
+        ) -> None:
+            logger.info(
+                "Fetch heartbeat type=trades exchange=%s market=%s symbol=%s elapsed_s=%s",
+                ex,
+                mk,
+                sy,
+                elapsed_s,
+            )
+
+        try:
+            rows = _run_with_optional_timeout(
+                symbol_fetcher,
+                timeout_s=task_timeout_s,
+                heartbeat_s=heartbeat_s,
+                heartbeat=_hb_trades,
+                exchange=task.exchange,
+                market=task.market,
+                symbol=task.symbol,
+                lake_root=lake_root,
+                on_history_chunk=(lambda chunk, _task=task: on_task_chunk(_task, chunk)) if on_task_chunk else None,
+            )
+            elapsed_s = int((datetime.now(UTC) - started_at).total_seconds())
+            logger.info(
+                "Fetch done [%s/%s] type=trades exchange=%s market=%s symbol=%s rows=%s elapsed_s=%s",
+                idx,
+                total_tasks,
+                task.exchange,
+                task.market,
+                task.symbol,
+                len(rows),
+                elapsed_s,
+            )
+            task_results[key] = rows
+            if on_task_complete is not None:
+                on_task_complete(task, rows)
+        except Exception as exc:  # noqa: BLE001
+            elapsed_s = int((datetime.now(UTC) - started_at).total_seconds())
+            logger.exception(
+                "Fetch error type=trades exchange=%s market=%s symbol=%s elapsed_s=%s",
+                task.exchange,
+                task.market,
+                task.symbol,
+                elapsed_s,
+            )
+            task_errors[key] = str(exc)
+    return TradeFetchResultDTO(rows=task_results, errors=task_errors)

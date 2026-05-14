@@ -16,10 +16,11 @@ from application.services.gold_service import _feature_metadata, _write_feature_
 from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import SpotCandle
+from ingestion.trades import TradeMarket, TradeTick
 
 DatasetType = str
 PartitionKey = tuple[str, str, str, str, str]
-NaturalKey = tuple[str, str, str, str, datetime]
+NaturalKey = tuple[str, str, str, str, datetime, str]
 OI_DATASET_TYPE = dataset_contract("oi").dataset_type
 
 
@@ -200,6 +201,47 @@ def funding_record(
     }
 
 
+def trade_partition_key(item: TradeTick, market: TradeMarket) -> PartitionKey:
+    """Build partition key for trade records."""
+
+    return (
+        item.exchange,
+        market,
+        item.symbol,
+        "tick",
+        item.trade_time.strftime("%Y-%m-%d"),
+    )
+
+
+def trade_record(
+    item: TradeTick,
+    market: TradeMarket,
+    run_id: str,
+    ingested_at: datetime,
+) -> dict[str, object]:
+    """Convert trade tick to parquet-lake row format."""
+
+    return {
+        "schema_version": "v1",
+        "dataset_type": "trades",
+        "exchange": item.exchange,
+        "symbol": item.symbol,
+        "instrument_type": market,
+        "event_time": item.trade_time,
+        "ingested_at": ingested_at,
+        "run_id": run_id,
+        "source_endpoint": item.source_endpoint,
+        "open_time": item.trade_time,
+        "close_time": item.trade_time,
+        "timeframe": "tick",
+        "trade_id": item.trade_id,
+        "price": item.price,
+        "quantity": item.quantity,
+        "side": item.side,
+        "is_maker": item.is_maker,
+    }
+
+
 def open_times_in_lake_by_dataset(
     lake_root: str,
     dataset_type: str,
@@ -249,6 +291,7 @@ def record_natural_key(record: dict[str, object]) -> NaturalKey:
         str(record["symbol"]),
         str(record["timeframe"]),
         open_time,
+        str(record.get("trade_id", "")),
     )
 
 
@@ -406,7 +449,7 @@ def ensure_bronze_sidecars(
     if not root.exists():
         return []
 
-    selected = dataset_types or ["spot", "perp", OI_DATASET_TYPE, "funding"]
+    selected = dataset_types or ["spot", "perp", OI_DATASET_TYPE, "funding", "trades"]
     written: list[str] = []
     log = log_fn if callable(log_fn) else None
     if log is not None:
@@ -866,6 +909,36 @@ def save_funding_parquet_lake(
             for item in items:
                 key = funding_partition_key(item=item, market=market)
                 grouped[key].append(funding_record(item=item, market=market, run_id=run_id, ingested_at=ingested_at))
+
+    return _write_grouped_rows(
+        pa=pa,
+        pq=pq,
+        lake_root=lake_root,
+        dataset_type=dataset_type,
+        run_id=run_id,
+        grouped=grouped,
+    )
+
+
+def save_trades_parquet_lake(
+    trades_by_exchange: dict[str, dict[str, list[TradeTick]]],
+    market: TradeMarket,
+    lake_root: str,
+) -> list[str]:
+    """Save fetched trade rows to parquet lake partitions."""
+
+    pa, pq = _require_pyarrow()
+
+    run_id = utc_run_id()
+    ingested_at = datetime.now(UTC)
+    dataset_type = "trades"
+
+    grouped: defaultdict[PartitionKey, list[dict[str, object]]] = defaultdict(list)
+    for symbol_map in trades_by_exchange.values():
+        for items in symbol_map.values():
+            for item in items:
+                key = trade_partition_key(item=item, market=market)
+                grouped[key].append(trade_record(item=item, market=market, run_id=run_id, ingested_at=ingested_at))
 
     return _write_grouped_rows(
         pa=pa,

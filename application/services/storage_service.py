@@ -6,9 +6,15 @@ from collections.abc import Callable
 
 from application.dto import LoaderStorageDTO, PersistOptionsDTO, PersistResultDTO
 from ingestion.funding import FundingPoint
-from ingestion.lake import save_funding_parquet_lake, save_open_interest_parquet_lake, save_spot_candles_parquet_lake
+from ingestion.lake import (
+    save_funding_parquet_lake,
+    save_open_interest_parquet_lake,
+    save_spot_candles_parquet_lake,
+    save_trades_parquet_lake,
+)
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import Market, SpotCandle
+from ingestion.trades import TradeMarket, TradeTick
 
 
 def persist_loader_outputs_dto(
@@ -17,6 +23,7 @@ def persist_loader_outputs_dto(
     save_spot_lake_fn: Callable[..., list[str]] = save_spot_candles_parquet_lake,
     save_oi_lake_fn: Callable[..., list[str]] = save_open_interest_parquet_lake,
     save_funding_lake_fn: Callable[..., list[str]] = save_funding_parquet_lake,
+    save_trades_lake_fn: Callable[..., list[str]] = save_trades_parquet_lake,
 ) -> PersistResultDTO:
     """Persist fetched datasets to parquet lake."""
 
@@ -48,6 +55,15 @@ def persist_loader_outputs_dto(
                         lake_root=options.lake_root,
                     )
                 )
+        if options.trades_requested:
+            for market_key, trades_by_exchange in storage.trades.items():
+                result.parquet_files.extend(
+                    save_trades_lake_fn(
+                        trades_by_exchange=trades_by_exchange,
+                        market=market_key,
+                        lake_root=options.lake_root,
+                    )
+                )
 
     return result
 
@@ -62,6 +78,9 @@ def persist_loader_outputs(
     save_spot_lake_fn: Callable[..., list[str]] = save_spot_candles_parquet_lake,
     save_oi_lake_fn: Callable[..., list[str]] = save_open_interest_parquet_lake,
     save_funding_lake_fn: Callable[..., list[str]] = save_funding_parquet_lake,
+    trades_for_storage: dict[TradeMarket, dict[str, dict[str, list[TradeTick]]]] | None = None,
+    trades_requested: bool = False,
+    save_trades_lake_fn: Callable[..., list[str]] = save_trades_parquet_lake,
 ) -> dict[str, object]:
     """Backward-compatible wrapper that returns legacy dict output."""
 
@@ -70,15 +89,18 @@ def persist_loader_outputs(
             candles=candles_for_storage,
             open_interest=open_interest_for_storage,
             funding=funding_for_storage or {},
+            trades=trades_for_storage or {},
         ),
         options=PersistOptionsDTO(
             save_parquet_lake=save_parquet_lake,
             lake_root=lake_root,
             oi_requested=oi_requested,
             funding_requested=bool(funding_for_storage),
+            trades_requested=trades_requested,
         ),
         save_spot_lake_fn=save_spot_lake_fn,
         save_oi_lake_fn=save_oi_lake_fn,
         save_funding_lake_fn=save_funding_lake_fn,
+        save_trades_lake_fn=save_trades_lake_fn,
     )
     return dto.to_output_dict()

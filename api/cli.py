@@ -51,6 +51,7 @@ from ingestion.spot import (
     interval_to_milliseconds,
     normalize_storage_symbol,
 )
+from ingestion.trades import fetch_trades_all_history, fetch_trades_range
 
 __all__ = ["SingleInstanceError", "SingleInstanceLock", "build_parser", "main"]
 _TAIL_DELTA_ONLY = True
@@ -100,6 +101,8 @@ def _sync_loader_runtime_overrides() -> None:
     loader_any.fetch_open_interest_range = fetch_open_interest_range
     loader_any.fetch_funding_all_history = fetch_funding_all_history
     loader_any.fetch_funding_range = fetch_funding_range
+    loader_any.fetch_trades_all_history = fetch_trades_all_history
+    loader_any.fetch_trades_range = fetch_trades_range
 
 
 def build_parser() -> argparse.ArgumentParser:

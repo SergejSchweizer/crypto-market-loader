@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from collections.abc import Callable
 from typing import cast
 
 from application.services.silver_service import (
@@ -14,6 +15,7 @@ from application.services.silver_service import (
     build_oi_1m_feature_for_symbol,
     build_oi_observed_for_symbol,
     build_silver_for_symbol,
+    build_trades_1m_feature_for_symbol,
     discover_symbols,
     write_monthly_sidecars,
 )
@@ -30,8 +32,8 @@ def add_silver_build_parser(subparsers: argparse._SubParsersAction[argparse.Argu
     parser.add_argument(
         "--market",
         nargs="+",
-        choices=["spot", "perp", "oi", "funding"],
-        default=["spot", "perp", "oi", "funding"],
+        choices=["spot", "perp", "oi", "funding", "trades"],
+        default=["spot", "perp", "oi", "funding", "trades"],
     )
     parser.add_argument("--symbols", nargs="+", help="Optional symbol list; auto-discovered when omitted")
     parser.add_argument("--timeframe", default="1m", help="Timeframe to process (default: 1m)")
@@ -75,11 +77,106 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
         report_dict["plot_paths"] = plot_paths
         reports.append(report_dict)
 
+    def _run_funding(symbol: str) -> None:
+        observed = build_funding_observed_for_symbol(
+            bronze_root=bronze_root,
+            silver_root=silver_root,
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=DERIBIT_FUNDING_NATIVE_INTERVAL,
+        )
+        _append_report("funding_observed", symbol, observed)
+
+        feature = build_funding_1m_feature_for_symbol(
+            silver_root=silver_root,
+            exchange=exchange,
+            symbol=symbol,
+            observed_timeframe=DERIBIT_FUNDING_NATIVE_INTERVAL,
+        )
+        _append_report("funding_1m_feature", symbol, feature)
+        logger.info(
+            "Silver funding reports written symbol=%s observed_rows=%s feature_rows=%s",
+            symbol,
+            observed.rows_out,
+            feature.rows_out,
+        )
+
+    def _run_oi(symbol: str) -> None:
+        observed = build_oi_observed_for_symbol(
+            bronze_root=bronze_root,
+            silver_root=silver_root,
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
+        _append_report("oi_observed", symbol, observed)
+
+        feature = build_oi_1m_feature_for_symbol(
+            silver_root=silver_root,
+            exchange=exchange,
+            symbol=symbol,
+            observed_timeframe=timeframe,
+        )
+        _append_report("oi_1m_feature", symbol, feature)
+        logger.info(
+            "Silver OI reports written symbol=%s observed_rows=%s feature_rows=%s",
+            symbol,
+            observed.rows_out,
+            feature.rows_out,
+        )
+
+    def _run_trades(symbol: str) -> None:
+        report = build_trades_1m_feature_for_symbol(
+            bronze_root=bronze_root,
+            silver_root=silver_root,
+            exchange=exchange,
+            symbol=symbol,
+            instrument_type="perp",
+            timeframe="tick",
+        )
+        _append_report("trades_1m_feature", symbol, report)
+        logger.info(
+            "Silver trades report written symbol=%s rows_in=%s rows_out=%s",
+            symbol,
+            report.rows_in,
+            report.rows_out,
+        )
+
+    def _run_ohlcv(market: str, symbol: str) -> None:
+        report = build_silver_for_symbol(
+            bronze_root=bronze_root,
+            silver_root=silver_root,
+            market=market,
+            exchange=exchange,
+            symbol=symbol,
+            timeframe=timeframe,
+        )
+        _append_report(market, symbol, report)
+        logger.info(
+            "Silver dataset built market=%s symbol=%s rows_in=%s rows_out=%s",
+            market,
+            symbol,
+            report.rows_in,
+            report.rows_out,
+        )
+
+    market_handlers: dict[str, Callable[[str], None]] = {
+        "funding": _run_funding,
+        "oi": _run_oi,
+        "trades": _run_trades,
+    }
+
     for market in cast(list[str], args.market):
         symbols = cast(list[str] | None, args.symbols)
         bronze_dataset = "funding" if market == "funding" else market
-        bronze_instrument = "perp" if market in {"funding", "oi"} else market
-        discovery_timeframe = DERIBIT_FUNDING_NATIVE_INTERVAL if market == "funding" else timeframe
+        bronze_instrument = "perp" if market in {"funding", "oi", "trades"} else market
+        discovery_timeframe = (
+            DERIBIT_FUNDING_NATIVE_INTERVAL
+            if market == "funding"
+            else "tick"
+            if market == "trades"
+            else timeframe
+        )
         effective_symbols = symbols or discover_symbols(
             bronze_root=bronze_root,
             market=bronze_dataset,
@@ -88,70 +185,12 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             instrument_type=bronze_instrument,
         )
         logger.info("Silver build schedule market=%s symbols=%s timeframe=%s", market, effective_symbols, timeframe)
+        handler = market_handlers.get(market)
         for symbol in effective_symbols:
-            if market == "funding":
-                observed = build_funding_observed_for_symbol(
-                    bronze_root=bronze_root,
-                    silver_root=silver_root,
-                    exchange=exchange,
-                    symbol=symbol,
-                    timeframe=DERIBIT_FUNDING_NATIVE_INTERVAL,
-                )
-                _append_report("funding_observed", symbol, observed)
-
-                feature = build_funding_1m_feature_for_symbol(
-                    silver_root=silver_root,
-                    exchange=exchange,
-                    symbol=symbol,
-                    observed_timeframe=DERIBIT_FUNDING_NATIVE_INTERVAL,
-                )
-                _append_report("funding_1m_feature", symbol, feature)
-                logger.info(
-                    "Silver funding reports written symbol=%s observed_rows=%s feature_rows=%s",
-                    symbol,
-                    observed.rows_out,
-                    feature.rows_out,
-                )
-            elif market == "oi":
-                observed = build_oi_observed_for_symbol(
-                    bronze_root=bronze_root,
-                    silver_root=silver_root,
-                    exchange=exchange,
-                    symbol=symbol,
-                    timeframe=timeframe,
-                )
-                _append_report("oi_observed", symbol, observed)
-
-                feature = build_oi_1m_feature_for_symbol(
-                    silver_root=silver_root,
-                    exchange=exchange,
-                    symbol=symbol,
-                    observed_timeframe=timeframe,
-                )
-                _append_report("oi_1m_feature", symbol, feature)
-                logger.info(
-                    "Silver OI reports written symbol=%s observed_rows=%s feature_rows=%s",
-                    symbol,
-                    observed.rows_out,
-                    feature.rows_out,
-                )
+            if handler is not None:
+                handler(symbol)
             else:
-                report = build_silver_for_symbol(
-                    bronze_root=bronze_root,
-                    silver_root=silver_root,
-                    market=market,
-                    exchange=exchange,
-                    symbol=symbol,
-                    timeframe=timeframe,
-                )
-                _append_report(market, symbol, report)
-                logger.info(
-                    "Silver dataset built market=%s symbol=%s rows_in=%s rows_out=%s",
-                    market,
-                    symbol,
-                    report.rows_in,
-                    report.rows_out,
-                )
+                _run_ohlcv(market, symbol)
 
     if not bool(args.no_json_output):
         print(json.dumps({"reports": reports}, indent=2))
