@@ -249,19 +249,40 @@ def discover_gold_symbols(silver_root: str, exchange: str) -> list[str]:
     required = _FULL_MARKET_REQUIREMENTS
     by_dataset: list[set[str]] = []
     for dataset_type, timeframe in required:
-        root = Path(silver_root) / f"dataset_type={dataset_type}" / f"exchange={exchange}"
-        symbols: set[str] = set()
-        if root.exists():
-            for path in root.glob("symbol=*/timeframe=*"):
-                if path.name != f"timeframe={timeframe}":
-                    continue
-                parent = path.parent.name
-                if parent.startswith("symbol="):
-                    symbols.add(normalize_symbol(parent.split("=", 1)[1]))
-        by_dataset.append(symbols)
+        by_dataset.append(
+            _discover_symbols_for_dataset(
+                silver_root=silver_root,
+                exchange=exchange,
+                dataset_type=dataset_type,
+                timeframe=timeframe,
+            )
+        )
     if not by_dataset:
         return []
     return sorted({normalize_symbol(item) for item in set.intersection(*by_dataset)})
+
+
+def _discover_symbols_for_dataset(
+    *,
+    silver_root: str,
+    exchange: str,
+    dataset_type: str,
+    timeframe: str,
+) -> set[str]:
+    """Discover normalized symbols available for one silver dataset/timeframe."""
+
+    root = Path(silver_root) / f"dataset_type={dataset_type}" / f"exchange={exchange}"
+    symbols: set[str] = set()
+    if not root.exists():
+        return symbols
+    for path in root.glob("symbol=*/timeframe=*"):
+        if path.name != f"timeframe={timeframe}":
+            continue
+        parent = path.parent.name
+        if not parent.startswith("symbol="):
+            continue
+        symbols.add(normalize_symbol(parent.split("=", 1)[1]))
+    return symbols
 
 
 def _dataset_requirements(dataset_id: str) -> list[tuple[str, str]]:

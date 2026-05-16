@@ -167,6 +167,13 @@ Additional expectations:
 - Keep tests deterministic (fixed timestamps/seeds/fixtures; no flaky external dependency assumptions).
 - For pipeline logic, validate idempotency and rerun behavior where relevant.
 
+## Coverage Policy (MANDATORY)
+
+- Target repository test coverage is **90%**.
+- For meaningful changes, preserve or improve coverage and avoid introducing uncovered critical paths.
+- For core pipeline code (bronze/silver/gold transforms, fetch/gap-fill, CLI orchestration), add tests to keep these paths near or above the repository target.
+- If measured coverage is below 90%, explicitly disclose the gap and list follow-up test work required.
+
 ## CLI Command Validation (MANDATORY)
 
 - Every newly added CLI command must work autonomously as a standalone command invocation.

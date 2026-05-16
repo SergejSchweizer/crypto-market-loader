@@ -22,6 +22,13 @@ from application.services.silver_service import (
 )
 from ingestion.funding import DERIBIT_FUNDING_NATIVE_INTERVAL
 
+_MARKET_DISCOVERY_CONFIG: dict[str, tuple[str, str, str]] = {
+    "funding": ("funding", "perp", DERIBIT_FUNDING_NATIVE_INTERVAL),
+    "oi": ("oi", "perp", "1m"),
+    "perp_trades": ("trades", "perp", "tick"),
+    "option_trades": ("option_trades", "option", "tick"),
+}
+
 
 def add_silver_build_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """Register ``silver-build`` parser."""
@@ -203,25 +210,17 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
         "option_trades": _run_option_trades,
     }
 
+    def _discovery_params_for_market(market: str, default_timeframe: str) -> tuple[str, str, str]:
+        configured = _MARKET_DISCOVERY_CONFIG.get(market)
+        if configured is None:
+            return market, market, default_timeframe
+        bronze_dataset, bronze_instrument, configured_timeframe = configured
+        discovery_timeframe = default_timeframe if configured_timeframe == "1m" else configured_timeframe
+        return bronze_dataset, bronze_instrument, discovery_timeframe
+
     for market in cast(list[str], args.market):
         symbols = cast(list[str] | None, args.symbols)
-        bronze_dataset = (
-            "funding"
-            if market == "funding"
-            else "trades"
-            if market == "perp_trades"
-            else "option_trades"
-            if market == "option_trades"
-            else market
-        )
-        bronze_instrument = "perp" if market in {"funding", "oi", "perp_trades"} else "option" if market == "option_trades" else market
-        discovery_timeframe = (
-            DERIBIT_FUNDING_NATIVE_INTERVAL
-            if market == "funding"
-            else "tick"
-            if market in {"perp_trades", "option_trades"}
-            else timeframe
-        )
+        bronze_dataset, bronze_instrument, discovery_timeframe = _discovery_params_for_market(market, timeframe)
         effective_symbols = symbols or discover_symbols(
             bronze_root=bronze_root,
             market=bronze_dataset,

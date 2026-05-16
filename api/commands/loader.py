@@ -115,6 +115,19 @@ def _sanitize_symbols(raw_symbols: object, logger: logging.Logger) -> list[str]:
     return cleaned
 
 
+def _resolved_symbol_groups(args: argparse.Namespace, logger: logging.Logger) -> tuple[list[str], list[str], list[str]]:
+    """Return randomized symbol groups for ohlcv/funding/oi and trade datasets."""
+
+    validated_symbols = _sanitize_symbols(cast(object, args.symbols), logger=logger)
+    validated_perp_trade_symbols = _sanitize_symbols(cast(object, args.perp_trade_symbols), logger=logger)
+    validated_option_trade_symbols = _sanitize_symbols(cast(object, args.option_trade_symbols), logger=logger)
+    return (
+        _items_in_random_order(validated_symbols),
+        _items_in_random_order(validated_perp_trade_symbols),
+        _items_in_random_order(validated_option_trade_symbols),
+    )
+
+
 def _sidecar_path_list(parquet_files: list[str], suffix: str) -> list[str]:
     """Build sorted unique sidecar paths for provided parquet files."""
 
@@ -699,12 +712,9 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             oi_tasks: list[tuple[Exchange, str, str]] = []
             funding_tasks: list[tuple[Exchange, str, str]] = []
             trade_tasks: list[tuple[Exchange, TradeMarket, str]] = []
-            validated_symbols = _sanitize_symbols(cast(object, args.symbols), logger=logger)
-            validated_perp_trade_symbols = _sanitize_symbols(cast(object, args.perp_trade_symbols), logger=logger)
-            validated_option_trade_symbols = _sanitize_symbols(cast(object, args.option_trade_symbols), logger=logger)
-            randomized_symbols = _items_in_random_order(validated_symbols)
-            randomized_perp_trade_symbols = _items_in_random_order(validated_perp_trade_symbols)
-            randomized_option_trade_symbols = _items_in_random_order(validated_option_trade_symbols)
+            randomized_symbols, randomized_perp_trade_symbols, randomized_option_trade_symbols = (
+                _resolved_symbol_groups(args=args, logger=logger)
+            )
             logger.info(
                 "Randomized schedule markets=%s symbols=%s perp_trade_symbols=%s option_trade_symbols=%s",
                 data_types,

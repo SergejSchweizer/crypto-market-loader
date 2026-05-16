@@ -15,6 +15,8 @@ from application.services.gold_service import (
     normalize_symbol,
 )
 
+_SEMVER_RE = re.compile(r"^v\d+\.\d+\.\d+$")
+
 
 def add_gold_build_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """Register ``gold-build`` parser."""
@@ -48,6 +50,29 @@ def add_gold_build_parser(subparsers: argparse._SubParsersAction[argparse.Argume
     parser.add_argument("--no-json-output", action="store_true", help="Suppress JSON output")
 
 
+def _resolve_gold_symbols(*, symbols: list[str] | None, silver_root: str, exchange: str) -> list[str]:
+    """Return normalized symbol schedule for gold build."""
+
+    if symbols:
+        return sorted({normalize_symbol(symbol) for symbol in symbols})
+    return discover_gold_symbols(silver_root=silver_root, exchange=exchange)
+
+
+def _resolve_dataset_ids(dataset_id: str | None) -> list[str]:
+    """Return dataset-id schedule for gold build."""
+
+    return [dataset_id] if dataset_id else sorted(SUPPORTED_GOLD_DATASET_IDS)
+
+
+def _validate_version_args(*, auto_version: bool, dataset_version: str, version_base: str) -> None:
+    """Validate version arguments against semantic version policy."""
+
+    if not auto_version and not _SEMVER_RE.fullmatch(dataset_version):
+        raise ValueError(f"Invalid --dataset-version '{dataset_version}'. Expected semantic version like v1.0.0")
+    if auto_version and not _SEMVER_RE.fullmatch(version_base):
+        raise ValueError(f"Invalid --version-base '{version_base}'. Expected semantic version like v1.0.0")
+
+
 def run_gold_build(args: argparse.Namespace, logger: logging.Logger) -> None:
     """Run gold build for configured symbols."""
 
@@ -61,20 +86,12 @@ def run_gold_build(args: argparse.Namespace, logger: logging.Logger) -> None:
     version_base = cast(str, getattr(args, "version_base", "v1.0.0"))
     symbols = cast(list[str] | None, args.symbols)
     l2_validation_mode = cast(str, getattr(args, "l2_validation_mode", "strict"))
-    effective_symbols = (
-        sorted({normalize_symbol(symbol) for symbol in symbols})
-        if symbols
-        else discover_gold_symbols(silver_root=silver_root, exchange=exchange)
-    )
+    effective_symbols = _resolve_gold_symbols(symbols=symbols, silver_root=silver_root, exchange=exchange)
     reports: list[dict[str, object]] = []
 
-    dataset_ids = [dataset_id] if dataset_id else sorted(SUPPORTED_GOLD_DATASET_IDS)
+    dataset_ids = _resolve_dataset_ids(dataset_id)
     logger.info("Gold build schedule symbols=%s dataset_ids=%s", effective_symbols, dataset_ids)
-    version_re = re.compile(r"^v\d+\.\d+\.\d+$")
-    if not auto_version and not version_re.fullmatch(dataset_version):
-        raise ValueError(f"Invalid --dataset-version '{dataset_version}'. Expected semantic version like v1.0.0")
-    if auto_version and not version_re.fullmatch(version_base):
-        raise ValueError(f"Invalid --version-base '{version_base}'. Expected semantic version like v1.0.0")
+    _validate_version_args(auto_version=auto_version, dataset_version=dataset_version, version_base=version_base)
     for selected_dataset_id in dataset_ids:
         for symbol in effective_symbols:
             try:
