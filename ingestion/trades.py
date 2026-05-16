@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Literal, cast
 
-from ingestion.exchanges import deribit_option_trades
-from ingestion.exchanges import deribit_trades
+from ingestion.exchanges import deribit_option_trades, deribit_trades
 from ingestion.spot import Exchange, normalize_storage_symbol
 
 TradeMarket = Literal["spot", "perp", "option"]
@@ -71,10 +70,12 @@ def _canonical_underlying_symbol(symbol: str) -> str:
 def _normalize_trade_symbol(exchange: Exchange, symbol: str, market: TradeMarket) -> str:
     if market == "option":
         return _canonical_underlying_symbol(symbol)
-    return normalize_storage_symbol(exchange=exchange, symbol=symbol, market=cast(Literal["spot", "perp"], market))
+    return normalize_storage_symbol(exchange=exchange, symbol=symbol, market=market)
 
 
-def _parse_trade_row(exchange: Exchange, symbol: str, market: TradeMarket, row: dict[str, object]) -> TradeTick:
+def _parse_trade_row(
+    exchange: Exchange, symbol: str, market: Literal["spot", "perp"], row: dict[str, object]
+) -> TradeTick:
     ts_ms = int(cast(Any, row).get("timestamp", 0))
     trade_id = str(cast(Any, row).get("trade_id", ""))
     side = _parse_side(row)
@@ -170,25 +171,28 @@ def fetch_trades_all_history(
     normalized_symbol = _normalize_trade_symbol(exchange=exchange, symbol=symbol, market=market)
     if market == "option":
         rows = deribit_option_trades.fetch_option_trades_all(currency=normalized_symbol)
-        parsed = [_parse_option_trade_row(exchange, normalized_symbol, row) for row in rows]
+        parsed: list[TradeTick | OptionTradeTick] = [
+            _parse_option_trade_row(exchange, normalized_symbol, row) for row in rows
+        ]
         if on_history_chunk is not None and parsed:
             on_history_chunk(parsed)
             return []
         return parsed
+    market_non_option: Literal["spot", "perp"] = market
 
     def _on_page(rows: list[dict[str, object]]) -> None:
         if on_history_chunk is None:
             return
-        on_history_chunk([_parse_trade_row(exchange, normalized_symbol, market, row) for row in rows])
+        on_history_chunk([_parse_trade_row(exchange, normalized_symbol, market_non_option, row) for row in rows])
 
     rows = deribit_trades.fetch_trades_all(
         symbol=normalized_symbol,
-        market=market,
+        market=market_non_option,
         on_page=_on_page if on_history_chunk is not None else None,
     )
     if on_history_chunk is not None:
         return []
-    return [_parse_trade_row(exchange, normalized_symbol, market, row) for row in rows]
+    return [_parse_trade_row(exchange, normalized_symbol, market_non_option, row) for row in rows]
 
 
 def fetch_trades_range(
@@ -212,11 +216,12 @@ def fetch_trades_range(
             count=page_size,
         )
         return [_parse_option_trade_row(exchange, normalized_symbol, row) for row in rows]
+    market_non_option: Literal["spot", "perp"] = market
     rows = deribit_trades.fetch_trades_range(
         symbol=normalized_symbol,
-        market=market,
+        market=market_non_option,
         start_open_ms=start_open_ms,
         end_open_ms=end_open_ms,
         count=page_size,
     )
-    return [_parse_trade_row(exchange, normalized_symbol, market, row) for row in rows]
+    return [_parse_trade_row(exchange, normalized_symbol, market_non_option, row) for row in rows]

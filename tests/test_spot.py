@@ -227,7 +227,9 @@ def test_deribit_fetch_chart_page_validation_errors(monkeypatch: pytest.MonkeyPa
     monkeypatch.setattr(
         deribit,
         "get_json",
-        lambda *args, **kwargs: {"result": {"status": "bad", "ticks": [], "open": [], "high": [], "low": [], "close": [], "volume": []}},
+        lambda *args, **kwargs: {
+            "result": {"status": "bad", "ticks": [], "open": [], "high": [], "low": [], "close": [], "volume": []}
+        },
     )
     with pytest.raises(ValueError, match="Deribit chart status"):
         deribit._fetch_chart_page("BTC-PERPETUAL", "1", 60_000, 0, 1)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import builtins
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -107,13 +108,21 @@ def test_save_open_interest_and_funding_plots_write_png(tmp_path: Path) -> None:
     assert Path(funding_path).exists()
 
 
-def test_plot_functions_raise_runtime_error_when_matplotlib_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_plot_functions_raise_runtime_error_when_matplotlib_missing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     real_import = builtins.__import__
 
-    def _fake_import(name: str, *args: object, **kwargs: object):  # type: ignore[no-untyped-def]
+    def _fake_import(
+        name: str,
+        globals: Mapping[str, object] | None = None,
+        locals: Mapping[str, object] | None = None,
+        fromlist: Sequence[str] = (),
+        level: int = 0,
+    ) -> object:
         if name.startswith("matplotlib"):
             raise ImportError("missing matplotlib")
-        return real_import(name, *args, **kwargs)
+        return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", _fake_import)
 

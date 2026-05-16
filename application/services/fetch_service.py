@@ -682,7 +682,9 @@ def fetch_symbol_trades(
     symbol_normalizer: Callable[..., str] = normalize_storage_symbol,
     now_open_resolver: Callable[..., int] = _last_closed_open_ms,
     history_fetcher: Callable[..., list[TradeTick | OptionTradeTick]] = fetch_trades_all_history,
-    range_fetcher: Callable[..., list[TradeTick | OptionTradeTick]] = fetch_trades_range,
+    range_fetcher: Callable[..., list[TradeTick] | list[OptionTradeTick] | list[TradeTick | OptionTradeTick]] = (
+        fetch_trades_range
+    ),
     ranges_builder: Callable[..., list[tuple[int, int]]] = _missing_ranges_ms,
     latest_open_time_reader: Callable[..., datetime | None] | None = None,
     tail_delta_only: bool = False,
@@ -691,8 +693,10 @@ def fetch_symbol_trades(
 ) -> list[TradeTick | OptionTradeTick]:
     """Fetch trades for one symbol with auto bootstrap/tail behavior."""
 
-    storage_symbol = symbol.upper().strip() if market == "option" else symbol_normalizer(
-        exchange=exchange, symbol=symbol, market=market
+    storage_symbol = (
+        symbol.upper().strip()
+        if market == "option"
+        else symbol_normalizer(exchange=exchange, symbol=symbol, market=market)
     )
     trades_dataset_type = "option_trades" if market == "option" else "trades"
     end_open_ms = now_open_resolver(interval_ms=60_000)
@@ -732,7 +736,7 @@ def fetch_symbol_trades(
             start_open_ms=start_open_ms,
             end_open_ms=end_open_ms,
         )
-        return _dedupe_sort_trade_rows(fetched_rows)
+        return _dedupe_sort_trade_rows(cast(list[TradeTick | OptionTradeTick], fetched_rows))
 
     stored_open_times = open_times_reader(
         lake_root=lake_root,
@@ -754,7 +758,7 @@ def fetch_symbol_trades(
                     end_open_ms=day_end_ms,
                 )
                 if day_rows and on_history_chunk is not None:
-                    on_history_chunk(day_rows)
+                    on_history_chunk(cast(list[TradeTick | OptionTradeTick], day_rows))
                 bootstrap_rows.extend(day_rows)
             return _dedupe_sort_trade_rows(bootstrap_rows)
         rows = history_fetcher(
@@ -791,7 +795,7 @@ def fetch_symbol_trades(
                 end_open_ms=day_end_ms,
             )
             if day_rows and on_history_chunk is not None:
-                on_history_chunk(day_rows)
+                on_history_chunk(cast(list[TradeTick | OptionTradeTick], day_rows))
             gap_rows.extend(day_rows)
     filtered = _filter_rows_by_start_bound(gap_rows, start_open_ms_bound)
     return _dedupe_sort_trade_rows(filtered)

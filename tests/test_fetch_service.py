@@ -9,8 +9,7 @@ from typing import Any, cast
 import pytest
 
 import application.services.fetch_service as fetch_service_module
-from application.dto import CandleFetchTaskDTO, FundingFetchTaskDTO, OpenInterestFetchTaskDTO
-from application.dto import TradeFetchTaskDTO
+from application.dto import CandleFetchTaskDTO, FundingFetchTaskDTO, OpenInterestFetchTaskDTO, TradeFetchTaskDTO
 from application.services.fetch_service import (
     _filter_chunk_callback,
     _filter_rows_by_start_bound,
@@ -20,13 +19,13 @@ from application.services.fetch_service import (
     _split_range_into_utc_days,
     _task_timeout_seconds,
     fetch_candle_tasks_parallel,
-    fetch_symbol_funding,
-    fetch_symbol_open_interest,
     fetch_funding_tasks_parallel,
     fetch_open_interest_tasks_parallel,
-    fetch_trade_tasks_parallel,
     fetch_symbol_candles,
+    fetch_symbol_funding,
+    fetch_symbol_open_interest,
     fetch_symbol_trades,
+    fetch_trade_tasks_parallel,
 )
 from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint
@@ -427,9 +426,7 @@ def test_fetch_symbol_trades_bootstrap_with_start_bound_uses_day_range_fetch() -
     )
 
     assert calls == [(start_bound_ms, end_open_ms)]
-    assert [(row.trade_time, row.trade_id) for row in rows] == [
-        (datetime(2022, 4, 29, 0, 0, 10, tzinfo=UTC), "a")
-    ]
+    assert [(row.trade_time, row.trade_id) for row in rows] == [(datetime(2022, 4, 29, 0, 0, 10, tzinfo=UTC), "a")]
 
 
 def test_fetch_candle_tasks_parallel_records_rows_for_slow_fetcher(monkeypatch: pytest.MonkeyPatch) -> None:

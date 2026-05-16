@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from ingestion.exchanges import deribit_option_trades
@@ -12,12 +14,12 @@ def test_fetch_option_trades_range_stops_when_has_more_false(monkeypatch) -> Non
 
     def _fake_get_json(url: str, params: dict[str, object]) -> dict[str, object]:
         del url
-        calls.append(int(params["start_timestamp"]))
+        calls.append(int(cast(Any, params["start_timestamp"])))
         return {
             "result": {
                 "trades": [
                     {
-                        "timestamp": int(params["start_timestamp"]),
+                        "timestamp": int(cast(Any, params["start_timestamp"])),
                         "trade_id": f"id-{len(calls)}",
                         "instrument_name": "BTC-31DEC26-100000-C",
                     },
@@ -42,7 +44,7 @@ def test_fetch_option_trades_range_respects_max_pages_env(monkeypatch) -> None: 
 
     def _fake_get_json(url: str, params: dict[str, object]) -> dict[str, object]:
         del url
-        cursor = int(params["start_timestamp"])
+        cursor = int(cast(Any, params["start_timestamp"]))
         calls.append(cursor)
         return {
             "result": {
@@ -76,7 +78,9 @@ def test_option_trades_base_url_env_override(monkeypatch) -> None:  # type: igno
 
 def test_option_extract_rows_and_has_more_helpers() -> None:
     payload = {"result": {"trades": [{"timestamp": 1, "trade_id": "a", "instrument_name": "X"}, 1], "has_more": True}}
-    assert deribit_option_trades._extract_result_rows(payload) == [{"timestamp": 1, "trade_id": "a", "instrument_name": "X"}]
+    assert deribit_option_trades._extract_result_rows(payload) == [
+        {"timestamp": 1, "trade_id": "a", "instrument_name": "X"}
+    ]
     assert deribit_option_trades._has_more(payload) is True
     assert deribit_option_trades._has_more({"result": {}}) is False
     assert deribit_option_trades._extract_result_rows({"result": {"trades": "bad"}}) == []

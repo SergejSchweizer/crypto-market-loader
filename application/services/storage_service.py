@@ -56,11 +56,11 @@ def persist_loader_outputs_dto(
                     )
                 )
         if options.trades_requested:
-            for market_key, trades_by_exchange in storage.trades.items():
+            for trade_market_key, trades_by_exchange in storage.trades.items():
                 result.parquet_files.extend(
                     save_trades_lake_fn(
                         trades_by_exchange=trades_by_exchange,
-                        market=market_key,
+                        market=trade_market_key,
                         lake_root=options.lake_root,
                     )
                 )

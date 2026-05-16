@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 from collections import defaultdict
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from datetime import UTC, datetime
 from hashlib import sha256
@@ -201,7 +202,7 @@ def funding_record(
     }
 
 
-def trade_partition_key(item: TradeTick, market: TradeMarket) -> PartitionKey:
+def trade_partition_key(item: TradeTick | OptionTradeTick, market: TradeMarket) -> PartitionKey:
     """Build partition key for trade records."""
 
     return (
@@ -304,15 +305,17 @@ def record_natural_key(record: dict[str, object]) -> NaturalKey:
 
 
 def merge_and_deduplicate_rows(
-    existing: list[dict[str, object]], new: list[dict[str, object]]
+    existing: Sequence[Mapping[str, object]], new: Sequence[Mapping[str, object]]
 ) -> list[dict[str, object]]:
     """Merge old/new rows and keep latest version for duplicate keys."""
 
     merged: dict[NaturalKey, dict[str, object]] = {}
     for record in existing:
-        merged[record_natural_key(record)] = record
+        normalized = dict(record)
+        merged[record_natural_key(normalized)] = normalized
     for record in new:
-        merged[record_natural_key(record)] = record
+        normalized = dict(record)
+        merged[record_natural_key(normalized)] = normalized
 
     rows = list(merged.values())
     rows.sort(key=lambda item: cast(datetime, item["open_time"]))

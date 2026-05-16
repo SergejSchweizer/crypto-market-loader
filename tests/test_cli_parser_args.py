@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from api.cli import build_parser
@@ -45,7 +47,10 @@ from api.cli import build_parser
         (["gold-build", "--symbols", "BTC"], {"symbols": ["BTC"]}),
         (["gold-build", "--dataset-id", "gold.market.full.m1"], {"dataset_id": "gold.market.full.m1"}),
         (["gold-build", "--dataset-id", "gold.market.trades.m1"], {"dataset_id": "gold.market.trades.m1"}),
-        (["gold-build", "--dataset-id", "gold.market.option_trades.m1"], {"dataset_id": "gold.market.option_trades.m1"}),
+        (
+            ["gold-build", "--dataset-id", "gold.market.option_trades.m1"],
+            {"dataset_id": "gold.market.option_trades.m1"},
+        ),
         (["gold-build", "--dataset-version", "v1.2.3"], {"dataset_version": "v1.2.3"}),
         (["gold-build", "--auto-version"], {"auto_version": True}),
         (["gold-build", "--version-base", "v1.0.0"], {"version_base": "v1.0.0"}),
@@ -82,3 +87,30 @@ def test_cli_argument_parsing_individual_arguments(argv: list[str], expected: di
     args = parser.parse_args(argv)
     for field, value in expected.items():
         assert getattr(args, field) == value
+
+
+def test_medallion_pipeline_cli_args_in_config_are_parser_compatible() -> None:
+    """`config.yaml` medallion pipeline cli_args must remain valid for each command parser."""
+
+    yaml = pytest.importorskip("yaml")
+    config_path = Path(__file__).resolve().parents[1] / "config.yaml"
+    config_data = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+    assert isinstance(config_data, dict)
+    pipeline_cfg = config_data.get("medallion-pipeline")
+    assert isinstance(pipeline_cfg, dict)
+    order = pipeline_cfg.get("execution_order")
+    assert isinstance(order, list) and order
+
+    parser = build_parser()
+    for layer in order:
+        layer_cfg = pipeline_cfg.get(str(layer))
+        assert isinstance(layer_cfg, dict), f"medallion-pipeline.{layer} must be a mapping"
+        if not bool(layer_cfg.get("enabled", True)):
+            continue
+        command = layer_cfg.get("command")
+        assert isinstance(command, str) and command.strip(), f"medallion-pipeline.{layer}.command is required"
+        cli_args = layer_cfg.get("cli_args", [])
+        assert isinstance(cli_args, list), f"medallion-pipeline.{layer}.cli_args must be a list"
+        argv = [command, *[str(token) for token in cli_args]]
+        parsed = parser.parse_args(argv)
+        assert parsed.command == command

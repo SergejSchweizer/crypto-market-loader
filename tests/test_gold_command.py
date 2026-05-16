@@ -48,7 +48,9 @@ def test_validate_version_args_rejects_invalid_version_base_in_auto_mode() -> No
         gold_cmd._validate_version_args(auto_version=True, dataset_version="v1.2.3", version_base="1.0.0")
 
 
-def test_run_gold_build_uses_helpers_and_emits_reports(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> None:
+def test_run_gold_build_uses_helpers_and_emits_reports(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
     monkeypatch.setattr(gold_cmd, "_resolve_gold_symbols", lambda **kwargs: ["BTC"])
     monkeypatch.setattr(gold_cmd, "_resolve_dataset_ids", lambda dataset_id: [dataset_id or "gold.market.full.m1"])
     monkeypatch.setattr(gold_cmd, "_validate_version_args", lambda **kwargs: None)
@@ -78,4 +80,3 @@ def test_run_gold_build_uses_helpers_and_emits_reports(monkeypatch: pytest.Monke
     gold_cmd.run_gold_build(args=args, logger=logging.getLogger("test"))
     payload = capsys.readouterr().out
     assert "gold.market.full.m1" in payload
-

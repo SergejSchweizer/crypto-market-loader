@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -43,12 +44,18 @@ def test_contract_bump_level_branches() -> None:
         "join_policy": "full_outer_coalesce",
         "source_dataset_keys": ["spot_1m"],
     }
-    prev_invalid = {"contract_signature": {"columns": "x", "join_policy": "full_outer_coalesce", "source_dataset_keys": []}}
-    assert _contract_bump_level(prev_invalid, current, previous_source_data_hash="h1", current_source_data_hash="h1") == (
+    prev_invalid = {
+        "contract_signature": {"columns": "x", "join_policy": "full_outer_coalesce", "source_dataset_keys": []}
+    }
+    assert _contract_bump_level(
+        prev_invalid, current, previous_source_data_hash="h1", current_source_data_hash="h1"
+    ) == (
         "major",
         "invalid_contract_signature",
     )
-    prev_join = {"contract_signature": {"columns": ["a", "b"], "join_policy": "inner", "source_dataset_keys": ["spot_1m"]}}
+    prev_join = {
+        "contract_signature": {"columns": ["a", "b"], "join_policy": "inner", "source_dataset_keys": ["spot_1m"]}
+    }
     assert _contract_bump_level(prev_join, current, previous_source_data_hash="h1", current_source_data_hash="h1") == (
         "major",
         "join_policy_changed",
@@ -60,7 +67,9 @@ def test_contract_bump_level_branches() -> None:
             "source_dataset_keys": ["spot_1m", "perp_1m"],
         }
     }
-    assert _contract_bump_level(prev_removed_key, current, previous_source_data_hash="h1", current_source_data_hash="h1") == (
+    assert _contract_bump_level(
+        prev_removed_key, current, previous_source_data_hash="h1", current_source_data_hash="h1"
+    ) == (
         "major",
         "source_dataset_removed",
     )
@@ -71,7 +80,9 @@ def test_contract_bump_level_branches() -> None:
             "source_dataset_keys": ["spot_1m"],
         }
     }
-    assert _contract_bump_level(prev_missing_col, current, previous_source_data_hash="h1", current_source_data_hash="h1") == (
+    assert _contract_bump_level(
+        prev_missing_col, current, previous_source_data_hash="h1", current_source_data_hash="h1"
+    ) == (
         "major",
         "column_removed_or_renamed",
     )
@@ -87,11 +98,15 @@ def test_contract_bump_level_branches() -> None:
         "column_order_changed",
     )
     prev_same = {"contract_signature": current}
-    assert _contract_bump_level(prev_same, current, previous_source_data_hash="old", current_source_data_hash="new") == (
+    assert _contract_bump_level(
+        prev_same, current, previous_source_data_hash="old", current_source_data_hash="new"
+    ) == (
         "patch",
         "source_data_changed",
     )
-    assert _contract_bump_level(prev_same, current, previous_source_data_hash="same", current_source_data_hash="same") == (
+    assert _contract_bump_level(
+        prev_same, current, previous_source_data_hash="same", current_source_data_hash="same"
+    ) == (
         "none",
         "no_change",
     )
@@ -130,7 +145,7 @@ def _write_silver_month(
     symbol: str,
     timeframe: str,
     month: str,
-    rows: list[dict[str, object]],
+    rows: Sequence[Mapping[str, object]],
 ) -> None:
     target = (
         root
@@ -141,7 +156,13 @@ def _write_silver_month(
         / f"{symbol}_{month.replace('-', '_')}.parquet"
     )
     target.parent.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(rows).write_parquet(target)
+    pl.DataFrame([dict(row) for row in rows]).write_parquet(target)
+
+
+def _require_manifest_path(report: object) -> Path:
+    manifest_path = getattr(report, "manifest_path", None)
+    assert isinstance(manifest_path, str)
+    return Path(manifest_path)
 
 
 def _write_l2_gold_parquet(root: Path, *, symbol: str, exchange: str, rows: list[dict[str, object]]) -> None:
@@ -400,12 +421,12 @@ def test_build_gold_for_symbol_writes_hashed_parquet_and_manifest(tmp_path: Path
     assert f"exchange={exchange}" in report.parquet_path
     assert f"symbol={symbol}" in report.parquet_path
     assert Path(report.parquet_path).exists()
-    assert Path(report.manifest_path).exists()
+    assert _require_manifest_path(report).exists()
     assert report.plot_path is None or Path(report.plot_path).exists()
-    assert Path(report.manifest_path).name.startswith("BTC_GOLD_")
-    assert Path(report.manifest_path).suffix == ".json"
+    assert _require_manifest_path(report).name.startswith("BTC_GOLD_")
+    assert _require_manifest_path(report).suffix == ".json"
 
-    payload = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
+    payload = json.loads(_require_manifest_path(report).read_text(encoding="utf-8"))
     assert payload["symbol"] == symbol
     assert payload["exchange"] == exchange
     assert payload["rows_out"] == 2
@@ -599,7 +620,7 @@ def test_build_gold_for_symbol_trades_only_dataset(tmp_path: Path) -> None:
     )
 
     assert "dataset_id=gold.market.trades.m1" in report.parquet_path
-    payload = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
+    payload = json.loads(_require_manifest_path(report).read_text(encoding="utf-8"))
     assert payload["dataset_id"] == "gold.market.trades.m1"
     assert "trades_1m_feature" in payload["source_silver_datasets"]
 
@@ -630,12 +651,12 @@ def test_build_gold_for_symbol_option_trades_only_dataset(tmp_path: Path) -> Non
     )
 
     assert "dataset_id=gold.market.option_trades.m1" in report.parquet_path
-    payload = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
+    payload = json.loads(_require_manifest_path(report).read_text(encoding="utf-8"))
     assert payload["dataset_id"] == "gold.market.option_trades.m1"
     assert "option_trades_1m_feature" in payload["source_silver_datasets"]
     assert report.manifest_path is not None
     assert report.plot_path is not None
-    assert Path(report.manifest_path).exists()
+    assert _require_manifest_path(report).exists()
     assert Path(report.plot_path).exists()
 
 
@@ -884,7 +905,7 @@ def test_build_gold_hybrid_full_l2_contains_l2_features(tmp_path: Path) -> None:
         manifest=True,
     )
     assert Path(report.parquet_path).exists()
-    payload = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
+    payload = json.loads(_require_manifest_path(report).read_text(encoding="utf-8"))
     assert payload["dataset_id"] == "gold.hybrid.full_l2.m1"
     assert "gold_l2_m1" in payload["source_silver_datasets"]
     written = pl.read_parquet(report.parquet_path)
@@ -1063,7 +1084,7 @@ def test_build_gold_hybrid_full_l2_uses_requested_exchange_l2(tmp_path: Path) ->
     )
     written = pl.read_parquet(report.parquet_path)
     assert float(written["l2_coverage_ratio"].max()) == 1.0
-    payload = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
+    payload = json.loads(_require_manifest_path(report).read_text(encoding="utf-8"))
     assert payload["observed_row_coverage_ratio"] == 1.0
     assert payload["missing_minutes_in_span"] == 0
     assert payload["expected_minutes_in_span"] == 2
@@ -1390,7 +1411,7 @@ def test_build_gold_hybrid_full_l2_lenient_drops_invalid_rows(tmp_path: Path) ->
     )
     written = pl.read_parquet(report.parquet_path)
     assert written.height == 1
-    payload = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
+    payload = json.loads(_require_manifest_path(report).read_text(encoding="utf-8"))
     assert payload["l2_validation_mode"] == "lenient"
     assert payload["l2_invalid_rows_found"] == 1
     assert payload["l2_invalid_rows_dropped"] == 1
@@ -1548,7 +1569,7 @@ def test_build_gold_full_keeps_minute_grid_and_reports_missing_values(tmp_path: 
     written = pl.read_parquet(report.parquet_path).sort("timestamp_m1")
     assert written.height == 3
     assert written["spot_close_price"].null_count() == 1
-    payload = json.loads(Path(report.manifest_path).read_text(encoding="utf-8"))
+    payload = json.loads(_require_manifest_path(report).read_text(encoding="utf-8"))
     assert payload["missing_minutes_in_span"] == 0
     assert payload["missing_value_count_total"] >= 1
     assert payload["missing_value_count_by_column"]["spot_close_price"] == 1

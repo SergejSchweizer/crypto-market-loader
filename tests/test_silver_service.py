@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -35,7 +36,7 @@ def _write_bronze_day_file(
     timeframe: str,
     month: str,
     day: str,
-    rows: list[dict[str, object]],
+    rows: Sequence[Mapping[str, object]],
     dataset_type: str | None = None,
     instrument_type: str | None = None,
 ) -> None:
@@ -54,7 +55,7 @@ def _write_bronze_day_file(
         / "data.parquet"
     )
     target.parent.mkdir(parents=True, exist_ok=True)
-    pl.DataFrame(rows).write_parquet(target)
+    pl.DataFrame([dict(row) for row in rows]).write_parquet(target)
 
 
 def test_build_silver_for_symbol_writes_monthly_parquet_and_aggregated_report(tmp_path: Path) -> None:

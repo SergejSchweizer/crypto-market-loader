@@ -258,10 +258,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     command = cast(str, args.command)
-    if (
-        command == "bronze-build"
-        and not any(alias in config_data for alias in _BRONZE_CONFIG_ALIASES)
-    ):
+    if command == "bronze-build" and not any(alias in config_data for alias in _BRONZE_CONFIG_ALIASES):
         raise ValueError("config.yaml missing required section: bronze-build")
     command_parser = _subparser_for_command(parser, command)
     if command_parser is not None:

@@ -6,6 +6,7 @@ import hashlib
 import json
 import re
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -177,8 +178,8 @@ def _latest_manifest_for_dataset(
 
 
 def _contract_bump_level(
-    previous: dict[str, object],
-    current_contract: dict[str, object],
+    previous: Mapping[str, object],
+    current_contract: Mapping[str, object],
     *,
     previous_source_data_hash: str,
     current_source_data_hash: str,
@@ -193,18 +194,19 @@ def _contract_bump_level(
             "join_policy": "full_outer_coalesce",
             "source_dataset_keys": source_dataset_keys,
         }
+    prev_contract_map = dict(prev_contract)
 
-    prev_columns = prev_contract.get("columns")
+    prev_columns = prev_contract_map.get("columns")
     curr_columns = current_contract.get("columns")
     if not isinstance(prev_columns, list) or not isinstance(curr_columns, list):
         return "major", "invalid_contract_signature"
 
-    prev_join = prev_contract.get("join_policy")
+    prev_join = prev_contract_map.get("join_policy")
     curr_join = current_contract.get("join_policy")
     if prev_join != curr_join:
         return "major", "join_policy_changed"
 
-    prev_keys = prev_contract.get("source_dataset_keys")
+    prev_keys = prev_contract_map.get("source_dataset_keys")
     curr_keys = current_contract.get("source_dataset_keys")
     if not isinstance(prev_keys, list) or not isinstance(curr_keys, list):
         return "major", "invalid_source_dataset_keys"
@@ -292,7 +294,12 @@ def _dataset_requirements(dataset_id: str) -> list[tuple[str, str]]:
     requirements = spec.get("requirements")
     if not isinstance(requirements, list):
         raise ValueError(f"Invalid dataset requirements for dataset_id: {dataset_id}")
-    return requirements
+    parsed: list[tuple[str, str]] = []
+    for item in requirements:
+        if not isinstance(item, (list, tuple)) or len(item) != 2:
+            raise ValueError(f"Invalid dataset requirements for dataset_id: {dataset_id}")
+        parsed.append((str(item[0]), str(item[1])))
+    return parsed
 
 
 def _dataset_includes_l2(dataset_id: str) -> bool:
@@ -889,15 +896,9 @@ def _write_feature_distribution_plot(
                         if full_numeric_stats_by_col[col]["var"] is not None
                         else "var: n/a"
                     ),
-                    (
-                        f"1std: {abs(std_scalar):.6g}" if std_scalar is not None else "1std: n/a"
-                    ),
-                    (
-                        f"2std: {abs(2.0 * std_scalar):.6g}" if std_scalar is not None else "2std: n/a"
-                    ),
-                    (
-                        f"3std: {abs(3.0 * std_scalar):.6g}" if std_scalar is not None else "3std: n/a"
-                    ),
+                    (f"1std: {abs(std_scalar):.6g}" if std_scalar is not None else "1std: n/a"),
+                    (f"2std: {abs(2.0 * std_scalar):.6g}" if std_scalar is not None else "2std: n/a"),
+                    (f"3std: {abs(3.0 * std_scalar):.6g}" if std_scalar is not None else "3std: n/a"),
                 ]
             )
             left_ax.text(

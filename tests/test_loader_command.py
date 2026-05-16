@@ -7,6 +7,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -55,7 +56,7 @@ def test_run_bronze_build_emits_manifest_and_plot_file_lists(tmp_path: Path, mon
     def _fake_fetch_all_task_groups(**kwargs: object):  # type: ignore[no-untyped-def]
         callback = kwargs.get("on_candle_task_chunk")
         if callable(callback):
-            callback(
+            cast(Any, callback)(
                 CandleFetchTaskDTO(exchange="deribit", market="spot", symbol="BTCUSDT", timeframe="1m"),
                 [candle],
             )
@@ -164,9 +165,9 @@ def test_run_bronze_build_drops_invalid_symbols_before_scheduling(monkeypatch) -
     scheduled_funding_tasks: list[tuple[str, str, str]] = []
 
     def _fake_fetch_all_task_groups(**kwargs: object):  # type: ignore[no-untyped-def]
-        scheduled_candle_tasks.extend(kwargs["candle_tasks"])
-        scheduled_oi_tasks.extend(kwargs["oi_tasks"])
-        scheduled_funding_tasks.extend(kwargs["funding_tasks"])
+        scheduled_candle_tasks.extend(cast(Any, kwargs["candle_tasks"]))
+        scheduled_oi_tasks.extend(cast(Any, kwargs["oi_tasks"]))
+        scheduled_funding_tasks.extend(cast(Any, kwargs["funding_tasks"]))
         return ({}, {}, {}, {}, {}, {}, {}, {})
 
     monkeypatch.setattr(loader_cmd, "SingleInstanceLock", _NoopLock)
@@ -237,7 +238,7 @@ def test_run_bronze_build_uses_trade_specific_symbols(monkeypatch) -> None:  # t
     scheduled_trade_tasks: list[tuple[str, str, str]] = []
 
     def _fake_fetch_all_task_groups(**kwargs: object):  # type: ignore[no-untyped-def]
-        scheduled_trade_tasks.extend(kwargs["trade_tasks"])
+        scheduled_trade_tasks.extend(cast(Any, kwargs["trade_tasks"]))
         return ({}, {}, {}, {}, {}, {}, {}, {})
 
     monkeypatch.setattr(loader_cmd, "SingleInstanceLock", _NoopLock)

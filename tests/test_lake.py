@@ -10,6 +10,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 import pytest
 
+from ingestion.funding import FundingPoint
 from ingestion.lake import (
     candle_partition_key,
     candle_record,
@@ -25,7 +26,6 @@ from ingestion.lake import (
     save_open_interest_parquet_lake,
     save_spot_candles_parquet_lake,
 )
-from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import SpotCandle
 

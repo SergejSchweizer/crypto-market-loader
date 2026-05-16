@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any, cast
+
 import pytest
 
 from ingestion.exchanges import deribit_trades
@@ -12,11 +14,11 @@ def test_fetch_trades_range_stops_when_has_more_false(monkeypatch) -> None:  # t
 
     def _fake_get_json(url: str, params: dict[str, object]) -> dict[str, object]:
         del url
-        calls.append(int(params["start_timestamp"]))
+        calls.append(int(cast(Any, params["start_timestamp"])))
         return {
             "result": {
                 "trades": [
-                    {"timestamp": int(params["start_timestamp"]), "trade_id": f"id-{len(calls)}"},
+                    {"timestamp": int(cast(Any, params["start_timestamp"])), "trade_id": f"id-{len(calls)}"},
                 ],
                 "has_more": False,
             }
@@ -39,7 +41,7 @@ def test_fetch_trades_range_respects_max_pages_env(monkeypatch) -> None:  # type
 
     def _fake_get_json(url: str, params: dict[str, object]) -> dict[str, object]:
         del url
-        cursor = int(params["start_timestamp"])
+        cursor = int(cast(Any, params["start_timestamp"]))
         calls.append(cursor)
         return {
             "result": {

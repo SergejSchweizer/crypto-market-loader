@@ -46,6 +46,68 @@ def test_build_steps_uses_configured_market_args_with_trades(tmp_path: Path) -> 
     assert "perp_trades" in args
 
 
+def test_build_steps_bronze_enforces_one_month_start_date_when_missing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = _load_pipeline_module()
+    main_path = tmp_path / "main.py"
+    main_path.write_text("print('ok')\n", encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("x: 1\n", encoding="utf-8")
+    monkeypatch.setattr(module, "_one_month_ago_utc_date", lambda _now: "2026-04-16")
+    cfg = {
+        "medallion-pipeline": {
+            "execution_order": ["bronze"],
+            "bronze": {
+                "enabled": True,
+                "command": "bronze-build",
+                "cli_args": ["--market", "spot", "perp"],
+            },
+        }
+    }
+    steps = module._build_steps(main_path=main_path, config_path=config_path, config_data=cfg)
+    assert len(steps) == 1
+    assert "--start-date" in steps[0].args
+    idx = steps[0].args.index("--start-date")
+    assert steps[0].args[idx + 1] == "2026-04-16"
+
+
+def test_build_steps_bronze_clamps_older_date_bounds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    module = _load_pipeline_module()
+    main_path = tmp_path / "main.py"
+    main_path.write_text("print('ok')\n", encoding="utf-8")
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("x: 1\n", encoding="utf-8")
+    monkeypatch.setattr(module, "_one_month_ago_utc_date", lambda _now: "2026-04-16")
+    cfg = {
+        "medallion-pipeline": {
+            "execution_order": ["bronze"],
+            "bronze": {
+                "enabled": True,
+                "command": "bronze-build",
+                "cli_args": [
+                    "--start-date",
+                    "2020-01-01",
+                    "--symbol-start-dates",
+                    "BTC=2021-01-01",
+                    "ETH=2026-05-10",
+                    "--exchange-symbol-start-dates",
+                    "deribit:SOL=2020-01-01",
+                ],
+            },
+        }
+    }
+    steps = module._build_steps(main_path=main_path, config_path=config_path, config_data=cfg)
+    args = steps[0].args
+    start_idx = args.index("--start-date")
+    assert args[start_idx + 1] == "2026-04-16"
+    sym_idx = args.index("--symbol-start-dates")
+    assert args[sym_idx + 1] == "BTC=2026-04-16"
+    assert args[sym_idx + 2] == "ETH=2026-05-10"
+    ex_idx = args.index("--exchange-symbol-start-dates")
+    assert args[ex_idx + 1] == "deribit:SOL=2026-04-16"
+
+
 def test_log_path_from_config_prefers_explicit_log_file(tmp_path: Path) -> None:
     module = _load_pipeline_module()
     cfg = {"env": {"DEPTH_SYNC_LOG_FILE": str(tmp_path / "logs" / "pipeline.log")}}
@@ -93,7 +155,12 @@ def test_build_steps_layer_validation_errors(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="command is required"):
         module._build_steps(main_path=main_path, config_path=config_path, config_data=bad_cmd)
 
-    bad_args = {"medallion-pipeline": {"execution_order": ["bronze"], "bronze": {"enabled": True, "command": "x", "cli_args": "bad"}}}
+    bad_args = {
+        "medallion-pipeline": {
+            "execution_order": ["bronze"],
+            "bronze": {"enabled": True, "command": "x", "cli_args": "bad"},
+        }
+    }
     with pytest.raises(ValueError, match="cli_args must be a list"):
         module._build_steps(main_path=main_path, config_path=config_path, config_data=bad_args)
 
@@ -169,7 +236,9 @@ def test_main_lock_already_running_returns_1(tmp_path: Path, monkeypatch: pytest
     module = _load_pipeline_module()
     config_path = tmp_path / "config.yaml"
     main_path = tmp_path / "main.py"
-    config_path.write_text("medallion-pipeline:\n  execution_order: [bronze]\n  bronze:\n    enabled: false\n", encoding="utf-8")
+    config_path.write_text(
+        "medallion-pipeline:\n  execution_order: [bronze]\n  bronze:\n    enabled: false\n", encoding="utf-8"
+    )
     main_path.write_text("print('ok')\n", encoding="utf-8")
     monkeypatch.setattr(
         module,
