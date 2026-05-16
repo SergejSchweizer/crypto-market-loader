@@ -8,7 +8,7 @@ from pathlib import Path
 import pyarrow.parquet as pq
 
 from ingestion.lake import save_trades_parquet_lake
-from ingestion.trades import TradeTick, fetch_trades_range
+from ingestion.trades import OptionTradeTick, TradeTick, fetch_trades_range
 
 
 def test_fetch_trades_range_parses_deribit_rows(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -101,3 +101,64 @@ def test_save_trades_parquet_lake_preserves_same_timestamp_distinct_trade_ids(tm
     rows = table.to_pylist()
     assert len(rows) == 2
     assert sorted(str(row["trade_id"]) for row in rows) == ["t-a", "t-b"]
+
+
+def test_fetch_option_trades_range_parses_deribit_rows(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    def _fake_fetch(**kwargs: object) -> list[dict[str, object]]:
+        del kwargs
+        return [
+            {
+                "timestamp": int(datetime(2026, 5, 1, 0, 0, tzinfo=UTC).timestamp() * 1000),
+                "trade_id": "opt-1",
+                "instrument_name": "BTC-31DEC26-100000-C",
+                "price": 500.0,
+                "amount": 0.5,
+                "direction": "sell",
+                "liquidation": "m",
+            }
+        ]
+
+    monkeypatch.setattr("ingestion.exchanges.deribit_option_trades.fetch_option_trades_range", _fake_fetch)
+    rows = fetch_trades_range(
+        exchange="deribit",
+        symbol="BTC",
+        market="option",
+        start_open_ms=int(datetime(2026, 5, 1, 0, 0, tzinfo=UTC).timestamp() * 1000),
+        end_open_ms=int(datetime(2026, 5, 1, 0, 1, tzinfo=UTC).timestamp() * 1000),
+    )
+    assert len(rows) == 1
+    row = rows[0]
+    assert isinstance(row, OptionTradeTick)
+    assert row.trade_id == "opt-1"
+    assert row.option_type == "call"
+    assert row.instrument_name == "BTC-31DEC26-100000-C"
+
+
+def test_save_option_trades_parquet_lake_writes_option_dataset(tmp_path: Path) -> None:
+    tick = OptionTradeTick(
+        exchange="deribit",
+        symbol="BTC",
+        instrument_type="option",
+        instrument_name="BTC-31DEC26-100000-C",
+        expiry="31DEC26",
+        strike=100000.0,
+        option_type="call",
+        trade_id="ot-1",
+        trade_time=datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+        price=100.0,
+        quantity=2.0,
+        side="buy",
+        is_maker=False,
+        source_endpoint="public_option_trades",
+    )
+    files = save_trades_parquet_lake(
+        trades_by_exchange={"deribit": {"BTC": [tick]}},
+        market="option",
+        lake_root=str(tmp_path),
+    )
+    assert len(files) == 1
+    assert "dataset_type=option_trades" in files[0]
+    table = pq.ParquetFile(files[0]).read()
+    row = table.to_pylist()[0]
+    assert row["instrument_name"] == "BTC-31DEC26-100000-C"
+    assert row["option_type"] == "call"

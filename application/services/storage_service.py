@@ -14,7 +14,7 @@ from ingestion.lake import (
 )
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import Market, SpotCandle
-from ingestion.trades import TradeMarket, TradeTick
+from ingestion.trades import OptionTradeTick, TradeMarket, TradeTick
 
 
 def persist_loader_outputs_dto(
@@ -78,7 +78,7 @@ def persist_loader_outputs(
     save_spot_lake_fn: Callable[..., list[str]] = save_spot_candles_parquet_lake,
     save_oi_lake_fn: Callable[..., list[str]] = save_open_interest_parquet_lake,
     save_funding_lake_fn: Callable[..., list[str]] = save_funding_parquet_lake,
-    trades_for_storage: dict[TradeMarket, dict[str, dict[str, list[TradeTick]]]] | None = None,
+    trades_for_storage: dict[TradeMarket, dict[str, dict[str, list[TradeTick | OptionTradeTick]]]] | None = None,
     trades_requested: bool = False,
     save_trades_lake_fn: Callable[..., list[str]] = save_trades_parquet_lake,
 ) -> dict[str, object]:

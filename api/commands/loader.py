@@ -72,9 +72,9 @@ from ingestion.spot import (
     normalize_storage_symbol,
     normalize_timeframe,
 )
-from ingestion.trades import TradeMarket, TradeTick, fetch_trades_all_history, fetch_trades_range
+from ingestion.trades import OptionTradeTick, TradeMarket, TradeTick, fetch_trades_all_history, fetch_trades_range
 
-DataType = Literal["spot", "perp", "oi", "funding", "trades"]
+DataType = Literal["spot", "perp", "oi", "funding", "perp_trades", "option_trades"]
 _TAIL_DELTA_ONLY = True
 _BRONZE_START_OPEN_MS: int | None = None
 _BRONZE_SYMBOL_START_OPEN_MS: dict[str, int] = {}
@@ -140,7 +140,7 @@ def _add_ingest_parser(
     parser.add_argument(
         "--market",
         nargs="+",
-        choices=["spot", "perp", "oi", "funding", "trades"],
+        choices=["spot", "perp", "oi", "funding", "perp_trades", "option_trades"],
         default=["spot"],
         help="One or more data types to fetch, e.g. --market spot perp oi funding",
     )
@@ -319,8 +319,8 @@ def _fetch_symbol_trades(
     market: TradeMarket,
     symbol: str,
     lake_root: str,
-    on_history_chunk: Callable[[list[TradeTick]], None] | None = None,
-) -> list[TradeTick]:
+    on_history_chunk: Callable[[list[TradeTick | OptionTradeTick]], None] | None = None,
+) -> list[TradeTick | OptionTradeTick]:
     return fetch_symbol_trades(
         exchange=exchange,
         market=market,
@@ -538,9 +538,12 @@ def _fetch_trade_tasks_parallel(
     concurrency: int,
     logger: logging.Logger,
     shared_semaphore: object | None = None,
-    on_task_complete: Callable[[TradeFetchTaskDTO, list[TradeTick]], None] | None = None,
-    on_task_chunk: Callable[[TradeFetchTaskDTO, list[TradeTick]], None] | None = None,
-) -> tuple[dict[tuple[Exchange, TradeMarket, str], list[TradeTick]], dict[tuple[Exchange, TradeMarket, str], str]]:
+    on_task_complete: Callable[[TradeFetchTaskDTO, list[TradeTick | OptionTradeTick]], None] | None = None,
+    on_task_chunk: Callable[[TradeFetchTaskDTO, list[TradeTick | OptionTradeTick]], None] | None = None,
+) -> tuple[
+    dict[tuple[Exchange, TradeMarket, str], list[TradeTick | OptionTradeTick]],
+    dict[tuple[Exchange, TradeMarket, str], str],
+]:
     service_tasks = [
         TradeFetchTaskDTO(exchange=exchange, market=market, symbol=symbol) for exchange, market, symbol in trade_tasks
     ]
@@ -571,11 +574,11 @@ def _fetch_all_task_groups(
     on_funding_task_complete: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
     trade_tasks: list[tuple[Exchange, TradeMarket, str]] | None = None,
     trade_concurrency: int = 1,
-    on_trade_task_complete: Callable[[TradeFetchTaskDTO, list[TradeTick]], None] | None = None,
+    on_trade_task_complete: Callable[[TradeFetchTaskDTO, list[TradeTick | OptionTradeTick]], None] | None = None,
     on_candle_task_chunk: Callable[[CandleFetchTaskDTO, list[SpotCandle]], None] | None = None,
     on_oi_task_chunk: Callable[[OpenInterestFetchTaskDTO, list[OpenInterestPoint]], None] | None = None,
     on_funding_task_chunk: Callable[[FundingFetchTaskDTO, list[FundingPoint]], None] | None = None,
-    on_trade_task_chunk: Callable[[TradeFetchTaskDTO, list[TradeTick]], None] | None = None,
+    on_trade_task_chunk: Callable[[TradeFetchTaskDTO, list[TradeTick | OptionTradeTick]], None] | None = None,
 ) -> tuple[
     dict[tuple[Exchange, Market, str, str], list[SpotCandle]],
     dict[tuple[Exchange, Market, str, str], str],
@@ -583,7 +586,7 @@ def _fetch_all_task_groups(
     dict[tuple[Exchange, str, str], str],
     dict[tuple[Exchange, str, str], list[FundingPoint]],
     dict[tuple[Exchange, str, str], str],
-    dict[tuple[Exchange, TradeMarket, str], list[TradeTick]],
+    dict[tuple[Exchange, TradeMarket, str], list[TradeTick | OptionTradeTick]],
     dict[tuple[Exchange, TradeMarket, str], str],
 ]:
     """Fetch task groups sequentially across dataset types."""
@@ -594,7 +597,7 @@ def _fetch_all_task_groups(
     oi_errors: dict[tuple[Exchange, str, str], str] = {}
     funding_results: dict[tuple[Exchange, str, str], list[FundingPoint]] = {}
     funding_errors: dict[tuple[Exchange, str, str], str] = {}
-    trade_results: dict[tuple[Exchange, TradeMarket, str], list[TradeTick]] = {}
+    trade_results: dict[tuple[Exchange, TradeMarket, str], list[TradeTick | OptionTradeTick]] = {}
     trade_errors: dict[tuple[Exchange, TradeMarket, str], str] = {}
 
     if candle_tasks:
@@ -672,13 +675,14 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             data_types = randomized_data_types
             oi_requested = "oi" in data_types
             funding_requested = "funding" in data_types
-            trades_requested = "trades" in data_types
+            perp_trades_requested = "perp_trades" in data_types
+            option_trades_requested = "option_trades" in data_types
             multi_market = len(data_types) > 1
             output: dict[str, object] = {}
             candles_for_storage: dict[Market, dict[str, dict[str, list[SpotCandle]]]] = {}
             open_interest_for_storage: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = {}
             funding_for_storage: dict[Market, dict[str, dict[str, list[FundingPoint]]]] = {}
-            trades_for_storage: dict[TradeMarket, dict[str, dict[str, list[TradeTick]]]] = {}
+            trades_for_storage: dict[TradeMarket, dict[str, dict[str, list[TradeTick | OptionTradeTick]]]] = {}
             tasks: list[tuple[Exchange, Market, str, str]] = []
             oi_tasks: list[tuple[Exchange, str, str]] = []
             funding_tasks: list[tuple[Exchange, str, str]] = []
@@ -705,7 +709,8 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 build_trade_tasks(
                     exchanges=exchanges,
                     randomized_symbols=randomized_symbols,
-                    trades_requested=trades_requested,
+                    perp_trades_requested=perp_trades_requested,
+                    option_trades_requested=option_trades_requested,
                 )
             )
             tasks = _items_in_random_order(tasks)
@@ -725,7 +730,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             streamed_trade_tasks: set[tuple[Exchange, TradeMarket, str]] = set()
             logger.info(
                 (
-                    "Fetch mode enabled for spot/perp, oi, funding, and trades with "
+                    "Fetch mode enabled for spot/perp, oi, funding, and perp_trades with "
                     "concurrency=%s (configured=%s; parallelization disabled)"
                 ),
                 concurrency_value,
@@ -834,7 +839,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     parquet_files=storage_result.parquet_files,
                 )
 
-            def _persist_trade_task(task: TradeFetchTaskDTO, rows: list[TradeTick]) -> None:
+            def _persist_trade_task(task: TradeFetchTaskDTO, rows: list[TradeTick | OptionTradeTick]) -> None:
                 if not rows:
                     return
                 storage_result = persist_loader_outputs_dto(
@@ -849,7 +854,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 )
                 incremental_parquet_files.extend(storage_result.parquet_files)
                 _log_new_daily_partitions(
-                    data_type="trades",
+                    data_type="option_trades" if task.market == "option" else "trades",
                     exchange=task.exchange,
                     market=task.market,
                     symbol=task.symbol,
@@ -857,7 +862,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     parquet_files=storage_result.parquet_files,
                 )
 
-            def _persist_trade_chunk(task: TradeFetchTaskDTO, rows: list[TradeTick]) -> None:
+            def _persist_trade_chunk(task: TradeFetchTaskDTO, rows: list[TradeTick | OptionTradeTick]) -> None:
                 if not rows:
                     return
                 streamed_trade_tasks.add((task.exchange, task.market, task.symbol))
@@ -993,7 +998,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     storage=funding_for_storage,
                 )
 
-            if trades_requested:
+            if perp_trades_requested or option_trades_requested:
                 populate_trades_output(
                     output=output,
                     tasks=trade_tasks,
@@ -1017,7 +1022,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                             lake_root=cast(str, args.lake_root),
                             oi_requested=oi_requested,
                             funding_requested=funding_requested,
-                            trades_requested=trades_requested,
+                            trades_requested=(perp_trades_requested or option_trades_requested),
                         ),
                     )
                     output.update(storage_result.to_output_dict())
@@ -1038,8 +1043,10 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     selected_dataset_types.add(OI_DATASET_TYPE)
                 if funding_requested:
                     selected_dataset_types.add("funding")
-                if trades_requested:
+                if perp_trades_requested:
                     selected_dataset_types.add("trades")
+                if option_trades_requested:
+                    selected_dataset_types.add("option_trades")
                 repaired_parquet_files = ensure_bronze_sidecars(
                     lake_root=cast(str, args.lake_root),
                     dataset_types=sorted(selected_dataset_types),
@@ -1051,7 +1058,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 output["_manifest_files"] = _sidecar_path_list(parquet_files, ".json")
                 output["_plot_files"] = _sidecar_path_list(parquet_files, ".png")
 
-            if trades_requested:
+            if perp_trades_requested or option_trades_requested:
                 trade_task_total = len(trade_tasks)
                 trade_error_total = len(trade_errors)
                 trade_success_total = trade_task_total - trade_error_total
@@ -1060,7 +1067,8 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     {
                         str(Path(path).resolve())
                         for path in cast(list[str], output.get("_parquet_files", []))
-                        if "dataset_type=trades" in path and path.endswith(".parquet")
+                        if ("dataset_type=trades" in path or "dataset_type=option_trades" in path)
+                        and path.endswith(".parquet")
                     }
                 )
                 logger.info(

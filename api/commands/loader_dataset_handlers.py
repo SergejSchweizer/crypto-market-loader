@@ -8,28 +8,58 @@ from typing import Literal, cast
 from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import Exchange, Market, SpotCandle
-from ingestion.trades import TradeMarket, TradeTick
+from ingestion.trades import OptionTradeTick, TradeMarket, TradeTick
 
-DataType = Literal["spot", "perp", "oi", "funding", "trades"]
+DataType = Literal["spot", "perp", "oi", "funding", "perp_trades", "option_trades"]
 
 
 def build_trade_tasks(
     *,
     exchanges: list[Exchange],
     randomized_symbols: list[str],
-    ohlcv_markets: list[Market],
-    trades_requested: bool,
+    perp_trades_requested: bool,
+    option_trades_requested: bool,
 ) -> list[tuple[Exchange, TradeMarket, str]]:
     """Build trade task tuples for requested exchanges/symbols."""
 
-    del ohlcv_markets
-    if not trades_requested:
+    if not perp_trades_requested and not option_trades_requested:
         return []
     tasks: list[tuple[Exchange, TradeMarket, str]] = []
     for exchange in exchanges:
         for symbol in randomized_symbols:
-            tasks.append((exchange, "perp", symbol))
+            if perp_trades_requested:
+                tasks.append((exchange, "perp", symbol))
+            if option_trades_requested:
+                tasks.append((exchange, "option", symbol))
     return tasks
+
+
+def _trade_dataset_key(market: TradeMarket) -> str:
+    """Return output dataset key for one trade market."""
+
+    return "option_trades" if market == "option" else "trades"
+
+
+def _serialize_trade_row(item: TradeTick | OptionTradeTick) -> dict[str, object]:
+    """Serialize one trade row for command JSON output."""
+
+    row: dict[str, object] = {
+        "exchange": item.exchange,
+        "symbol": item.symbol,
+        "instrument_type": item.instrument_type,
+        "trade_id": item.trade_id,
+        "trade_time": item.trade_time.isoformat(),
+        "price": item.price,
+        "quantity": item.quantity,
+        "side": item.side,
+        "is_maker": item.is_maker,
+    }
+    if isinstance(item, OptionTradeTick):
+        row["instrument_name"] = item.instrument_name
+        row["expiry"] = item.expiry
+        row["strike"] = item.strike
+        row["option_type"] = item.option_type
+    return row
 
 
 def populate_ohlcv_output(
@@ -147,10 +177,10 @@ def populate_trades_output(
     *,
     output: dict[str, object],
     tasks: Iterable[tuple[Exchange, TradeMarket, str]],
-    results: dict[tuple[Exchange, TradeMarket, str], list[TradeTick]],
+    results: dict[tuple[Exchange, TradeMarket, str], list[TradeTick | OptionTradeTick]],
     errors: dict[tuple[Exchange, TradeMarket, str], str],
     multi_market: bool,
-    storage: dict[TradeMarket, dict[str, dict[str, list[TradeTick]]]],
+    storage: dict[TradeMarket, dict[str, dict[str, list[TradeTick | OptionTradeTick]]]],
 ) -> None:
     """Populate JSON output and storage bucket for trade tasks."""
 
@@ -158,8 +188,9 @@ def populate_trades_output(
         symbol_key = symbol.upper()
         trade_key = (exchange, market, symbol)
         exchange_output = cast(dict[str, object], output[exchange])
+        dataset_key = _trade_dataset_key(market)
         if multi_market:
-            trades_bucket = cast(dict[str, object], exchange_output.setdefault("trades", {}))
+            trades_bucket = cast(dict[str, object], exchange_output.setdefault(dataset_key, {}))
         else:
             trades_bucket = exchange_output
         market_bucket = cast(dict[str, object], trades_bucket.setdefault(market, {}))
@@ -167,20 +198,7 @@ def populate_trades_output(
             market_bucket[symbol_key] = {"error": errors[trade_key]}
             continue
         rows = results.get(trade_key, [])
-        market_bucket[symbol_key] = [
-            {
-                "exchange": item.exchange,
-                "symbol": item.symbol,
-                "instrument_type": item.instrument_type,
-                "trade_id": item.trade_id,
-                "trade_time": item.trade_time.isoformat(),
-                "price": item.price,
-                "quantity": item.quantity,
-                "side": item.side,
-                "is_maker": item.is_maker,
-            }
-            for item in rows
-        ]
+        market_bucket[symbol_key] = [_serialize_trade_row(item) for item in rows]
         by_market = storage.setdefault(market, {})
         by_exchange = by_market.setdefault(exchange, {})
         by_exchange[symbol_key] = rows

@@ -10,7 +10,8 @@ def test_dataset_contract_maps_spot_perp_oi() -> None:
     perp = dataset_contract("perp")
     oi = dataset_contract("oi")
     funding = dataset_contract("funding")
-    trades = dataset_contract("trades")
+    trades = dataset_contract("perp_trades")
+    option_trades = dataset_contract("option_trades")
 
     assert spot.dataset_type == "spot"
     assert spot.instrument_type == "spot"
@@ -25,3 +26,5 @@ def test_dataset_contract_maps_spot_perp_oi() -> None:
     assert funding.instrument_type == "perp"
     assert trades.dataset_type == "trades"
     assert trades.instrument_type == "perp"
+    assert option_trades.dataset_type == "option_trades"
+    assert option_trades.instrument_type == "option"

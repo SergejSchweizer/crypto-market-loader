@@ -9,8 +9,8 @@ def test_build_trade_tasks_uses_only_perp_market() -> None:
     tasks = build_trade_tasks(
         exchanges=["deribit"],
         randomized_symbols=["BTCUSDT", "ETHUSDT"],
-        ohlcv_markets=["spot", "perp"],
-        trades_requested=True,
+        perp_trades_requested=True,
+        option_trades_requested=False,
     )
 
     assert tasks == [
@@ -23,8 +23,18 @@ def test_build_trade_tasks_returns_empty_when_not_requested() -> None:
     tasks = build_trade_tasks(
         exchanges=["deribit"],
         randomized_symbols=["BTCUSDT"],
-        ohlcv_markets=["spot"],
-        trades_requested=False,
+        perp_trades_requested=False,
+        option_trades_requested=False,
     )
 
     assert tasks == []
+
+
+def test_build_trade_tasks_includes_option_market_when_requested() -> None:
+    tasks = build_trade_tasks(
+        exchanges=["deribit"],
+        randomized_symbols=["BTC"],
+        perp_trades_requested=True,
+        option_trades_requested=True,
+    )
+    assert tasks == [("deribit", "perp", "BTC"), ("deribit", "option", "BTC")]

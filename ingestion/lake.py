@@ -16,11 +16,11 @@ from application.services.gold_service import _feature_metadata, _write_feature_
 from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import SpotCandle
-from ingestion.trades import TradeMarket, TradeTick
+from ingestion.trades import OptionTradeTick, TradeMarket, TradeTick
 
 DatasetType = str
 PartitionKey = tuple[str, str, str, str, str]
-NaturalKey = tuple[str, str, str, str, datetime, str]
+NaturalKey = tuple[str, str, str, str, datetime, str, str]
 OI_DATASET_TYPE = dataset_contract("oi").dataset_type
 
 
@@ -214,16 +214,17 @@ def trade_partition_key(item: TradeTick, market: TradeMarket) -> PartitionKey:
 
 
 def trade_record(
-    item: TradeTick,
+    item: TradeTick | OptionTradeTick,
     market: TradeMarket,
     run_id: str,
     ingested_at: datetime,
 ) -> dict[str, object]:
     """Convert trade tick to parquet-lake row format."""
 
-    return {
+    dataset_type = "option_trades" if market == "option" else "trades"
+    record: dict[str, object] = {
         "schema_version": "v1",
-        "dataset_type": "trades",
+        "dataset_type": dataset_type,
         "exchange": item.exchange,
         "symbol": item.symbol,
         "instrument_type": market,
@@ -240,6 +241,12 @@ def trade_record(
         "side": item.side,
         "is_maker": item.is_maker,
     }
+    if isinstance(item, OptionTradeTick):
+        record["instrument_name"] = item.instrument_name
+        record["expiry"] = item.expiry
+        record["strike"] = item.strike
+        record["option_type"] = item.option_type
+    return record
 
 
 def open_times_in_lake_by_dataset(
@@ -292,6 +299,7 @@ def record_natural_key(record: dict[str, object]) -> NaturalKey:
         str(record["timeframe"]),
         open_time,
         str(record.get("trade_id", "")),
+        str(record.get("instrument_name", "")),
     )
 
 
@@ -449,7 +457,7 @@ def ensure_bronze_sidecars(
     if not root.exists():
         return []
 
-    selected = dataset_types or ["spot", "perp", OI_DATASET_TYPE, "funding", "trades"]
+    selected = dataset_types or ["spot", "perp", OI_DATASET_TYPE, "funding", "trades", "option_trades"]
     written: list[str] = []
     log = log_fn if callable(log_fn) else None
     if log is not None:
@@ -921,7 +929,7 @@ def save_funding_parquet_lake(
 
 
 def save_trades_parquet_lake(
-    trades_by_exchange: dict[str, dict[str, list[TradeTick]]],
+    trades_by_exchange: dict[str, dict[str, list[TradeTick | OptionTradeTick]]],
     market: TradeMarket,
     lake_root: str,
 ) -> list[str]:
@@ -931,7 +939,7 @@ def save_trades_parquet_lake(
 
     run_id = utc_run_id()
     ingested_at = datetime.now(UTC)
-    dataset_type = "trades"
+    dataset_type = "option_trades" if market == "option" else "trades"
 
     grouped: defaultdict[PartitionKey, list[dict[str, object]]] = defaultdict(list)
     for symbol_map in trades_by_exchange.values():

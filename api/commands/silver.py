@@ -33,8 +33,8 @@ def add_silver_build_parser(subparsers: argparse._SubParsersAction[argparse.Argu
     parser.add_argument(
         "--market",
         nargs="+",
-        choices=["spot", "perp", "oi", "funding", "trades"],
-        default=["spot", "perp", "oi", "funding", "trades"],
+        choices=["spot", "perp", "oi", "funding", "perp_trades"],
+        default=["spot", "perp", "oi", "funding", "perp_trades"],
     )
     parser.add_argument("--symbols", nargs="+", help="Optional symbol list; auto-discovered when omitted")
     parser.add_argument("--timeframe", default="1m", help="Timeframe to process (default: 1m)")
@@ -171,18 +171,18 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
     market_handlers: dict[str, Callable[[str], None]] = {
         "funding": _run_funding,
         "oi": _run_oi,
-        "trades": _run_trades,
+        "perp_trades": _run_trades,
     }
 
     for market in cast(list[str], args.market):
         symbols = cast(list[str] | None, args.symbols)
-        bronze_dataset = "funding" if market == "funding" else market
-        bronze_instrument = "perp" if market in {"funding", "oi", "trades"} else market
+        bronze_dataset = "funding" if market == "funding" else ("trades" if market == "perp_trades" else market)
+        bronze_instrument = "perp" if market in {"funding", "oi", "perp_trades"} else market
         discovery_timeframe = (
             DERIBIT_FUNDING_NATIVE_INTERVAL
             if market == "funding"
             else "tick"
-            if market == "trades"
+            if market == "perp_trades"
             else timeframe
         )
         effective_symbols = symbols or discover_symbols(

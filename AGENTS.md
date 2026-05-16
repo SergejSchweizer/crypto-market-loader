@@ -99,6 +99,12 @@ Minimum expectation:
 
 If checks cannot be run, explicitly state what was not run and why.
 
+## CLI Command Validation (MANDATORY)
+
+- Every newly added CLI command must work autonomously as a standalone command invocation.
+- Every newly added CLI command must have dedicated automated tests that validate its independent execution path and expected behavior.
+- CLI command test coverage must be executed whenever a new CLI command is introduced or an existing CLI command is modified.
+
 ---
 
 # Git Hygiene Rules

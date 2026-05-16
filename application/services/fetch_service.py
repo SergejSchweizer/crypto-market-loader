@@ -48,7 +48,7 @@ from ingestion.spot import (
     interval_to_milliseconds,
     normalize_storage_symbol,
 )
-from ingestion.trades import TradeMarket, TradeTick, fetch_trades_all_history, fetch_trades_range
+from ingestion.trades import OptionTradeTick, TradeMarket, TradeTick, fetch_trades_all_history, fetch_trades_range
 
 OI_DATASET_TYPE = dataset_contract("oi").dataset_type
 TTimeout = TypeVar("TTimeout")
@@ -57,6 +57,19 @@ TRow = TypeVar("TRow")
 
 class _ResultQueueProtocol:
     def put(self, item: object) -> object: ...
+
+
+def _trade_unique_key(item: TradeTick | OptionTradeTick) -> tuple[datetime, str, str]:
+    """Return stable dedup key for perp/option trade ticks."""
+
+    return (item.trade_time, item.trade_id, getattr(item, "instrument_name", ""))
+
+
+def _dedupe_sort_trade_rows(rows: list[TradeTick | OptionTradeTick]) -> list[TradeTick | OptionTradeTick]:
+    """Deduplicate trade rows and return deterministic time/id ordering."""
+
+    unique = {_trade_unique_key(item): item for item in rows}
+    return [unique[key] for key in sorted(unique)]
 
 
 def _row_open_time_ms(row: TRow) -> int:
@@ -649,16 +662,19 @@ def fetch_symbol_trades(
     open_times_reader: Callable[..., list[datetime]] = open_times_in_lake_by_dataset,
     symbol_normalizer: Callable[..., str] = normalize_storage_symbol,
     now_open_resolver: Callable[..., int] = _last_closed_open_ms,
-    history_fetcher: Callable[..., list[TradeTick]] = fetch_trades_all_history,
-    range_fetcher: Callable[..., list[TradeTick]] = fetch_trades_range,
+    history_fetcher: Callable[..., list[TradeTick | OptionTradeTick]] = fetch_trades_all_history,
+    range_fetcher: Callable[..., list[TradeTick | OptionTradeTick]] = fetch_trades_range,
     latest_open_time_reader: Callable[..., datetime | None] | None = None,
     tail_delta_only: bool = False,
-    on_history_chunk: Callable[[list[TradeTick]], None] | None = None,
+    on_history_chunk: Callable[[list[TradeTick | OptionTradeTick]], None] | None = None,
     start_open_ms_bound: int | None = None,
-) -> list[TradeTick]:
+) -> list[TradeTick | OptionTradeTick]:
     """Fetch trades for one symbol with auto bootstrap/tail behavior."""
 
-    storage_symbol = symbol_normalizer(exchange=exchange, symbol=symbol, market=market)
+    storage_symbol = symbol.upper().strip() if market == "option" else symbol_normalizer(
+        exchange=exchange, symbol=symbol, market=market
+    )
+    trades_dataset_type = "option_trades" if market == "option" else "trades"
     end_open_ms = now_open_resolver(interval_ms=60_000)
     if start_open_ms_bound is not None and end_open_ms < start_open_ms_bound:
         return []
@@ -669,7 +685,7 @@ def fetch_symbol_trades(
             raise ValueError("latest_open_time_reader is required when tail_delta_only is enabled")
         latest_open_time = latest_reader(
             lake_root=lake_root,
-            dataset_type="trades",
+            dataset_type=trades_dataset_type,
             market=market,
             exchange=exchange,
             symbol=storage_symbol,
@@ -683,8 +699,7 @@ def fetch_symbol_trades(
                 on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
             )
             filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
-            unique = {(item.trade_time, item.trade_id): item for item in filtered_rows}
-            return [unique[key] for key in sorted(unique)]
+            return _dedupe_sort_trade_rows(filtered_rows)
         start_open_ms = int(latest_open_time.timestamp() * 1000) + 1
         if start_open_ms_bound is not None:
             start_open_ms = max(start_open_ms, start_open_ms_bound)
@@ -697,12 +712,11 @@ def fetch_symbol_trades(
             start_open_ms=start_open_ms,
             end_open_ms=end_open_ms,
         )
-        unique = {(item.trade_time, item.trade_id): item for item in fetched_rows}
-        return [unique[key] for key in sorted(unique)]
+        return _dedupe_sort_trade_rows(fetched_rows)
 
     stored_open_times = open_times_reader(
         lake_root=lake_root,
-        dataset_type="trades",
+        dataset_type=trades_dataset_type,
         market=market,
         exchange=exchange,
         symbol=storage_symbol,
@@ -710,7 +724,7 @@ def fetch_symbol_trades(
     )
     if not stored_open_times:
         if start_open_ms_bound is not None:
-            bootstrap_rows: list[TradeTick] = []
+            bootstrap_rows: list[TradeTick | OptionTradeTick] = []
             for day_start_ms, day_end_ms in _day_windows_in_random_order(start_open_ms_bound, end_open_ms):
                 day_rows = range_fetcher(
                     exchange=exchange,
@@ -722,8 +736,7 @@ def fetch_symbol_trades(
                 if day_rows and on_history_chunk is not None:
                     on_history_chunk(day_rows)
                 bootstrap_rows.extend(day_rows)
-            unique = {(item.trade_time, item.trade_id): item for item in bootstrap_rows}
-            return [unique[key] for key in sorted(unique)]
+            return _dedupe_sort_trade_rows(bootstrap_rows)
         rows = history_fetcher(
             exchange=exchange,
             symbol=symbol,
@@ -731,8 +744,7 @@ def fetch_symbol_trades(
             on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
         )
         filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
-        unique = {(item.trade_time, item.trade_id): item for item in filtered_rows}
-        return [unique[key] for key in sorted(unique)]
+        return _dedupe_sort_trade_rows(filtered_rows)
 
     # For trades we cannot infer "gaps" from fixed-interval clocks, so full-gap mode
     # re-fetches the requested bounded span in day windows and relies on lake dedup.
@@ -743,7 +755,7 @@ def fetch_symbol_trades(
     if span_start_ms > end_open_ms:
         return []
 
-    gap_rows: list[TradeTick] = []
+    gap_rows: list[TradeTick | OptionTradeTick] = []
     for day_start_ms, day_end_ms in _day_windows_in_random_order(span_start_ms, end_open_ms):
         day_rows = range_fetcher(
             exchange=exchange,
@@ -756,8 +768,7 @@ def fetch_symbol_trades(
             on_history_chunk(day_rows)
         gap_rows.extend(day_rows)
     filtered = _filter_rows_by_start_bound(gap_rows, start_open_ms_bound)
-    unique = {(item.trade_time, item.trade_id): item for item in filtered}
-    return [unique[key] for key in sorted(unique)]
+    return _dedupe_sort_trade_rows(filtered)
 
 
 def fetch_candle_tasks_parallel(
@@ -1109,16 +1120,16 @@ def fetch_trade_tasks_parallel(
     lake_root: str,
     concurrency: int,
     logger: logging.Logger,
-    symbol_fetcher: Callable[..., list[TradeTick]] = fetch_symbol_trades,
+    symbol_fetcher: Callable[..., list[TradeTick | OptionTradeTick]] = fetch_symbol_trades,
     shared_semaphore: object | None = None,
-    on_task_complete: Callable[[TradeFetchTaskDTO, list[TradeTick]], None] | None = None,
-    on_task_chunk: Callable[[TradeFetchTaskDTO, list[TradeTick]], None] | None = None,
+    on_task_complete: Callable[[TradeFetchTaskDTO, list[TradeTick | OptionTradeTick]], None] | None = None,
+    on_task_chunk: Callable[[TradeFetchTaskDTO, list[TradeTick | OptionTradeTick]], None] | None = None,
 ) -> TradeFetchResultDTO:
     """Fetch trade tasks sequentially."""
 
     del concurrency, shared_semaphore
     total_tasks = len(tasks)
-    task_results: dict[tuple[Exchange, TradeMarket, str], list[TradeTick]] = {}
+    task_results: dict[tuple[Exchange, TradeMarket, str], list[TradeTick | OptionTradeTick]] = {}
     task_errors: dict[tuple[Exchange, TradeMarket, str], str] = {}
     task_timeout_s = _task_timeout_seconds()
     heartbeat_s = _heartbeat_seconds()

@@ -5,7 +5,7 @@ This project provides a reproducible, maintainable data pipeline for Deribit cry
 
 ## Problem Statement
 Early-stage market-data stacks often fail due to ad-hoc scripts, schema drift, and weak reproducibility. This repository addresses that by enforcing:
-- explicit datatype contracts (`spot`, `perp`, `oi`, `funding`, `trades`)
+- explicit datatype contracts (`spot`, `perp`, `oi`, `funding`, `perp_trades`, `option_trades`)
 - modular service boundaries
 - deterministic parquet output layouts
 - test-backed command workflows
@@ -29,6 +29,7 @@ Layers:
 - `spot`, `perp`: 1-minute OHLCV bars
 - `oi`, `funding`: source event-time rows
 - `trades`: source event-time tick trades
+- `option_trades`: source event-time option tick trades
 - idempotent persistence via natural-key partition rewrites
 - artifact policy per partition file: `data.parquet` + `data.json` + `data.png`
 - sidecar backfill: Bronze runs can repair missing sidecars for existing matching parquet partitions when parquet persistence is enabled

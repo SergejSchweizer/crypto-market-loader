@@ -136,6 +136,7 @@ Exchange APIs
 | Funding | Long/short positioning pressure |
 | Open Interest | Aggregate leveraged exposure |
 | Tick Trades | Historical trade-by-trade prints (REST backfill) |
+| Option Tick Trades | Historical option trade prints (REST backfill) |
 
 Current exchange support:
 
@@ -212,6 +213,7 @@ Bronze stores:
 - funding events
 - open interest observations
 - tick trades (historical REST backfill)
+- option tick trades (historical REST backfill)
 
 ## 5.2 Silver Layer
 
@@ -546,7 +548,7 @@ Currently missing but highly valuable:
 ## Bronze Layout
 
 ```text
-dataset_type=spot|perp|oi|funding|trades/
+dataset_type=spot|perp|oi|funding|trades|option_trades/
   exchange=<exchange>/
   instrument_type=<spot|perp>/
   symbol=<symbol>/
@@ -598,7 +600,7 @@ lock via `.run/full-pipeline.lock` and writes a shared append-only pipeline log.
 ```bash
 uv run python main.py bronze-build \
   --exchange deribit \
-  --market spot perp oi funding trades \
+  --market spot perp oi funding perp_trades option_trades \
   --symbols BTC ETH SOL
 ```
 
@@ -609,7 +611,7 @@ uv run python main.py silver-build \
   --bronze-root lake/bronze \
   --silver-root lake/silver \
   --exchange deribit \
-  --market spot perp oi funding trades \
+  --market spot perp oi funding perp_trades \
   --timeframe 1m
 ```
 

@@ -29,7 +29,7 @@ def test_build_steps_uses_configured_market_args_with_trades(tmp_path: Path) -> 
             "bronze": {
                 "enabled": True,
                 "command": "bronze-build",
-                "cli_args": ["--market", "spot", "perp", "oi", "funding", "trades"],
+                "cli_args": ["--market", "spot", "perp", "oi", "funding", "perp_trades"],
             },
             "silver": {"enabled": False, "command": "silver-build", "cli_args": []},
             "gold": {"enabled": False, "command": "gold-build", "cli_args": []},
@@ -39,7 +39,7 @@ def test_build_steps_uses_configured_market_args_with_trades(tmp_path: Path) -> 
     assert len(steps) == 1
     args = steps[0].args
     assert "--market" in args
-    assert "trades" in args
+    assert "perp_trades" in args
 
 
 def test_log_path_from_config_prefers_explicit_log_file(tmp_path: Path) -> None:

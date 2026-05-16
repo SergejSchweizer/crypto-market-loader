@@ -7,7 +7,7 @@ from dataclasses import dataclass, field
 from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import Exchange, Market, SpotCandle
-from ingestion.trades import TradeMarket, TradeTick
+from ingestion.trades import OptionTradeTick, TradeMarket, TradeTick
 
 
 @dataclass(frozen=True)
@@ -111,7 +111,7 @@ class FundingFetchResultDTO:
 class TradeFetchResultDTO:
     """Trades fetch outcomes keyed by task tuple."""
 
-    rows: dict[tuple[Exchange, TradeMarket, str], list[TradeTick]] = field(default_factory=dict)
+    rows: dict[tuple[Exchange, TradeMarket, str], list[TradeTick | OptionTradeTick]] = field(default_factory=dict)
     errors: dict[tuple[Exchange, TradeMarket, str], str] = field(default_factory=dict)
 
 
@@ -128,7 +128,7 @@ class LoaderStorageDTO:
     candles: dict[Market, dict[str, dict[str, list[SpotCandle]]]] = field(default_factory=dict)
     open_interest: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = field(default_factory=dict)
     funding: dict[Market, dict[str, dict[str, list[FundingPoint]]]] = field(default_factory=dict)
-    trades: dict[TradeMarket, dict[str, dict[str, list[TradeTick]]]] = field(default_factory=dict)
+    trades: dict[TradeMarket, dict[str, dict[str, list[TradeTick | OptionTradeTick]]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

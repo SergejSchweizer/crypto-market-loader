@@ -16,7 +16,7 @@ from ingestion.lake import (
 )
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import SpotCandle
-from ingestion.trades import TradeTick
+from ingestion.trades import OptionTradeTick, TradeTick
 
 
 def test_bronze_spot_schema_contract_order(tmp_path: Path) -> None:
@@ -95,3 +95,28 @@ def test_bronze_trades_schema_contract_fields(tmp_path: Path) -> None:
     assert "price" in schema.names
     assert "quantity" in schema.names
     assert "is_maker" in schema.names
+
+
+def test_bronze_option_trades_schema_contract_fields(tmp_path: Path) -> None:
+    tick = OptionTradeTick(
+        exchange="deribit",
+        symbol="BTC",
+        instrument_type="option",
+        instrument_name="BTC-31DEC26-100000-C",
+        expiry="31DEC26",
+        strike=100000.0,
+        option_type="call",
+        trade_id="opt-x1",
+        trade_time=datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
+        price=100.0,
+        quantity=1.0,
+        side="buy",
+        is_maker=True,
+        source_endpoint="public_option_trades",
+    )
+    files = save_trades_parquet_lake({"deribit": {"BTC": [tick]}}, market="option", lake_root=str(tmp_path))
+    schema = pq.ParquetFile(files[0]).schema_arrow
+    assert "instrument_name" in schema.names
+    assert "expiry" in schema.names
+    assert "strike" in schema.names
+    assert "option_type" in schema.names

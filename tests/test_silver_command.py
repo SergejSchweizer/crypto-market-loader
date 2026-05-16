@@ -97,7 +97,7 @@ def test_run_silver_build_uses_tick_timeframe_for_trades_discovery(
         bronze_root="lake/bronze",
         silver_root="lake/silver",
         exchange="deribit",
-        market=["trades"],
+        market=["perp_trades"],
         symbols=None,
         timeframe="1m",
         manifest=False,
