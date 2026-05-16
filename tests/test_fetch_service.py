@@ -347,6 +347,50 @@ def test_fetch_symbol_trades_full_gap_fill_respects_start_bound_for_existing_sym
     ]
 
 
+def test_fetch_symbol_trades_bootstrap_with_start_bound_uses_day_range_fetch() -> None:
+    start_bound = datetime(2022, 4, 29, 0, 0, tzinfo=UTC)
+    end_open_time = datetime(2022, 4, 29, 0, 1, 30, tzinfo=UTC)
+    start_bound_ms = int(start_bound.timestamp() * 1000)
+    end_open_ms = int(end_open_time.timestamp() * 1000)
+    calls: list[tuple[int, int]] = []
+
+    def _range_fetcher(**kwargs: object) -> list[TradeTick]:
+        calls.append((int(cast(Any, kwargs["start_open_ms"])), int(cast(Any, kwargs["end_open_ms"]))))
+        return [
+            TradeTick(
+                exchange="deribit",
+                symbol="BTC",
+                instrument_type="perp",
+                trade_id="a",
+                trade_time=datetime(2022, 4, 29, 0, 0, 10, tzinfo=UTC),
+                price=100.0,
+                quantity=1.0,
+                side="buy",
+                is_maker=False,
+                source_endpoint="public_trades",
+            )
+        ]
+
+    rows = fetch_symbol_trades(
+        exchange="deribit",
+        market="perp",
+        symbol="BTC",
+        lake_root="lake/bronze",
+        open_times_reader=lambda **kwargs: [],
+        symbol_normalizer=lambda **kwargs: "BTC-PERPETUAL",
+        now_open_resolver=lambda **kwargs: end_open_ms,
+        history_fetcher=lambda **kwargs: pytest.fail("history_fetcher should not be called when start bound is set"),
+        range_fetcher=_range_fetcher,
+        tail_delta_only=False,
+        start_open_ms_bound=start_bound_ms,
+    )
+
+    assert calls == [(start_bound_ms, end_open_ms)]
+    assert [(row.trade_time, row.trade_id) for row in rows] == [
+        (datetime(2022, 4, 29, 0, 0, 10, tzinfo=UTC), "a")
+    ]
+
+
 def test_fetch_candle_tasks_parallel_records_rows_for_slow_fetcher(monkeypatch: pytest.MonkeyPatch) -> None:
     task = CandleFetchTaskDTO(exchange="deribit", market="spot", symbol="BTCUSDT", timeframe="1m")
 

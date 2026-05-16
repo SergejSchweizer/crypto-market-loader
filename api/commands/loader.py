@@ -705,7 +705,6 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 build_trade_tasks(
                     exchanges=exchanges,
                     randomized_symbols=randomized_symbols,
-                    ohlcv_markets=cast(list[Market], ohlcv_markets),
                     trades_requested=trades_requested,
                 )
             )
@@ -849,6 +848,14 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     ),
                 )
                 incremental_parquet_files.extend(storage_result.parquet_files)
+                _log_new_daily_partitions(
+                    data_type="trades",
+                    exchange=task.exchange,
+                    market=task.market,
+                    symbol=task.symbol,
+                    timeframe="tick",
+                    parquet_files=storage_result.parquet_files,
+                )
 
             def _persist_trade_chunk(task: TradeFetchTaskDTO, rows: list[TradeTick]) -> None:
                 if not rows:

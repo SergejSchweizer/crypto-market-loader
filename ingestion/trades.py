@@ -82,7 +82,7 @@ def fetch_trades_range(
     market: TradeMarket,
     start_open_ms: int,
     end_open_ms: int,
-    page_size: int = deribit_trades.DERIBIT_TRADES_MAX_PAGE_SIZE,
+    page_size: int = deribit_trades.DERIBIT_TRADES_DEFAULT_PAGE_SIZE,
 ) -> list[TradeTick]:
     """Fetch historical trades by inclusive range."""
 

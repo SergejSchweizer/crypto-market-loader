@@ -709,6 +709,21 @@ def fetch_symbol_trades(
         timeframe="tick",
     )
     if not stored_open_times:
+        if start_open_ms_bound is not None:
+            bootstrap_rows: list[TradeTick] = []
+            for day_start_ms, day_end_ms in _day_windows_in_random_order(start_open_ms_bound, end_open_ms):
+                day_rows = range_fetcher(
+                    exchange=exchange,
+                    symbol=symbol,
+                    market=market,
+                    start_open_ms=day_start_ms,
+                    end_open_ms=day_end_ms,
+                )
+                if day_rows and on_history_chunk is not None:
+                    on_history_chunk(day_rows)
+                bootstrap_rows.extend(day_rows)
+            unique = {(item.trade_time, item.trade_id): item for item in bootstrap_rows}
+            return [unique[key] for key in sorted(unique)]
         rows = history_fetcher(
             exchange=exchange,
             symbol=symbol,
@@ -730,15 +745,16 @@ def fetch_symbol_trades(
 
     gap_rows: list[TradeTick] = []
     for day_start_ms, day_end_ms in _day_windows_in_random_order(span_start_ms, end_open_ms):
-        gap_rows.extend(
-            range_fetcher(
-                exchange=exchange,
-                symbol=symbol,
-                market=market,
-                start_open_ms=day_start_ms,
-                end_open_ms=day_end_ms,
-            )
+        day_rows = range_fetcher(
+            exchange=exchange,
+            symbol=symbol,
+            market=market,
+            start_open_ms=day_start_ms,
+            end_open_ms=day_end_ms,
         )
+        if day_rows and on_history_chunk is not None:
+            on_history_chunk(day_rows)
+        gap_rows.extend(day_rows)
     filtered = _filter_rows_by_start_bound(gap_rows, start_open_ms_bound)
     unique = {(item.trade_time, item.trade_id): item for item in filtered}
     return [unique[key] for key in sorted(unique)]
