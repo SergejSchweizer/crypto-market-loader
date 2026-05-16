@@ -22,17 +22,13 @@ def build_trade_tasks(
 ) -> list[tuple[Exchange, TradeMarket, str]]:
     """Build trade task tuples for requested exchanges/symbols."""
 
+    del ohlcv_markets
     if not trades_requested:
         return []
-    trade_markets = cast(
-        list[TradeMarket],
-        [item for item in ohlcv_markets if item in {"spot", "perp"}] or ["perp"],
-    )
     tasks: list[tuple[Exchange, TradeMarket, str]] = []
     for exchange in exchanges:
-        for market in trade_markets:
-            for symbol in randomized_symbols:
-                tasks.append((exchange, market, symbol))
+        for symbol in randomized_symbols:
+            tasks.append((exchange, "perp", symbol))
     return tasks
 
 

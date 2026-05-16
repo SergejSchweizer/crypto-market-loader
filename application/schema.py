@@ -24,7 +24,7 @@ _CONTRACTS: dict[CliDataType, DatasetContract] = {
     "perp": DatasetContract(cli_data_type="perp", dataset_type="perp", instrument_type="perp"),
     "oi": DatasetContract(cli_data_type="oi", dataset_type="oi", instrument_type="perp"),
     "funding": DatasetContract(cli_data_type="funding", dataset_type="funding", instrument_type="perp"),
-    "trades": DatasetContract(cli_data_type="trades", dataset_type="trades", instrument_type="spot"),
+    "trades": DatasetContract(cli_data_type="trades", dataset_type="trades", instrument_type="perp"),
 }
 
 
