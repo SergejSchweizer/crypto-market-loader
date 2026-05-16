@@ -14,9 +14,9 @@ from application.services.silver_service import (
     build_funding_observed_for_symbol,
     build_oi_1m_feature_for_symbol,
     build_oi_observed_for_symbol,
+    build_perp_trades_1m_feature_for_symbol,
+    build_perp_trades_observed_for_symbol,
     build_silver_for_symbol,
-    build_trades_1m_feature_for_symbol,
-    build_trades_observed_for_symbol,
     discover_symbols,
     write_monthly_sidecars,
 )
@@ -134,7 +134,7 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
         )
 
     def _run_trades(symbol: str) -> None:
-        observed = build_trades_observed_for_symbol(
+        observed = build_perp_trades_observed_for_symbol(
             bronze_root=bronze_root,
             silver_root=silver_root,
             exchange=exchange,
@@ -142,14 +142,14 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             instrument_type="perp",
             timeframe="tick",
         )
-        _append_report("trades_observed", symbol, observed)
-        feature = build_trades_1m_feature_for_symbol(
+        _append_report("perp_trades_observed", symbol, observed)
+        feature = build_perp_trades_1m_feature_for_symbol(
             silver_root=silver_root,
             exchange=exchange,
             symbol=symbol,
             observed_timeframe="tick",
         )
-        _append_report("trades_1m_feature", symbol, feature)
+        _append_report("perp_trades_1m_feature", symbol, feature)
         logger.info(
             "Silver trades reports written symbol=%s observed_rows=%s feature_rows=%s",
             symbol,
@@ -158,7 +158,7 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
         )
 
     def _run_option_trades(symbol: str) -> None:
-        observed = build_trades_observed_for_symbol(
+        observed = build_perp_trades_observed_for_symbol(
             bronze_root=bronze_root,
             silver_root=silver_root,
             exchange=exchange,
@@ -169,7 +169,7 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             output_dataset_type="option_trades_observed",
         )
         _append_report("option_trades_observed", symbol, observed)
-        feature = build_trades_1m_feature_for_symbol(
+        feature = build_perp_trades_1m_feature_for_symbol(
             silver_root=silver_root,
             exchange=exchange,
             symbol=symbol,

@@ -335,6 +335,52 @@ For non-trivial changes, include:
 
 ---
 
+# Additional Engineering Best Practices
+
+## Software Architecture Best Practices
+
+- Prefer layered architecture with clear boundaries: interface (CLI/API), application/service, domain, infrastructure.
+- Keep business rules in domain/application layers; keep framework and storage details at the edges.
+- Enforce dependency direction: higher-level policy must not depend on lower-level implementation details.
+- Make modules explicit about ownership (who reads/writes which dataset or contract).
+- Use contract-first development for data pipelines: schema, keys, partition strategy, and invariants are part of the interface.
+- Favor backward-compatible evolution for data/model contracts; introduce version bumps for breaking changes.
+- Keep side effects isolated behind adapters (HTTP client, parquet IO, filesystem, clock, random source).
+- Design for idempotency and restartability as first-class requirements for all batch/pipeline operations.
+
+## Development Heuristics
+
+- Optimize for smallest safe change: implement the minimum diff that resolves the problem completely.
+- Prefer clarity over cleverness; if a construct is hard to explain, simplify it.
+- Keep one concern per commit/PR whenever practical.
+- Use “make invalid states unrepresentable” via typed DTOs, enums/literals, and validation at boundaries.
+- Fail fast on configuration/contract violations; do not silently continue with ambiguous state.
+- Add regression tests before/with bug fixes; verify both failing-path and corrected-path behavior.
+- Use stable naming conventions across medallion layers (bronze/silver/gold) and keep naming migrations explicit.
+- During refactors, preserve externally observable behavior unless a breaking change is intentional and documented.
+
+## Code Management And Tooling Practices
+
+- Use pre-commit automation for deterministic quality checks and consistent local/CI behavior.
+- Keep dependency management reproducible and locked (`uv` lockfile workflow for install/sync consistency).
+- Use import-linter (or equivalent) to continuously enforce architectural boundaries.
+- Prefer static typing checks in CI (`mypy` and `ty`) to catch drift between runtime and declared contracts.
+- Treat lint/format as non-negotiable hygiene; avoid merging style debt.
+- Use coverage reports to guide risk-based test investments, not only to satisfy threshold metrics.
+- Keep CI pipelines fast and staged: quick checks first (lint/type), heavier checks next (tests/coverage).
+- Maintain changelog/PR notes for schema/config migrations and operational implications.
+- Use structured commit history (Conventional Commits) to improve traceability and release automation.
+
+## Review Checklist (Recommended)
+
+- Architecture: Does the change preserve module boundaries and dependency direction?
+- Contracts: Are schema, config, and CLI contracts explicit, validated, and documented?
+- Reliability: Is behavior idempotent, restart-safe, and observable in logs?
+- Testing: Are regression/edge/failure tests included for changed logic?
+- Operations: Are migration/rollback notes clear when behavior or data layout changes?
+
+---
+
 # Failure Conditions
 
 Agents must not:

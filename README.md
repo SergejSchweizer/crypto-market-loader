@@ -341,7 +341,7 @@ Funding is highly valuable for:
 
 Tick trades represent per-execution market prints.
 
-Silver builds `trades_1m_feature` from tick data and derives:
+Silver builds `perp_trades_1m_feature` from tick data and derives:
 
 | Feature | Meaning |
 |---|---|

@@ -18,12 +18,12 @@ _FULL_MARKET_REQUIREMENTS: list[tuple[str, str]] = [
     ("perp", "1m"),
     ("oi_1m_feature", "1m"),
     ("funding_1m_feature", "1m"),
-    ("trades_1m_feature", "1m"),
+    ("perp_trades_1m_feature", "1m"),
     ("option_trades_1m_feature", "1m"),
 ]
 GOLD_DATASET_SPECS: dict[str, dict[str, object]] = {
     "gold.market.trades.m1": {
-        "requirements": [("trades_1m_feature", "1m")],
+        "requirements": [("perp_trades_1m_feature", "1m")],
         "include_l2": False,
     },
     "gold.market.option_trades.m1": {
@@ -567,7 +567,7 @@ def _prepare_dataset_frame(pl: Any, dataset_type: str, frame: Any, symbol: str) 
         "perp": lambda: _prepare_spot_or_perp(pl, frame, "perp", symbol),
         "oi_1m_feature": lambda: _prepare_oi(pl, frame, symbol),
         "funding_1m_feature": lambda: _prepare_funding(pl, frame, symbol),
-        "trades_1m_feature": lambda: _prepare_trades(pl, frame, symbol),
+        "perp_trades_1m_feature": lambda: _prepare_trades(pl, frame, symbol),
         "option_trades_1m_feature": lambda: _prepare_option_trades(pl, frame, symbol),
         "gold_l2_m1": lambda: _prepare_l2(pl, frame, symbol),
     }
@@ -950,7 +950,7 @@ def _feature_source_dataset(column_name: str) -> str:
     if column_name.startswith("funding_"):
         return "funding_1m_feature"
     if column_name.startswith("trades_"):
-        return "trades_1m_feature"
+        return "perp_trades_1m_feature"
     return "gold_merged"
 
 
