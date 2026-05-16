@@ -117,6 +117,7 @@ Required commands (as configured in `.pre-commit-config.yaml`):
 - `uv run lint-imports --config .importlinter`
 - `uv run python scripts/validate_config_with_pydantic.py --config config.yaml`
 - `uv run pytest`
+- `uv run pytest --cov=. --cov-report=term-missing`
 
 Rules:
 
@@ -124,6 +125,7 @@ Rules:
 - If runtime constraints require a narrower run during iteration, execute the full set before completion whenever practical.
 - If any required check cannot be run, explicitly state which command was not executed and why.
 - Do not claim completion when mandatory checks are failing.
+- Coverage measurement is mandatory in pre-commit validation and must be reported in the final summary.
 
 ## Error Handling And Contracts
 
@@ -173,6 +175,32 @@ Additional expectations:
 - For meaningful changes, preserve or improve coverage and avoid introducing uncovered critical paths.
 - For core pipeline code (bronze/silver/gold transforms, fetch/gap-fill, CLI orchestration), add tests to keep these paths near or above the repository target.
 - If measured coverage is below 90%, explicitly disclose the gap and list follow-up test work required.
+
+Risk-prioritized closure to 90% is mandatory:
+
+1. Cover highest-risk paths first: data correctness, persistence, schema/contract integrity, CLI orchestration, and failure handling.
+2. Then cover medium-risk paths: adapter pagination/retry logic, transformation edge cases, and idempotency/rerun behavior.
+3. Cover lower-risk paths last: presentation/plotting helpers and thin wrappers.
+4. Continue iteratively until measured repository coverage is >= 90%.
+
+## Stepwise Refactoring Procedure (MANDATORY after large changes)
+
+For large/essential changes (architecture updates, cross-module behavior changes, medallion pipeline changes, schema-affecting updates), agents must apply refactoring in small, testable increments.
+
+Required procedure:
+
+1. Split work into small steps with clear scope and ownership (one concern per step).
+2. After each step, run targeted tests for the changed area.
+3. Keep behavior stable between steps; avoid mixing refactor + feature + broad cleanup in one step.
+4. Commit only when the current step is green and reversible.
+5. Re-run full test suite and quality gates after the final step.
+6. Update README/REPORT/AGENTS docs in the same change set when behavior or process expectations changed.
+
+Rules:
+
+- Do not execute large “all-at-once” refactors without intermediate validation.
+- If a step cannot be validated, explicitly stop and report blocker/risks before continuing.
+- Preserve backward compatibility unless the change explicitly documents a breaking contract.
 
 ## CLI Command Validation (MANDATORY)
 

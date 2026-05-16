@@ -263,3 +263,32 @@ def test_run_bronze_build_uses_trade_specific_symbols(monkeypatch) -> None:  # t
     assert ("deribit", "perp", "ETH") in scheduled_trade_tasks
     assert ("deribit", "option", "SOL") in scheduled_trade_tasks
     assert ("deribit", "option", "BTCUSDT") not in scheduled_trade_tasks
+
+
+def test_items_in_random_order_keeps_short_lists() -> None:
+    assert loader_cmd._items_in_random_order([]) == []
+    assert loader_cmd._items_in_random_order(["BTC"]) == ["BTC"]
+
+
+def test_sanitize_symbols_requires_list_input() -> None:
+    with pytest.raises(ValueError, match="Symbols must be provided as a list"):
+        loader_cmd._sanitize_symbols("BTC", logger=logging.getLogger("test"))  # type: ignore[arg-type]
+
+
+def test_resolved_symbol_groups_sanitizes_and_randomizes(monkeypatch: pytest.MonkeyPatch) -> None:
+    args = argparse.Namespace(
+        symbols=["BTC", " ", None, "ETH"],
+        perp_trade_symbols=["SOL", "", "BTC"],
+        option_trade_symbols=["  ", "ETH", "BTC"],
+    )
+
+    monkeypatch.setattr(loader_cmd, "_items_in_random_order", lambda items: list(reversed(items)))
+
+    ohlcv_symbols, perp_trade_symbols, option_trade_symbols = loader_cmd._resolved_symbol_groups(
+        args=args,
+        logger=logging.getLogger("test"),
+    )
+
+    assert ohlcv_symbols == ["ETH", "BTC"]
+    assert perp_trade_symbols == ["BTC", "SOL"]
+    assert option_trade_symbols == ["BTC", "ETH"]

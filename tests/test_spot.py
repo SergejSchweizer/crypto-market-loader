@@ -196,3 +196,58 @@ def test_fetch_candles_range_returns_empty_on_deribit_no_data_status(monkeypatch
     )
 
     assert rows == []
+
+
+def test_deribit_resolution_interval_and_symbol_guards() -> None:
+    assert deribit.to_deribit_resolution("1m") == "1"
+    assert deribit.to_deribit_resolution("1h") == "60"
+    assert deribit.to_deribit_resolution("1d") == "1D"
+    with pytest.raises(ValueError, match="Cannot map interval"):
+        deribit.to_deribit_resolution("1x")
+
+    assert deribit.interval_to_milliseconds("1m") == 60_000
+    assert deribit.interval_to_milliseconds("1h") == 3_600_000
+    assert deribit.interval_to_milliseconds("1d") == 86_400_000
+    with pytest.raises(ValueError, match="Unsupported interval"):
+        deribit.interval_to_milliseconds("1x")
+
+    with pytest.raises(ValueError, match="market must be either"):
+        deribit.normalize_symbol("BTC", "x")
+
+
+def test_deribit_fetch_chart_page_validation_errors(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(deribit, "get_json", lambda *args, **kwargs: [])
+    with pytest.raises(ValueError, match="Unexpected Deribit response format"):
+        deribit._fetch_chart_page("BTC-PERPETUAL", "1", 60_000, 0, 1)
+
+    monkeypatch.setattr(deribit, "get_json", lambda *args, **kwargs: {"result": []})
+    with pytest.raises(ValueError, match="Unexpected Deribit response payload"):
+        deribit._fetch_chart_page("BTC-PERPETUAL", "1", 60_000, 0, 1)
+
+    monkeypatch.setattr(
+        deribit,
+        "get_json",
+        lambda *args, **kwargs: {"result": {"status": "bad", "ticks": [], "open": [], "high": [], "low": [], "close": [], "volume": []}},
+    )
+    with pytest.raises(ValueError, match="Deribit chart status"):
+        deribit._fetch_chart_page("BTC-PERPETUAL", "1", 60_000, 0, 1)
+
+
+def test_deribit_fetch_klines_all_and_range_edge_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(deribit, "_utc_now_ms", lambda: 1_000)
+    calls = {"n": 0}
+
+    def _page(**kwargs: object) -> list[list[object]]:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return [[0, "1", "1", "1", "1", "1", 999, None, 0, "0", "0", "0"]]
+        return []
+
+    monkeypatch.setattr(deribit, "_fetch_chart_page", lambda **kwargs: _page(**kwargs))
+    seen_pages: list[int] = []
+    rows_all = deribit.fetch_klines_all("BTC", "perp", "1m", on_page=lambda page: seen_pages.append(len(page)))
+    assert rows_all
+    assert seen_pages == [1]
+
+    monkeypatch.setattr(deribit, "_fetch_chart_page", lambda **kwargs: [])
+    assert deribit.fetch_klines_range("BTC", "perp", "1m", 10, 5) == []

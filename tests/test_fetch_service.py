@@ -10,16 +10,25 @@ import pytest
 
 import application.services.fetch_service as fetch_service_module
 from application.dto import CandleFetchTaskDTO, FundingFetchTaskDTO, OpenInterestFetchTaskDTO
+from application.dto import TradeFetchTaskDTO
 from application.services.fetch_service import (
+    _filter_chunk_callback,
+    _filter_rows_by_start_bound,
+    _heartbeat_seconds,
+    _ranges_in_random_order,
     _run_with_optional_timeout,
     _split_range_into_utc_days,
     _task_timeout_seconds,
     fetch_candle_tasks_parallel,
+    fetch_symbol_funding,
+    fetch_symbol_open_interest,
     fetch_funding_tasks_parallel,
     fetch_open_interest_tasks_parallel,
+    fetch_trade_tasks_parallel,
     fetch_symbol_candles,
     fetch_symbol_trades,
 )
+from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint
 from ingestion.spot import SpotCandle
 from ingestion.trades import TradeTick
@@ -478,6 +487,51 @@ def test_task_timeout_seconds_uses_safe_default(monkeypatch: pytest.MonkeyPatch)
     assert timeout_s is None
 
 
+def test_heartbeat_seconds_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("DEPTH_FETCH_HEARTBEAT_S", raising=False)
+    assert _heartbeat_seconds() == 30.0
+    monkeypatch.setenv("DEPTH_FETCH_HEARTBEAT_S", "x")
+    assert _heartbeat_seconds() == 30.0
+    monkeypatch.setenv("DEPTH_FETCH_HEARTBEAT_S", "0")
+    assert _heartbeat_seconds() == 30.0
+    monkeypatch.setenv("DEPTH_FETCH_HEARTBEAT_S", "5")
+    assert _heartbeat_seconds() == 5.0
+
+
+def test_ranges_in_random_order_single_and_multi() -> None:
+    assert _ranges_in_random_order([(1, 2)]) == [(1, 2)]
+    values = _ranges_in_random_order([(1, 2), (3, 4), (5, 6)])
+    assert sorted(values) == [(1, 2), (3, 4), (5, 6)]
+
+
+def test_filter_rows_and_chunk_callback_by_start_bound() -> None:
+    start_bound_ms = int(datetime(2026, 4, 27, 10, 1, tzinfo=UTC).timestamp() * 1000)
+    row_old = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
+        open_interest=1.0,
+        open_interest_value=1.0,
+    )
+    row_new = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 10, 1, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 1, 59, 999000, tzinfo=UTC),
+        open_interest=2.0,
+        open_interest_value=2.0,
+    )
+    assert _filter_rows_by_start_bound([row_old, row_new], start_bound_ms) == [row_new]
+    seen: list[int] = []
+    cb = _filter_chunk_callback(lambda rows: seen.append(len(rows)), start_bound_ms)
+    assert cb is not None
+    cb([row_old, row_new])
+    assert seen == [1]
+
+
 def test_run_with_optional_timeout_falls_back_when_process_start_eio(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakeQueue:
         def close(self) -> None:
@@ -598,3 +652,510 @@ def test_fetch_funding_tasks_parallel_emits_task_chunks() -> None:
 
     assert seen == [("deribit", "BTCUSDT", 1)]
     assert (task.exchange, task.symbol, task.timeframe) in result.rows
+
+
+@pytest.mark.parametrize(
+    ("exc_name", "exc_type"),
+    [
+        ("TypeError", TypeError),
+        ("ValueError", ValueError),
+        ("TimeoutError", TimeoutError),
+    ],
+)
+def test_run_with_optional_timeout_maps_worker_error_types(
+    monkeypatch: pytest.MonkeyPatch, exc_name: str, exc_type: type[Exception]
+) -> None:
+    class _FakeQueue:
+        def close(self) -> None:
+            return None
+
+        def join_thread(self) -> None:
+            return None
+
+        def empty(self) -> bool:
+            return False
+
+        def get_nowait(self) -> tuple[str, tuple[str, str]]:
+            return ("err", (exc_name, "boom"))
+
+    class _FakeProcess:
+        def start(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+            return None
+
+        def is_alive(self) -> bool:
+            return False
+
+        def terminate(self) -> None:
+            return None
+
+    class _FakeContext:
+        def Queue(self, maxsize: int = 1) -> _FakeQueue:  # noqa: N802
+            del maxsize
+            return _FakeQueue()
+
+        def Process(self, target: object, args: tuple[object, ...]) -> _FakeProcess:  # noqa: N802
+            del target, args
+            return _FakeProcess()
+
+    monkeypatch.setattr(fetch_service_module.mp, "get_context", lambda _: _FakeContext())
+
+    with pytest.raises(exc_type, match="boom"):
+        _run_with_optional_timeout(
+            lambda **_: "ok",
+            timeout_s=1.0,
+            heartbeat_s=0.1,
+            heartbeat=lambda _elapsed_s: None,
+            use_process_timeout=True,
+        )
+
+
+def test_run_with_optional_timeout_raises_when_worker_exits_without_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeQueue:
+        def close(self) -> None:
+            return None
+
+        def join_thread(self) -> None:
+            return None
+
+        def empty(self) -> bool:
+            return True
+
+    class _FakeProcess:
+        exitcode = 0
+
+        def start(self) -> None:
+            return None
+
+        def join(self, timeout: float | None = None) -> None:
+            del timeout
+            return None
+
+        def is_alive(self) -> bool:
+            return False
+
+        def terminate(self) -> None:
+            return None
+
+    class _FakeContext:
+        def Queue(self, maxsize: int = 1) -> _FakeQueue:  # noqa: N802
+            del maxsize
+            return _FakeQueue()
+
+        def Process(self, target: object, args: tuple[object, ...]) -> _FakeProcess:  # noqa: N802
+            del target, args
+            return _FakeProcess()
+
+    monkeypatch.setattr(fetch_service_module.mp, "get_context", lambda _: _FakeContext())
+
+    with pytest.raises(RuntimeError, match="exited without result"):
+        _run_with_optional_timeout(
+            lambda **_: "ok",
+            timeout_s=1.0,
+            heartbeat_s=0.1,
+            heartbeat=lambda _elapsed_s: None,
+            use_process_timeout=True,
+        )
+
+
+def test_fetch_funding_tasks_parallel_retries_without_history_chunk_when_unsupported() -> None:
+    task = FundingFetchTaskDTO(exchange="deribit", symbol="BTCUSDT", timeframe="8h")
+    called_with_chunk: list[bool] = []
+
+    def _fetcher(**kwargs: object) -> list[object]:
+        has_chunk = "on_history_chunk" in kwargs
+        called_with_chunk.append(has_chunk)
+        if has_chunk:
+            raise TypeError("unexpected keyword argument 'on_history_chunk'")
+        return [object()]
+
+    result = fetch_funding_tasks_parallel(
+        tasks=[task],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=cast(Any, _fetcher),
+        on_task_chunk=lambda _task, _rows: None,
+    )
+
+    key = (task.exchange, task.symbol, task.timeframe)
+    assert key in result.rows
+    assert key not in result.errors
+    assert called_with_chunk == [True, False]
+
+
+def test_fetch_open_interest_tasks_parallel_retries_without_history_chunk_when_unsupported() -> None:
+    task = OpenInterestFetchTaskDTO(exchange="deribit", symbol="BTCUSDT", timeframe="1m")
+    called_with_chunk: list[bool] = []
+
+    def _fetcher(**kwargs: object) -> list[OpenInterestPoint]:
+        has_chunk = "on_history_chunk" in kwargs
+        called_with_chunk.append(has_chunk)
+        if has_chunk:
+            raise TypeError("unexpected keyword argument 'on_history_chunk'")
+        return []
+
+    result = fetch_open_interest_tasks_parallel(
+        tasks=[task],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=_fetcher,
+        on_task_chunk=lambda _task, _rows: None,
+    )
+
+    key = (task.exchange, task.symbol, task.timeframe)
+    assert key in result.rows
+    assert key not in result.errors
+    assert called_with_chunk == [True, False]
+
+
+def test_fetch_trade_tasks_parallel_records_errors() -> None:
+    task = TradeFetchTaskDTO(exchange="deribit", market="perp", symbol="BTC")
+
+    def _failing_fetcher(**kwargs: object) -> list[TradeTick]:
+        del kwargs
+        raise RuntimeError("trade boom")
+
+    result = fetch_trade_tasks_parallel(
+        tasks=[task],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=cast(Any, _failing_fetcher),
+    )
+
+    key = (task.exchange, task.market, task.symbol)
+    assert key in result.errors
+    assert "trade boom" in result.errors[key]
+
+
+def test_fetch_open_interest_tasks_parallel_mixed_results_and_on_task_complete() -> None:
+    task_ok = OpenInterestFetchTaskDTO(exchange="deribit", symbol="BTCUSDT", timeframe="1m")
+    task_fail = OpenInterestFetchTaskDTO(exchange="deribit", symbol="ETHUSDT", timeframe="1m")
+    point = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
+        open_interest=1000.0,
+        open_interest_value=2000.0,
+    )
+    completed: list[tuple[str, int]] = []
+
+    def _fetcher(**kwargs: object) -> list[OpenInterestPoint]:
+        symbol = cast(str, kwargs["symbol"])
+        if symbol == "ETHUSDT":
+            raise RuntimeError("oi boom")
+        return [point]
+
+    def _on_complete(task: OpenInterestFetchTaskDTO, rows: list[OpenInterestPoint]) -> None:
+        completed.append((task.symbol, len(rows)))
+
+    result = fetch_open_interest_tasks_parallel(
+        tasks=[task_ok, task_fail],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=_fetcher,
+        on_task_complete=_on_complete,
+    )
+
+    ok_key = (task_ok.exchange, task_ok.symbol, task_ok.timeframe)
+    fail_key = (task_fail.exchange, task_fail.symbol, task_fail.timeframe)
+    assert ok_key in result.rows
+    assert fail_key in result.errors
+    assert completed == [("BTCUSDT", 1)]
+
+
+def test_fetch_funding_tasks_parallel_mixed_results_and_on_task_complete() -> None:
+    task_ok = FundingFetchTaskDTO(exchange="deribit", symbol="BTCUSDT", timeframe="8h")
+    task_fail = FundingFetchTaskDTO(exchange="deribit", symbol="ETHUSDT", timeframe="8h")
+    completed: list[tuple[str, int]] = []
+
+    def _fetcher(**kwargs: object) -> list[object]:
+        symbol = cast(str, kwargs["symbol"])
+        if symbol == "ETHUSDT":
+            raise RuntimeError("funding boom")
+        return [object(), object()]
+
+    def _on_complete(task: FundingFetchTaskDTO, rows: list[object]) -> None:
+        completed.append((task.symbol, len(rows)))
+
+    result = fetch_funding_tasks_parallel(
+        tasks=[task_ok, task_fail],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=cast(Any, _fetcher),
+        on_task_complete=cast(Any, _on_complete),
+    )
+
+    ok_key = (task_ok.exchange, task_ok.symbol, task_ok.timeframe)
+    fail_key = (task_fail.exchange, task_fail.symbol, task_fail.timeframe)
+    assert ok_key in result.rows
+    assert fail_key in result.errors
+    assert completed == [("BTCUSDT", 2)]
+
+
+def test_fetch_open_interest_tasks_parallel_records_on_task_complete_errors() -> None:
+    task = OpenInterestFetchTaskDTO(exchange="deribit", symbol="BTCUSDT", timeframe="1m")
+    point = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
+        open_interest=1000.0,
+        open_interest_value=2000.0,
+    )
+
+    result = fetch_open_interest_tasks_parallel(
+        tasks=[task],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=lambda **kwargs: [point],
+        on_task_complete=lambda _task, _rows: (_ for _ in ()).throw(RuntimeError("complete boom")),
+    )
+
+    key = (task.exchange, task.symbol, task.timeframe)
+    assert key in result.errors
+    assert "complete boom" in result.errors[key]
+
+
+def test_fetch_funding_tasks_parallel_records_on_task_complete_errors() -> None:
+    task = FundingFetchTaskDTO(exchange="deribit", symbol="BTCUSDT", timeframe="8h")
+
+    result = fetch_funding_tasks_parallel(
+        tasks=[task],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=cast(Any, (lambda **kwargs: [object()])),
+        on_task_complete=cast(Any, (lambda _task, _rows: (_ for _ in ()).throw(RuntimeError("funding complete boom")))),
+    )
+
+    key = (task.exchange, task.symbol, task.timeframe)
+    assert key in result.errors
+    assert "funding complete boom" in result.errors[key]
+
+
+def test_fetch_candle_tasks_parallel_retries_without_history_chunk_when_unsupported() -> None:
+    task = CandleFetchTaskDTO(exchange="deribit", market="spot", symbol="BTCUSDT", timeframe="1m")
+    seen_chunk_kwarg: list[bool] = []
+
+    def _fetcher(
+        exchange: str,
+        market: str,
+        symbol: str,
+        timeframe: str,
+        lake_root: str,
+        on_history_chunk: Any | None = None,
+    ) -> list[SpotCandle]:
+        del exchange, market, symbol, timeframe, lake_root
+        has_chunk = on_history_chunk is not None
+        seen_chunk_kwarg.append(has_chunk)
+        if has_chunk:
+            raise TypeError("unexpected keyword argument 'on_history_chunk'")
+        return []
+
+    result = fetch_candle_tasks_parallel(
+        tasks=[task],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=cast(Any, _fetcher),
+        on_task_chunk=lambda _task, _rows: None,
+    )
+
+    key = (task.exchange, task.market, task.symbol, task.timeframe)
+    assert key in result.rows
+    assert key not in result.errors
+    assert seen_chunk_kwarg == [True, False]
+
+
+def test_fetch_symbol_open_interest_non_perp_returns_empty() -> None:
+    assert (
+        fetch_symbol_open_interest(
+            exchange="deribit",
+            market="spot",
+            symbol="BTC",
+            timeframe="1m",
+            lake_root="lake/bronze",
+        )
+        == []
+    )
+
+
+def test_fetch_symbol_open_interest_tail_requires_latest_reader() -> None:
+    with pytest.raises(ValueError, match="latest_open_time_reader is required"):
+        fetch_symbol_open_interest(
+            exchange="deribit",
+            market="perp",
+            symbol="BTC",
+            timeframe="1m",
+            lake_root="lake/bronze",
+            tail_delta_only=True,
+            latest_open_time_reader=None,
+        )
+
+
+def test_fetch_symbol_open_interest_tail_latest_none_uses_history() -> None:
+    point = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 10, 2, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 2, 59, 999000, tzinfo=UTC),
+        open_interest=10.0,
+        open_interest_value=20.0,
+    )
+    rows = fetch_symbol_open_interest(
+        exchange="deribit",
+        market="perp",
+        symbol="BTC",
+        timeframe="1m",
+        lake_root="lake/bronze",
+        timeframe_normalizer=lambda **kwargs: "1m",
+        symbol_normalizer=lambda **kwargs: "BTC-PERPETUAL",
+        interval_ms_resolver=lambda **kwargs: 60_000,
+        now_open_resolver=lambda **kwargs: int(datetime(2026, 4, 27, 10, 5, tzinfo=UTC).timestamp() * 1000),
+        latest_open_time_reader=lambda **kwargs: None,
+        history_fetcher=lambda **kwargs: [point],
+        range_fetcher=lambda **kwargs: [],
+        tail_delta_only=True,
+    )
+    assert [item.open_time for item in rows] == [point.open_time]
+
+
+def test_fetch_symbol_funding_non_perp_and_tail_requires_reader() -> None:
+    assert (
+        fetch_symbol_funding(
+            exchange="deribit",
+            market="spot",
+            symbol="BTC",
+            timeframe="8h",
+            lake_root="lake/bronze",
+        )
+        == []
+    )
+    with pytest.raises(ValueError, match="latest_open_time_reader is required"):
+        fetch_symbol_funding(
+            exchange="deribit",
+            market="perp",
+            symbol="BTC",
+            timeframe="8h",
+            lake_root="lake/bronze",
+            tail_delta_only=True,
+            latest_open_time_reader=None,
+        )
+
+
+def test_fetch_symbol_funding_tail_and_gapfill_paths() -> None:
+    point = FundingPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="8h",
+        open_time=datetime(2026, 4, 27, 8, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 15, 59, 59, tzinfo=UTC),
+        funding_rate=0.001,
+        index_price=1.0,
+        mark_price=1.0,
+    )
+    calls: list[tuple[int, int]] = []
+
+    def _range_fetcher(**kwargs: object) -> list[FundingPoint]:
+        calls.append((int(cast(Any, kwargs["start_open_ms"])), int(cast(Any, kwargs["end_open_ms"]))))
+        return [point]
+
+    rows = fetch_symbol_funding(
+        exchange="deribit",
+        market="perp",
+        symbol="BTC",
+        timeframe="8h",
+        lake_root="lake/bronze",
+        timeframe_normalizer=lambda **kwargs: "8h",
+        symbol_normalizer=lambda **kwargs: "BTC-PERPETUAL",
+        interval_ms_resolver=lambda **kwargs: 8 * 60 * 60 * 1000,
+        now_open_resolver=lambda **kwargs: int(datetime(2026, 4, 27, 16, 0, tzinfo=UTC).timestamp() * 1000),
+        latest_open_time_reader=lambda **kwargs: datetime(2026, 4, 27, 0, 0, tzinfo=UTC),
+        history_fetcher=lambda **kwargs: [],
+        range_fetcher=_range_fetcher,
+        tail_delta_only=True,
+    )
+    assert rows
+    assert calls
+
+
+def test_fetch_trade_tasks_parallel_emits_task_chunks() -> None:
+    task = TradeFetchTaskDTO(exchange="deribit", market="perp", symbol="BTC")
+    seen: list[tuple[str, str, int]] = []
+
+    tick = TradeTick(
+        exchange="deribit",
+        symbol="BTC",
+        instrument_type="perp",
+        trade_id="a",
+        trade_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
+        price=100.0,
+        quantity=1.0,
+        side="buy",
+        is_maker=False,
+        source_endpoint="public_trades",
+    )
+
+    def _fetcher(**kwargs: object) -> list[TradeTick]:
+        cb = cast(Any, kwargs["on_history_chunk"])
+        cb([tick])
+        return [tick]
+
+    def _on_chunk(task_dto: TradeFetchTaskDTO, rows: list[TradeTick]) -> None:
+        seen.append((task_dto.exchange, task_dto.symbol, len(rows)))
+
+    result = fetch_trade_tasks_parallel(
+        tasks=[task],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=cast(Any, _fetcher),
+        on_task_chunk=cast(Any, _on_chunk),
+    )
+
+    assert seen == [("deribit", "BTC", 1)]
+    assert (task.exchange, task.market, task.symbol) in result.rows
+
+
+def test_fetch_trade_tasks_parallel_records_on_task_complete_errors() -> None:
+    task = TradeFetchTaskDTO(exchange="deribit", market="perp", symbol="BTC")
+    tick = TradeTick(
+        exchange="deribit",
+        symbol="BTC",
+        instrument_type="perp",
+        trade_id="a",
+        trade_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
+        price=100.0,
+        quantity=1.0,
+        side="buy",
+        is_maker=False,
+        source_endpoint="public_trades",
+    )
+
+    result = fetch_trade_tasks_parallel(
+        tasks=[task],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=cast(Any, (lambda **kwargs: [tick])),
+        on_task_complete=cast(Any, (lambda _task, _rows: (_ for _ in ()).throw(RuntimeError("trade complete boom")))),
+    )
+
+    key = (task.exchange, task.market, task.symbol)
+    assert key in result.errors
+    assert "trade complete boom" in result.errors[key]

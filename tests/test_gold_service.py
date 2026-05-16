@@ -8,9 +8,118 @@ from pathlib import Path
 
 import pytest
 
-from application.services.gold_service import build_gold_for_symbol, discover_gold_symbols
+from application.services.gold_service import (
+    _bump_semver,
+    _contract_bump_level,
+    _dataset_includes_l2,
+    _dataset_requirements,
+    _feature_hash,
+    _feature_source_dataset,
+    _json_payload_hash,
+    _parse_semver,
+    build_gold_for_symbol,
+    discover_gold_symbols,
+    normalize_symbol,
+)
 
 pl = pytest.importorskip("polars")
+
+
+def test_parse_and_bump_semver() -> None:
+    assert _parse_semver("v1.2.3") == (1, 2, 3)
+    assert _bump_semver("v1.2.3", "major") == "v2.0.0"
+    assert _bump_semver("v1.2.3", "minor") == "v1.3.0"
+    assert _bump_semver("v1.2.3", "patch") == "v1.2.4"
+    assert _bump_semver("v1.2.3", "none") == "v1.2.3"
+    with pytest.raises(ValueError, match="Invalid semantic version"):
+        _parse_semver("1.2.3")
+    with pytest.raises(ValueError, match="Unsupported semver bump level"):
+        _bump_semver("v1.2.3", "x")
+
+
+def test_contract_bump_level_branches() -> None:
+    current = {
+        "columns": ["a", "b"],
+        "join_policy": "full_outer_coalesce",
+        "source_dataset_keys": ["spot_1m"],
+    }
+    prev_invalid = {"contract_signature": {"columns": "x", "join_policy": "full_outer_coalesce", "source_dataset_keys": []}}
+    assert _contract_bump_level(prev_invalid, current, previous_source_data_hash="h1", current_source_data_hash="h1") == (
+        "major",
+        "invalid_contract_signature",
+    )
+    prev_join = {"contract_signature": {"columns": ["a", "b"], "join_policy": "inner", "source_dataset_keys": ["spot_1m"]}}
+    assert _contract_bump_level(prev_join, current, previous_source_data_hash="h1", current_source_data_hash="h1") == (
+        "major",
+        "join_policy_changed",
+    )
+    prev_removed_key = {
+        "contract_signature": {
+            "columns": ["a", "b"],
+            "join_policy": "full_outer_coalesce",
+            "source_dataset_keys": ["spot_1m", "perp_1m"],
+        }
+    }
+    assert _contract_bump_level(prev_removed_key, current, previous_source_data_hash="h1", current_source_data_hash="h1") == (
+        "major",
+        "source_dataset_removed",
+    )
+    prev_missing_col = {
+        "contract_signature": {
+            "columns": ["a", "b", "c"],
+            "join_policy": "full_outer_coalesce",
+            "source_dataset_keys": ["spot_1m"],
+        }
+    }
+    assert _contract_bump_level(prev_missing_col, current, previous_source_data_hash="h1", current_source_data_hash="h1") == (
+        "major",
+        "column_removed_or_renamed",
+    )
+    prev_order = {
+        "contract_signature": {
+            "columns": ["b", "a"],
+            "join_policy": "full_outer_coalesce",
+            "source_dataset_keys": ["spot_1m"],
+        }
+    }
+    assert _contract_bump_level(prev_order, current, previous_source_data_hash="h1", current_source_data_hash="h1") == (
+        "major",
+        "column_order_changed",
+    )
+    prev_same = {"contract_signature": current}
+    assert _contract_bump_level(prev_same, current, previous_source_data_hash="old", current_source_data_hash="new") == (
+        "patch",
+        "source_data_changed",
+    )
+    assert _contract_bump_level(prev_same, current, previous_source_data_hash="same", current_source_data_hash="same") == (
+        "none",
+        "no_change",
+    )
+
+
+def test_dataset_specs_symbol_normalization_and_hash_helpers() -> None:
+    assert _dataset_requirements("gold.market.full.m1")
+    assert _dataset_includes_l2("gold.hybrid.full_l2.m1") is True
+    assert _dataset_includes_l2("gold.market.full.m1") is False
+    with pytest.raises(ValueError, match="Unsupported dataset_id"):
+        _dataset_requirements("gold.market.unknown")
+    with pytest.raises(ValueError, match="Unsupported dataset_id"):
+        _dataset_includes_l2("gold.market.unknown")
+
+    assert normalize_symbol("btc/usdc") == "BTC"
+    assert normalize_symbol("eth-perpetual") == "ETH"
+    assert _feature_source_dataset("spot_close_price") == "spot_1m"
+    assert _feature_source_dataset("perp_close_price") == "perp_1m"
+    assert _feature_source_dataset("oi_observation_lag_sec") == "oi_1m_feature"
+    assert _feature_source_dataset("funding_rate_last_known") == "funding_1m_feature"
+    assert _feature_source_dataset("trades_open_price") == "trades_1m_feature"
+    assert _feature_source_dataset("option_trades_open_price") == "option_trades_1m_feature"
+    assert _feature_source_dataset("l2_coverage_ratio") == "gold_merged"
+    assert _feature_source_dataset("custom_col") == "gold_merged"
+
+    assert _feature_hash(["a", "b"]) == _feature_hash(["a", "b"])
+    assert _feature_hash(["a", "b"]) != _feature_hash(["b", "a"])
+    assert _json_payload_hash({"a": 1, "b": 2}) == _json_payload_hash({"b": 2, "a": 1})
 
 
 def _write_silver_month(
