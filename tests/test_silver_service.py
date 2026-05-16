@@ -702,3 +702,105 @@ def test_build_trades_1m_feature_filters_invalid_and_deduplicates(tmp_path: Path
     )
     assert report.rows_in == 1
     assert report.rows_out == 1
+
+
+def test_build_option_trades_1m_feature_for_symbol(tmp_path: Path) -> None:
+    bronze = tmp_path / "bronze"
+    silver = tmp_path / "silver"
+    symbol = "BTC"
+    rows = [
+        {
+            "schema_version": "v1",
+            "dataset_type": "option_trades",
+            "exchange": "deribit",
+            "symbol": symbol,
+            "instrument_type": "option",
+            "event_time": datetime(2026, 5, 1, 0, 0, 10, tzinfo=UTC),
+            "ingested_at": datetime(2026, 5, 1, 0, 0, 11, tzinfo=UTC),
+            "run_id": "r1",
+            "source_endpoint": "public_option_trades",
+            "open_time": datetime(2026, 5, 1, 0, 0, 10, tzinfo=UTC),
+            "close_time": datetime(2026, 5, 1, 0, 0, 10, tzinfo=UTC),
+            "timeframe": "tick",
+            "trade_id": "o1",
+            "price": 10.0,
+            "quantity": 2.0,
+            "side": "buy",
+            "is_maker": True,
+            "instrument_name": "BTC-31MAY26-100000-C",
+            "expiry": "31MAY26",
+            "strike": 100000.0,
+            "option_type": "call",
+        },
+        {
+            "schema_version": "v1",
+            "dataset_type": "option_trades",
+            "exchange": "deribit",
+            "symbol": symbol,
+            "instrument_type": "option",
+            "event_time": datetime(2026, 5, 1, 0, 0, 20, tzinfo=UTC),
+            "ingested_at": datetime(2026, 5, 1, 0, 0, 21, tzinfo=UTC),
+            "run_id": "r1",
+            "source_endpoint": "public_option_trades",
+            "open_time": datetime(2026, 5, 1, 0, 0, 20, tzinfo=UTC),
+            "close_time": datetime(2026, 5, 1, 0, 0, 20, tzinfo=UTC),
+            "timeframe": "tick",
+            "trade_id": "o2",
+            "price": 12.0,
+            "quantity": 1.0,
+            "side": "sell",
+            "is_maker": False,
+            "instrument_name": "BTC-31MAY26-105000-C",
+            "expiry": "31MAY26",
+            "strike": 105000.0,
+            "option_type": "call",
+        },
+    ]
+    _write_bronze_day_file(
+        bronze,
+        market="option_trades",
+        exchange="deribit",
+        symbol=symbol,
+        timeframe="tick",
+        month="2026-05",
+        day="2026-05-01",
+        rows=rows,
+        dataset_type="option_trades",
+        instrument_type="option",
+    )
+
+    observed_report = build_trades_observed_for_symbol(
+        bronze_root=str(bronze),
+        silver_root=str(silver),
+        exchange="deribit",
+        symbol=symbol,
+        instrument_type="option",
+        timeframe="tick",
+        bronze_dataset_type="option_trades",
+        output_dataset_type="option_trades_observed",
+    )
+    assert observed_report.dataset == "option_trades_observed"
+
+    feature_report = build_trades_1m_feature_for_symbol(
+        silver_root=str(silver),
+        exchange="deribit",
+        symbol=symbol,
+        observed_timeframe="tick",
+        observed_dataset_type="option_trades_observed",
+        output_dataset_type="option_trades_1m_feature",
+    )
+    assert feature_report.dataset == "option_trades_1m_feature"
+    assert feature_report.rows_in == 2
+    assert feature_report.rows_out == 1
+
+    out_file = (
+        silver
+        / "dataset_type=option_trades_1m_feature"
+        / "exchange=deribit"
+        / f"symbol={symbol}"
+        / "timeframe=1m"
+        / "year=2026"
+        / "month=2026-05"
+        / f"{symbol}-2026-05.parquet"
+    )
+    assert out_file.exists()

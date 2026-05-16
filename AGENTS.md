@@ -46,6 +46,24 @@ Rules:
 - Prefer composable designs and separation of concerns.
 - Prioritize long-term maintainability over short-term convenience.
 
+## Design Patterns Policy
+
+Use Python design patterns pragmatically when they reduce duplication, improve clarity, or make behavior safer to extend.
+
+Preferred usage:
+
+- Strategy pattern for interchangeable behaviors (provider adapters, fetch policies, serialization policies).
+- Template Method for shared orchestration with small, well-defined variant steps.
+- Factory pattern for constructing typed clients/services without leaking wiring details.
+- Repository/DAO style boundaries for storage access to avoid persistence logic in domain workflows.
+
+Rules:
+
+- Do not introduce patterns as ceremony; justify them with concrete simplification.
+- Keep pattern boundaries explicit and discoverable in module structure and naming.
+- Prefer small pure helper functions before introducing classes.
+- Refactors that introduce patterns must preserve behavior and include regression tests.
+
 ## Scalability And Reliability Policy
 
 All technical decisions must account for likely growth, such as:
@@ -86,6 +104,49 @@ Code must remain compatible with project quality gates, typically:
 - `mypy`/`pyright` (or equivalent type checker)
 - `pytest` (or equivalent test runner)
 
+## Pre-Commit Quality Gates (MANDATORY)
+
+All changes must satisfy the repository pre-commit hooks. Treat these as mandatory quality gates.
+
+Required commands (as configured in `.pre-commit-config.yaml`):
+
+- `uv run ruff check .`
+- `uv run ruff format --check .`
+- `uv run mypy .`
+- `uv run ty check .`
+- `uv run lint-imports --config .importlinter`
+- `uv run python scripts/validate_config_with_pydantic.py --config config.yaml`
+- `uv run pytest`
+
+Rules:
+
+- Prefer running the full hook-equivalent command set before finalizing meaningful changes.
+- If runtime constraints require a narrower run during iteration, execute the full set before completion whenever practical.
+- If any required check cannot be run, explicitly state which command was not executed and why.
+- Do not claim completion when mandatory checks are failing.
+
+## Error Handling And Contracts
+
+- Fail fast on invalid inputs and invariant violations.
+- Raise specific exceptions; avoid broad `except Exception` without re-raise or structured handling.
+- Error messages must include actionable context (which symbol, exchange, date range, dataset).
+- Public interfaces must document expected inputs/outputs and failure modes.
+- Keep I/O boundaries validated (API payload shape, schema fields, config keys).
+
+## Observability And Logging
+
+- Use structured, context-rich logs for long-running tasks and batch workflows.
+- Include progress indicators for backfills (task index, symbol, time range, row count, elapsed time).
+- Log warnings for partial/fallback behavior and hard limits (pagination caps, retries, truncation).
+- Never log secrets or sensitive values.
+
+## Performance And Resource Efficiency
+
+- Avoid repeated full scans when an incremental strategy is available.
+- Keep memory usage bounded for large backfills (chunking/streaming where possible).
+- Make expensive operations explicit and configurable (timeouts, concurrency, page sizes).
+- Prefer deterministic deduplication and stable ordering in outputs.
+
 ---
 
 # Testing Rules
@@ -98,6 +159,13 @@ Minimum expectation:
 - run full test suite before finalization when practical
 
 If checks cannot be run, explicitly state what was not run and why.
+
+Additional expectations:
+
+- Add regression tests for every bug fix.
+- Test happy path, edge cases, and failure path for changed logic.
+- Keep tests deterministic (fixed timestamps/seeds/fixtures; no flaky external dependency assumptions).
+- For pipeline logic, validate idempotency and rerun behavior where relevant.
 
 ## CLI Command Validation (MANDATORY)
 
@@ -223,6 +291,12 @@ For meaningful changes, agents should:
 - add or update tests
 - update relevant docs
 - note architectural implications
+
+For non-trivial changes, include:
+
+- rationale and tradeoffs
+- rollback or mitigation notes for operational risk
+- explicit note of config/schema/doc updates (or confirmation none were required)
 
 ---
 

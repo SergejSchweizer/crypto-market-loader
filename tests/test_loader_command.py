@@ -84,6 +84,8 @@ def test_run_bronze_build_emits_manifest_and_plot_file_lists(tmp_path: Path, mon
         exchanges=None,
         market=["spot"],
         symbols=["BTCUSDT"],
+        perp_trade_symbols=["BTC"],
+        option_trade_symbols=["BTC"],
         save_parquet_lake=True,
         lake_root=str(tmp_path),
         no_json_output=False,
@@ -176,6 +178,8 @@ def test_run_bronze_build_drops_invalid_symbols_before_scheduling(monkeypatch) -
         exchanges=None,
         market=["spot", "perp", "oi", "funding"],
         symbols=["BTC", None, " ", "\t", "ETH"],
+        perp_trade_symbols=["BTC", None, " ", "\t", "ETH"],
+        option_trade_symbols=["BTC", None, " ", "\t", "ETH"],
         save_parquet_lake=False,
         lake_root="lake/bronze",
         no_json_output=True,
@@ -207,6 +211,8 @@ def test_run_bronze_build_raises_when_no_valid_symbols(monkeypatch) -> None:  # 
         exchanges=None,
         market=["spot"],
         symbols=[None, "", "  "],
+        perp_trade_symbols=["BTC"],
+        option_trade_symbols=["BTC"],
         save_parquet_lake=False,
         lake_root="lake/bronze",
         no_json_output=True,
@@ -215,3 +221,45 @@ def test_run_bronze_build_raises_when_no_valid_symbols(monkeypatch) -> None:  # 
     logger = logging.getLogger("test_symbol_sanitization_empty")
     with pytest.raises(ValueError, match="No valid symbols configured"):
         loader_cmd.run_bronze_build(args=args, logger=logger)
+
+
+def test_run_bronze_build_uses_trade_specific_symbols(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    class _NoopLock:
+        def __init__(self, lock_path: str) -> None:
+            del lock_path
+
+        def __enter__(self) -> None:
+            return None
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            del exc_type, exc, tb
+
+    scheduled_trade_tasks: list[tuple[str, str, str]] = []
+
+    def _fake_fetch_all_task_groups(**kwargs: object):  # type: ignore[no-untyped-def]
+        scheduled_trade_tasks.extend(kwargs["trade_tasks"])
+        return ({}, {}, {}, {}, {}, {}, {}, {})
+
+    monkeypatch.setattr(loader_cmd, "SingleInstanceLock", _NoopLock)
+    monkeypatch.setattr(loader_cmd, "_fetch_all_task_groups", _fake_fetch_all_task_groups)
+    monkeypatch.setattr(loader_cmd, "ensure_bronze_sidecars", lambda **kwargs: [])
+
+    args = argparse.Namespace(
+        exchange="deribit",
+        exchanges=None,
+        market=["perp_trades", "option_trades"],
+        symbols=["BTCUSDT", "ETHUSDT"],
+        perp_trade_symbols=["BTC", "ETH"],
+        option_trade_symbols=["SOL"],
+        save_parquet_lake=False,
+        lake_root="lake/bronze",
+        no_json_output=True,
+        tail_delta_only=True,
+    )
+    logger = logging.getLogger("test_trade_symbols")
+    loader_cmd.run_bronze_build(args=args, logger=logger)
+
+    assert ("deribit", "perp", "BTC") in scheduled_trade_tasks
+    assert ("deribit", "perp", "ETH") in scheduled_trade_tasks
+    assert ("deribit", "option", "SOL") in scheduled_trade_tasks
+    assert ("deribit", "option", "BTCUSDT") not in scheduled_trade_tasks

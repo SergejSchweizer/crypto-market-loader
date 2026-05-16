@@ -16,7 +16,8 @@ DataType = Literal["spot", "perp", "oi", "funding", "perp_trades", "option_trade
 def build_trade_tasks(
     *,
     exchanges: list[Exchange],
-    randomized_symbols: list[str],
+    randomized_perp_trade_symbols: list[str],
+    randomized_option_trade_symbols: list[str],
     perp_trades_requested: bool,
     option_trades_requested: bool,
 ) -> list[tuple[Exchange, TradeMarket, str]]:
@@ -26,10 +27,11 @@ def build_trade_tasks(
         return []
     tasks: list[tuple[Exchange, TradeMarket, str]] = []
     for exchange in exchanges:
-        for symbol in randomized_symbols:
-            if perp_trades_requested:
+        if perp_trades_requested:
+            for symbol in randomized_perp_trade_symbols:
                 tasks.append((exchange, "perp", symbol))
-            if option_trades_requested:
+        if option_trades_requested:
+            for symbol in randomized_option_trade_symbols:
                 tasks.append((exchange, "option", symbol))
     return tasks
 

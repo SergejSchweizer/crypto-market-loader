@@ -33,8 +33,8 @@ def add_silver_build_parser(subparsers: argparse._SubParsersAction[argparse.Argu
     parser.add_argument(
         "--market",
         nargs="+",
-        choices=["spot", "perp", "oi", "funding", "perp_trades"],
-        default=["spot", "perp", "oi", "funding", "perp_trades"],
+        choices=["spot", "perp", "oi", "funding", "perp_trades", "option_trades"],
+        default=["spot", "perp", "oi", "funding", "perp_trades", "option_trades"],
     )
     parser.add_argument("--symbols", nargs="+", help="Optional symbol list; auto-discovered when omitted")
     parser.add_argument("--timeframe", default="1m", help="Timeframe to process (default: 1m)")
@@ -150,6 +150,34 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             feature.rows_out,
         )
 
+    def _run_option_trades(symbol: str) -> None:
+        observed = build_trades_observed_for_symbol(
+            bronze_root=bronze_root,
+            silver_root=silver_root,
+            exchange=exchange,
+            symbol=symbol,
+            instrument_type="option",
+            timeframe="tick",
+            bronze_dataset_type="option_trades",
+            output_dataset_type="option_trades_observed",
+        )
+        _append_report("option_trades_observed", symbol, observed)
+        feature = build_trades_1m_feature_for_symbol(
+            silver_root=silver_root,
+            exchange=exchange,
+            symbol=symbol,
+            observed_timeframe="tick",
+            observed_dataset_type="option_trades_observed",
+            output_dataset_type="option_trades_1m_feature",
+        )
+        _append_report("option_trades_1m_feature", symbol, feature)
+        logger.info(
+            "Silver option trades reports written symbol=%s observed_rows=%s feature_rows=%s",
+            symbol,
+            observed.rows_out,
+            feature.rows_out,
+        )
+
     def _run_ohlcv(market: str, symbol: str) -> None:
         report = build_silver_for_symbol(
             bronze_root=bronze_root,
@@ -172,17 +200,26 @@ def run_silver_build(args: argparse.Namespace, logger: logging.Logger) -> None:
         "funding": _run_funding,
         "oi": _run_oi,
         "perp_trades": _run_trades,
+        "option_trades": _run_option_trades,
     }
 
     for market in cast(list[str], args.market):
         symbols = cast(list[str] | None, args.symbols)
-        bronze_dataset = "funding" if market == "funding" else ("trades" if market == "perp_trades" else market)
-        bronze_instrument = "perp" if market in {"funding", "oi", "perp_trades"} else market
+        bronze_dataset = (
+            "funding"
+            if market == "funding"
+            else "trades"
+            if market == "perp_trades"
+            else "option_trades"
+            if market == "option_trades"
+            else market
+        )
+        bronze_instrument = "perp" if market in {"funding", "oi", "perp_trades"} else "option" if market == "option_trades" else market
         discovery_timeframe = (
             DERIBIT_FUNDING_NATIVE_INTERVAL
             if market == "funding"
             else "tick"
-            if market == "perp_trades"
+            if market in {"perp_trades", "option_trades"}
             else timeframe
         )
         effective_symbols = symbols or discover_symbols(

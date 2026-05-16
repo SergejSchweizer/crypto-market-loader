@@ -18,8 +18,17 @@ _FULL_MARKET_REQUIREMENTS: list[tuple[str, str]] = [
     ("oi_1m_feature", "1m"),
     ("funding_1m_feature", "1m"),
     ("trades_1m_feature", "1m"),
+    ("option_trades_1m_feature", "1m"),
 ]
 GOLD_DATASET_SPECS: dict[str, dict[str, object]] = {
+    "gold.market.trades.m1": {
+        "requirements": [("trades_1m_feature", "1m")],
+        "include_l2": False,
+    },
+    "gold.market.option_trades.m1": {
+        "requirements": [("option_trades_1m_feature", "1m")],
+        "include_l2": False,
+    },
     "gold.market.core.m1": {
         "requirements": [("spot", "1m"), ("perp", "1m")],
         "include_l2": False,
@@ -493,6 +502,37 @@ def _prepare_trades(pl: Any, frame: Any, symbol: str) -> Any:
     )
 
 
+def _prepare_option_trades(pl: Any, frame: Any, symbol: str) -> Any:
+    return (
+        frame.with_columns(
+            [
+                pl.col("timestamp_m1").cast(pl.Datetime(time_unit="us", time_zone="UTC")),
+                pl.lit(symbol).alias("symbol"),
+            ]
+        )
+        .select(
+            [
+                "timestamp_m1",
+                "exchange",
+                "symbol",
+                pl.col("open_price").cast(pl.Float64).alias("option_trades_open_price"),
+                pl.col("high_price").cast(pl.Float64).alias("option_trades_high_price"),
+                pl.col("low_price").cast(pl.Float64).alias("option_trades_low_price"),
+                pl.col("close_price").cast(pl.Float64).alias("option_trades_close_price"),
+                pl.col("volume").cast(pl.Float64).alias("option_trades_volume"),
+                pl.col("quote_volume").cast(pl.Float64).alias("option_trades_quote_volume"),
+                pl.col("trade_count").cast(pl.Int64).alias("option_trades_trade_count"),
+                pl.col("buy_volume").cast(pl.Float64).alias("option_trades_buy_volume"),
+                pl.col("sell_volume").cast(pl.Float64).alias("option_trades_sell_volume"),
+                pl.col("buy_trade_count").cast(pl.Int64).alias("option_trades_buy_trade_count"),
+                pl.col("sell_trade_count").cast(pl.Int64).alias("option_trades_sell_trade_count"),
+                pl.col("buy_volume_share").cast(pl.Float64).alias("option_trades_buy_volume_share"),
+            ]
+        )
+        .sort("timestamp_m1")
+    )
+
+
 def _prepare_dataset_frame(pl: Any, dataset_type: str, frame: Any, symbol: str) -> Any:
     dataset_preparers: dict[str, Any] = {
         "spot": lambda: _prepare_spot_or_perp(pl, frame, "spot", symbol),
@@ -500,6 +540,7 @@ def _prepare_dataset_frame(pl: Any, dataset_type: str, frame: Any, symbol: str) 
         "oi_1m_feature": lambda: _prepare_oi(pl, frame, symbol),
         "funding_1m_feature": lambda: _prepare_funding(pl, frame, symbol),
         "trades_1m_feature": lambda: _prepare_trades(pl, frame, symbol),
+        "option_trades_1m_feature": lambda: _prepare_option_trades(pl, frame, symbol),
         "gold_l2_m1": lambda: _prepare_l2(pl, frame, symbol),
     }
     preparer = dataset_preparers.get(dataset_type)
@@ -876,6 +917,8 @@ def _write_feature_distribution_plot(
 
 
 def _feature_source_dataset(column_name: str) -> str:
+    if column_name.startswith("option_trades_"):
+        return "option_trades_1m_feature"
     if column_name.startswith("spot_"):
         return "spot_1m"
     if column_name.startswith("perp_"):

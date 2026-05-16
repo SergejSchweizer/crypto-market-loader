@@ -40,11 +40,14 @@ Layers:
   - `spot`, `perp`
   - `funding_observed`, `funding_1m_feature`
   - `oi_observed`, `oi_1m_feature`
-  - `trades_1m_feature`
+  - `trades_observed`, `trades_1m_feature`
+  - `option_trades_observed`, `option_trades_1m_feature`
 - Optional monthly sidecars (`.json`, `.png`) with gold-style metadata
 
 ### Gold
 Supported dataset variants:
+- `gold.market.trades.m1`
+- `gold.market.option_trades.m1`
 - `gold.market.core.m1`
 - `gold.market.core_funding.m1`
 - `gold.market.full.m1`
@@ -54,9 +57,11 @@ Gold dataset feature matrix:
 
 | Dataset ID | Inputs | Feature families |
 |---|---|---|
+| `gold.market.trades.m1` | trades_1m_feature | perp trade-flow feature family |
+| `gold.market.option_trades.m1` | option_trades_1m_feature | option trade-flow feature family |
 | `gold.market.core.m1` | spot + perp | spot/perp OHLCV feature set |
 | `gold.market.core_funding.m1` | spot + perp + funding_1m_feature | core OHLCV + funding state/timing features |
-| `gold.market.full.m1` | spot + perp + oi_1m_feature + funding_1m_feature + trades_1m_feature | core + OI + funding + trade-flow feature families |
+| `gold.market.full.m1` | spot + perp + oi_1m_feature + funding_1m_feature + trades_1m_feature + option_trades_1m_feature | core + OI + funding + perp/option trade-flow feature families |
 | `gold.hybrid.full_l2.m1` | full market set + latest L2 gold parquet | full market + trade-flow + prefixed L2 microstructure features (`l2_*`) |
 
 Join policy for all gold datasets: canonical 1-minute time grid with left joins on
@@ -105,7 +110,7 @@ Silver and gold plots share the same renderer style and are capped to **3000 eve
 - full medallion orchestration via `scripts/run_medallion_pipeline.py` driven by `config.yaml`
   (`medallion-pipeline.execution_order` and per-layer CLI args)
 - manifest-level provenance and source summaries
-- quality gates: `pytest`, `ruff`, `mypy`
+- quality gates: `ruff check`, `ruff format --check`, `mypy`, `ty`, `import-linter`, config schema validation, `pytest`
 - mandatory runtime config file (`config.yaml`) with restricted permissions
 - medallion orchestration lock (`.run/full-pipeline.lock`) to prevent concurrent pipeline runs
 
@@ -119,7 +124,7 @@ Silver and gold plots share the same renderer style and are capped to **3000 eve
 
 1. Add continuous data quality checks (coverage/null/drift thresholds) per dataset variant.
 2. Add retention/compaction jobs for long-horizon parquet maintenance.
-3. Add execution-quality and aggressor-side validation metrics for `trades_1m_feature`.
+3. Add execution-quality and aggressor-side validation metrics for `trades_1m_feature` and `option_trades_1m_feature`.
 4. Introduce contract migration tooling for future schema evolution.
 5. Expand adapters to additional exchanges with unified symbol canonicalization.
 

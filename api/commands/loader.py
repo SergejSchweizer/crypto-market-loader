@@ -150,6 +150,18 @@ def _add_ingest_parser(
         default=["BTCUSDT", "ETHUSDT"],
         help="Symbols or instrument aliases (exchange specific)",
     )
+    parser.add_argument(
+        "--perp-trade-symbols",
+        nargs="+",
+        default=["BTC", "ETH", "SOL"],
+        help="Symbols for perp_trades ingestion (independent from --symbols).",
+    )
+    parser.add_argument(
+        "--option-trade-symbols",
+        nargs="+",
+        default=["BTC", "ETH", "SOL"],
+        help="Symbols for option_trades ingestion (independent from --symbols).",
+    )
     parser.set_defaults(tail_delta_only=True)
     parser.add_argument(
         "--save-parquet-lake",
@@ -688,8 +700,18 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             funding_tasks: list[tuple[Exchange, str, str]] = []
             trade_tasks: list[tuple[Exchange, TradeMarket, str]] = []
             validated_symbols = _sanitize_symbols(cast(object, args.symbols), logger=logger)
+            validated_perp_trade_symbols = _sanitize_symbols(cast(object, args.perp_trade_symbols), logger=logger)
+            validated_option_trade_symbols = _sanitize_symbols(cast(object, args.option_trade_symbols), logger=logger)
             randomized_symbols = _items_in_random_order(validated_symbols)
-            logger.info("Randomized schedule markets=%s symbols=%s", data_types, randomized_symbols)
+            randomized_perp_trade_symbols = _items_in_random_order(validated_perp_trade_symbols)
+            randomized_option_trade_symbols = _items_in_random_order(validated_option_trade_symbols)
+            logger.info(
+                "Randomized schedule markets=%s symbols=%s perp_trade_symbols=%s option_trade_symbols=%s",
+                data_types,
+                randomized_symbols,
+                randomized_perp_trade_symbols,
+                randomized_option_trade_symbols,
+            )
 
             for exchange in exchanges:
                 exchange_output: dict[str, object] = {}
@@ -708,7 +730,8 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             trade_tasks.extend(
                 build_trade_tasks(
                     exchanges=exchanges,
-                    randomized_symbols=randomized_symbols,
+                    randomized_perp_trade_symbols=randomized_perp_trade_symbols,
+                    randomized_option_trade_symbols=randomized_option_trade_symbols,
                     perp_trades_requested=perp_trades_requested,
                     option_trades_requested=option_trades_requested,
                 )

@@ -291,7 +291,7 @@ def test_fetch_symbol_trades_full_gap_fill_respects_start_bound_for_existing_sym
             TradeTick(
                 exchange="deribit",
                 symbol="BTC",
-                instrument_type="trades",
+                instrument_type="perp",
                 trade_id="b",
                 trade_time=datetime(2022, 4, 29, 0, 1, 1, tzinfo=UTC),
                 price=100.0,
@@ -303,7 +303,7 @@ def test_fetch_symbol_trades_full_gap_fill_respects_start_bound_for_existing_sym
             TradeTick(
                 exchange="deribit",
                 symbol="BTC",
-                instrument_type="trades",
+                instrument_type="perp",
                 trade_id="a",
                 trade_time=datetime(2022, 4, 29, 0, 1, 0, tzinfo=UTC),
                 price=99.0,
@@ -315,7 +315,7 @@ def test_fetch_symbol_trades_full_gap_fill_respects_start_bound_for_existing_sym
             TradeTick(
                 exchange="deribit",
                 symbol="BTC",
-                instrument_type="trades",
+                instrument_type="perp",
                 trade_id="a",
                 trade_time=datetime(2022, 4, 29, 0, 1, 0, tzinfo=UTC),
                 price=99.0,
@@ -328,7 +328,7 @@ def test_fetch_symbol_trades_full_gap_fill_respects_start_bound_for_existing_sym
 
     rows = fetch_symbol_trades(
         exchange="deribit",
-        market="trades",
+        market="perp",
         symbol="BTC",
         lake_root="lake/bronze",
         open_times_reader=lambda **kwargs: [earliest_existing],
@@ -345,6 +345,38 @@ def test_fetch_symbol_trades_full_gap_fill_respects_start_bound_for_existing_sym
         (datetime(2022, 4, 29, 0, 1, 0, tzinfo=UTC), "a"),
         (datetime(2022, 4, 29, 0, 1, 1, tzinfo=UTC), "b"),
     ]
+
+
+def test_fetch_symbol_trades_full_gap_fill_fetches_internal_and_tail_gaps() -> None:
+    first_existing = datetime(2022, 4, 29, 0, 0, tzinfo=UTC)
+    second_existing = datetime(2022, 4, 29, 0, 2, tzinfo=UTC)
+    end_open = datetime(2022, 4, 29, 0, 3, tzinfo=UTC)
+    end_open_ms = int(end_open.timestamp() * 1000)
+    gap_one_ms = int(datetime(2022, 4, 29, 0, 1, tzinfo=UTC).timestamp() * 1000)
+    gap_tail_ms = int(datetime(2022, 4, 29, 0, 3, tzinfo=UTC).timestamp() * 1000)
+    calls: list[tuple[int, int]] = []
+
+    def _range_fetcher(**kwargs: object) -> list[TradeTick]:
+        start_open_ms = int(cast(Any, kwargs["start_open_ms"]))
+        end_ms = int(cast(Any, kwargs["end_open_ms"]))
+        calls.append((start_open_ms, end_ms))
+        return []
+
+    rows = fetch_symbol_trades(
+        exchange="deribit",
+        market="perp",
+        symbol="BTC",
+        lake_root="lake/bronze",
+        open_times_reader=lambda **kwargs: [first_existing, second_existing],
+        symbol_normalizer=lambda **kwargs: "BTC-PERPETUAL",
+        now_open_resolver=lambda **kwargs: end_open_ms,
+        history_fetcher=lambda **kwargs: pytest.fail("history_fetcher should not be called when open_times exist"),
+        range_fetcher=_range_fetcher,
+        tail_delta_only=False,
+    )
+
+    assert rows == []
+    assert set(calls) == {(gap_one_ms, gap_one_ms), (gap_tail_ms, gap_tail_ms)}
 
 
 def test_fetch_symbol_trades_bootstrap_with_start_bound_uses_day_range_fetch() -> None:

@@ -192,6 +192,34 @@ def _day_windows_in_random_order(start_open_ms: int, end_open_ms: int) -> list[t
     return random.SystemRandom().sample(windows, k=len(windows))
 
 
+def _build_missing_ranges_with_optional_head_gap(
+    *,
+    existing_open_times: list[datetime],
+    interval_ms: int,
+    end_open_ms: int,
+    start_open_ms_bound: int | None,
+    ranges_builder: Callable[..., list[tuple[int, int]]],
+) -> list[tuple[int, int]]:
+    """Build missing ranges with optional head-gap extension from explicit start bound.
+
+    This applies one shared gap-planning policy across dataset fetchers: internal gaps,
+    tail gap to ``end_open_ms``, and optional head-gap when an earlier explicit start
+    boundary is configured.
+    """
+
+    missing_ranges = ranges_builder(
+        existing_open_times=existing_open_times,
+        interval_ms=interval_ms,
+        end_open_ms=end_open_ms,
+    )
+    earliest_existing_ms = int(min(existing_open_times).timestamp() * 1000)
+    if start_open_ms_bound is not None and start_open_ms_bound < earliest_existing_ms:
+        head_end_ms = min(earliest_existing_ms - interval_ms, end_open_ms)
+        if start_open_ms_bound <= head_end_ms:
+            missing_ranges.append((start_open_ms_bound, head_end_ms))
+    return missing_ranges
+
+
 def _run_with_optional_timeout(
     fn: Callable[..., TTimeout],
     *,
@@ -370,16 +398,13 @@ def fetch_symbol_candles(
     if end_open_ms < int(min(stored_open_times).timestamp() * 1000):
         return []
 
-    missing_ranges = ranges_builder(
+    missing_ranges = _build_missing_ranges_with_optional_head_gap(
         existing_open_times=stored_open_times,
         interval_ms=interval_ms,
         end_open_ms=end_open_ms,
+        start_open_ms_bound=start_open_ms_bound,
+        ranges_builder=ranges_builder,
     )
-    earliest_existing_ms = int(min(stored_open_times).timestamp() * 1000)
-    if start_open_ms_bound is not None and start_open_ms_bound < earliest_existing_ms:
-        head_end_ms = min(earliest_existing_ms - interval_ms, end_open_ms)
-        if start_open_ms_bound <= head_end_ms:
-            missing_ranges.append((start_open_ms_bound, head_end_ms))
     if not missing_ranges:
         return []
 
@@ -498,16 +523,13 @@ def fetch_symbol_open_interest(
     if end_open_ms < int(min(stored_open_times).timestamp() * 1000):
         return []
 
-    missing_ranges = ranges_builder(
+    missing_ranges = _build_missing_ranges_with_optional_head_gap(
         existing_open_times=stored_open_times,
         interval_ms=interval_ms,
         end_open_ms=end_open_ms,
+        start_open_ms_bound=start_open_ms_bound,
+        ranges_builder=ranges_builder,
     )
-    earliest_existing_ms = int(min(stored_open_times).timestamp() * 1000)
-    if start_open_ms_bound is not None and start_open_ms_bound < earliest_existing_ms:
-        head_end_ms = min(earliest_existing_ms - interval_ms, end_open_ms)
-        if start_open_ms_bound <= head_end_ms:
-            missing_ranges.append((start_open_ms_bound, head_end_ms))
     if not missing_ranges:
         return []
 
@@ -624,16 +646,13 @@ def fetch_symbol_funding(
     if end_open_ms < int(min(stored_open_times).timestamp() * 1000):
         return []
 
-    missing_ranges = ranges_builder(
+    missing_ranges = _build_missing_ranges_with_optional_head_gap(
         existing_open_times=stored_open_times,
         interval_ms=interval_ms,
         end_open_ms=end_open_ms,
+        start_open_ms_bound=start_open_ms_bound,
+        ranges_builder=ranges_builder,
     )
-    earliest_existing_ms = int(min(stored_open_times).timestamp() * 1000)
-    if start_open_ms_bound is not None and start_open_ms_bound < earliest_existing_ms:
-        head_end_ms = min(earliest_existing_ms - interval_ms, end_open_ms)
-        if start_open_ms_bound <= head_end_ms:
-            missing_ranges.append((start_open_ms_bound, head_end_ms))
     if not missing_ranges:
         return []
 
@@ -664,6 +683,7 @@ def fetch_symbol_trades(
     now_open_resolver: Callable[..., int] = _last_closed_open_ms,
     history_fetcher: Callable[..., list[TradeTick | OptionTradeTick]] = fetch_trades_all_history,
     range_fetcher: Callable[..., list[TradeTick | OptionTradeTick]] = fetch_trades_range,
+    ranges_builder: Callable[..., list[tuple[int, int]]] = _missing_ranges_ms,
     latest_open_time_reader: Callable[..., datetime | None] | None = None,
     tail_delta_only: bool = False,
     on_history_chunk: Callable[[list[TradeTick | OptionTradeTick]], None] | None = None,
@@ -746,27 +766,33 @@ def fetch_symbol_trades(
         filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
         return _dedupe_sort_trade_rows(filtered_rows)
 
-    # For trades we cannot infer "gaps" from fixed-interval clocks, so full-gap mode
-    # re-fetches the requested bounded span in day windows and relies on lake dedup.
-    # When a start bound is provided, treat it as the explicit lower fetch boundary,
-    # consistent with other dataset backfill behavior.
     earliest_existing_ms = int(min(stored_open_times).timestamp() * 1000)
-    span_start_ms = start_open_ms_bound if start_open_ms_bound is not None else earliest_existing_ms
-    if span_start_ms > end_open_ms:
+    if end_open_ms < earliest_existing_ms:
+        return []
+
+    missing_ranges = _build_missing_ranges_with_optional_head_gap(
+        existing_open_times=stored_open_times,
+        interval_ms=60_000,
+        end_open_ms=end_open_ms,
+        start_open_ms_bound=start_open_ms_bound,
+        ranges_builder=ranges_builder,
+    )
+    if not missing_ranges:
         return []
 
     gap_rows: list[TradeTick | OptionTradeTick] = []
-    for day_start_ms, day_end_ms in _day_windows_in_random_order(span_start_ms, end_open_ms):
-        day_rows = range_fetcher(
-            exchange=exchange,
-            symbol=symbol,
-            market=market,
-            start_open_ms=day_start_ms,
-            end_open_ms=day_end_ms,
-        )
-        if day_rows and on_history_chunk is not None:
-            on_history_chunk(day_rows)
-        gap_rows.extend(day_rows)
+    for start_open_ms, gap_end_ms in _ranges_in_random_order(missing_ranges):
+        for day_start_ms, day_end_ms in _day_windows_in_random_order(start_open_ms, gap_end_ms):
+            day_rows = range_fetcher(
+                exchange=exchange,
+                symbol=symbol,
+                market=market,
+                start_open_ms=day_start_ms,
+                end_open_ms=day_end_ms,
+            )
+            if day_rows and on_history_chunk is not None:
+                on_history_chunk(day_rows)
+            gap_rows.extend(day_rows)
     filtered = _filter_rows_by_start_bound(gap_rows, start_open_ms_bound)
     return _dedupe_sort_trade_rows(filtered)
 

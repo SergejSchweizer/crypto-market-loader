@@ -33,6 +33,8 @@ Production-grade cryptocurrency market data ingestion, normalization, feature en
   - [Open Interest Features](#open-interest-features)
   - [Cross-Market Features](#cross-market-features)
 - [8. Gold Dataset Definitions](#8-gold-dataset-definitions)
+  - [gold.market.option_trades.m1](#goldmarketoption_tradesm1)
+  - [gold.market.trades.m1](#goldmarkettradesm1)
   - [gold.market.core.m1](#goldmarketcorem1)
   - [gold.market.core\_funding.m1](#goldmarketcore_fundingm1)
   - [gold.market.full.m1](#goldmarketfullm1)
@@ -349,6 +351,8 @@ Silver builds `trades_1m_feature` from tick data and derives:
 | buy/sell volume + counts | Directional aggressor pressure proxy |
 | buy_volume_share | Buy-side flow dominance |
 
+For options, Silver builds the analogous `option_trades_1m_feature` from `option_trades_observed`.
+
 ---
 
 # 7. Quantitative Interpretation Of Features
@@ -413,6 +417,30 @@ Most powerful features usually come from interactions:
 
 # 8. Gold Dataset Definitions
 
+## gold.market.trades.m1
+
+Contains:
+
+- trades (tick-to-1m flow features)
+
+Use cases:
+
+- flow-only modeling
+- execution pressure analysis
+- trade-activity regime signals
+
+## gold.market.option_trades.m1
+
+Contains:
+
+- option trades (tick-to-1m flow features)
+
+Use cases:
+
+- option flow regime modeling
+- options activity pressure analysis
+- option/perp flow comparison studies
+
 ## gold.market.core.m1
 
 Contains:
@@ -445,6 +473,7 @@ Adds:
 - open interest
 - funding
 - trades (tick-to-1m flow features)
+- option trades (tick-to-1m flow features)
 - full derivatives state
 
 Use cases:
@@ -604,6 +633,12 @@ uv run python main.py bronze-build \
   --symbols BTC ETH SOL
 ```
 
+Trade datasets can use independent symbol defaults and overrides:
+
+- `--symbols` applies to `spot`, `perp`, `oi`, `funding`
+- `--perp-trade-symbols` applies to `perp_trades` (default: `BTC ETH SOL`)
+- `--option-trade-symbols` applies to `option_trades` (default: `BTC ETH SOL`)
+
 ## Silver Build
 
 ```bash
@@ -611,7 +646,7 @@ uv run python main.py silver-build \
   --bronze-root lake/bronze \
   --silver-root lake/silver \
   --exchange deribit \
-  --market spot perp oi funding perp_trades \
+  --market spot perp oi funding perp_trades option_trades \
   --timeframe 1m
 ```
 
@@ -624,6 +659,14 @@ uv run python main.py gold-build \
   --exchange deribit \
   --dataset-id gold.market.full.m1
 ```
+
+Weitere Gold-Dataset-IDs:
+
+- `gold.market.trades.m1` (nur perp-trade-flow Features)
+- `gold.market.option_trades.m1` (nur option-trade-flow Features)
+- `gold.market.core.m1`
+- `gold.market.core_funding.m1`
+- `gold.hybrid.full_l2.m1`
 
 ## Quality Checks
 

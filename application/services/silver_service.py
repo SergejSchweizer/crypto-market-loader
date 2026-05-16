@@ -1063,13 +1063,15 @@ def build_trades_1m_feature_for_symbol(
     exchange: str,
     symbol: str,
     observed_timeframe: str = "tick",
+    observed_dataset_type: str = "trades_observed",
+    output_dataset_type: str = "trades_1m_feature",
 ) -> SilverBuildReport:
-    """Build monthly ``trades_1m_feature`` from ``trades_observed`` tick trades."""
+    """Build monthly trade 1m features from observed tick-trade data."""
 
     pl = _require_polars()
     observed_root = (
         Path(silver_root)
-        / "dataset_type=trades_observed"
+        / f"dataset_type={observed_dataset_type}"
         / f"exchange={exchange}"
         / f"symbol={symbol}"
         / f"timeframe={observed_timeframe}"
@@ -1135,7 +1137,7 @@ def build_trades_1m_feature_for_symbol(
 
         target = _silver_month_path(
             silver_root=silver_root,
-            market="trades_1m_feature",
+            market=output_dataset_type,
             exchange=exchange,
             symbol=symbol,
             timeframe="1m",
@@ -1155,7 +1157,7 @@ def build_trades_1m_feature_for_symbol(
         agg_rows_out += feature.height
 
     return SilverBuildReport(
-        dataset="trades_1m_feature",
+        dataset=output_dataset_type,
         exchange=exchange,
         symbol=symbol,
         timeframe="1m",
@@ -1182,13 +1184,15 @@ def build_trades_observed_for_symbol(
     symbol: str,
     instrument_type: str = "perp",
     timeframe: str = "tick",
+    bronze_dataset_type: str = "trades",
+    output_dataset_type: str = "trades_observed",
 ) -> SilverBuildReport:
-    """Build monthly ``trades_observed`` from bronze tick trades."""
+    """Build monthly observed tick-trade dataset from bronze trade records."""
 
     pl = _require_polars()
     months = discover_months(
         bronze_root=bronze_root,
-        market="trades",
+        market=bronze_dataset_type,
         exchange=exchange,
         symbol=symbol,
         timeframe=timeframe,
@@ -1204,7 +1208,7 @@ def build_trades_observed_for_symbol(
     for month in months:
         files = _bronze_month_files(
             bronze_root=bronze_root,
-            market="trades",
+            market=bronze_dataset_type,
             exchange=exchange,
             symbol=symbol,
             timeframe=timeframe,
@@ -1254,7 +1258,7 @@ def build_trades_observed_for_symbol(
         duplicates_removed = cleaned.height - observed.height
         target = _silver_month_path(
             silver_root=silver_root,
-            market="trades_observed",
+            market=output_dataset_type,
             exchange=exchange,
             symbol=symbol,
             timeframe=timeframe,
@@ -1276,7 +1280,7 @@ def build_trades_observed_for_symbol(
         agg_invalid_rows += int(invalid_rows)
 
     return SilverBuildReport(
-        dataset="trades_observed",
+        dataset=output_dataset_type,
         exchange=exchange,
         symbol=symbol,
         timeframe=timeframe,
