@@ -498,7 +498,7 @@ def test_heartbeat_seconds_parsing(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_ranges_in_random_order_single_and_multi() -> None:
     assert _ranges_in_random_order([(1, 2)]) == [(1, 2)]
     values = _ranges_in_random_order([(1, 2), (3, 4), (5, 6)])
-    assert sorted(values) == [(1, 2), (3, 4), (5, 6)]
+    assert values == [(1, 2), (3, 4), (5, 6)]
 
 
 def test_filter_rows_and_chunk_callback_by_start_bound() -> None:

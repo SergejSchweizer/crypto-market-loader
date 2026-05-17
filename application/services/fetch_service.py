@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import multiprocessing as mp
 import os
-import random
 import threading
 import time
 from collections.abc import Callable
@@ -125,11 +124,9 @@ def _timeout_worker(
 
 
 def _ranges_in_random_order(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    """Return missing time ranges in randomized order for unbiased backfill scheduling."""
+    """Return missing time ranges in deterministic ascending order."""
 
-    if len(ranges) <= 1:
-        return ranges
-    return random.SystemRandom().sample(ranges, k=len(ranges))
+    return sorted(ranges)
 
 
 def _task_timeout_seconds() -> float | None:
@@ -184,12 +181,10 @@ def _split_range_into_utc_days(start_open_ms: int, end_open_ms: int) -> list[tup
 
 
 def _day_windows_in_random_order(start_open_ms: int, end_open_ms: int) -> list[tuple[int, int]]:
-    """Split range into UTC day windows and return them in random order."""
+    """Split range into UTC day windows and return deterministic chronological order."""
 
     windows = _split_range_into_utc_days(start_open_ms, end_open_ms)
-    if len(windows) <= 1:
-        return windows
-    return random.SystemRandom().sample(windows, k=len(windows))
+    return sorted(windows)
 
 
 def _build_missing_ranges_with_optional_head_gap(

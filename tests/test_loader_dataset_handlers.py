@@ -8,8 +8,8 @@ from api.commands.loader_dataset_handlers import build_trade_tasks
 def test_build_trade_tasks_uses_only_perp_market() -> None:
     tasks = build_trade_tasks(
         exchanges=["deribit"],
-        randomized_perp_trade_symbols=["BTC", "ETH"],
-        randomized_option_trade_symbols=["BTC", "ETH"],
+        perp_trade_symbols=["BTC", "ETH"],
+        option_trade_symbols=["BTC", "ETH"],
         perp_trades_requested=True,
         option_trades_requested=False,
     )
@@ -23,8 +23,8 @@ def test_build_trade_tasks_uses_only_perp_market() -> None:
 def test_build_trade_tasks_returns_empty_when_not_requested() -> None:
     tasks = build_trade_tasks(
         exchanges=["deribit"],
-        randomized_perp_trade_symbols=["BTC"],
-        randomized_option_trade_symbols=["BTC"],
+        perp_trade_symbols=["BTC"],
+        option_trade_symbols=["BTC"],
         perp_trades_requested=False,
         option_trades_requested=False,
     )
@@ -35,8 +35,8 @@ def test_build_trade_tasks_returns_empty_when_not_requested() -> None:
 def test_build_trade_tasks_includes_option_market_when_requested() -> None:
     tasks = build_trade_tasks(
         exchanges=["deribit"],
-        randomized_perp_trade_symbols=["BTC"],
-        randomized_option_trade_symbols=["ETH"],
+        perp_trade_symbols=["BTC"],
+        option_trade_symbols=["ETH"],
         perp_trades_requested=True,
         option_trades_requested=True,
     )

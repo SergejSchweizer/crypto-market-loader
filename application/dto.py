@@ -115,6 +115,39 @@ class TradeFetchResultDTO:
     errors: dict[tuple[Exchange, TradeMarket, str], str] = field(default_factory=dict)
 
 
+@dataclass(frozen=True)
+class BronzeFetchPlanDTO:
+    """Deterministic Bronze fetch plan shared by command orchestration.
+
+    This contract centralizes symbol/data-type normalization and task ordering
+    before execution so all Bronze dataset fetchers share the same scheduling
+    semantics.
+    """
+
+    exchanges: list[Exchange]
+    data_types: list[str]
+    ohlcv_markets: list[Market]
+    symbols: list[str]
+    perp_trade_symbols: list[str]
+    option_trade_symbols: list[str]
+    candle_tasks: list[tuple[Exchange, Market, str, str]]
+    oi_tasks: list[tuple[Exchange, str, str]]
+    funding_tasks: list[tuple[Exchange, str, str]]
+    trade_tasks: list[tuple[Exchange, TradeMarket, str]]
+
+
+@dataclass(frozen=True)
+class BronzeExecutionPolicyDTO:
+    """Standardized Bronze runtime execution policy."""
+
+    configured_concurrency: int
+    effective_concurrency: int
+    candle_concurrency: int
+    oi_concurrency: int
+    funding_concurrency: int
+    trade_concurrency: int
+
+
 @dataclass
 class LoaderStorageDTO:
     """Normalized in-memory storage payload for loader side effects.

@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import logging
-import random
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal, TypeVar, cast
+from typing import Literal, cast
 
 from api.commands.loader_dataset_handlers import (
     build_trade_tasks,
@@ -20,6 +20,8 @@ from api.commands.loader_dataset_handlers import (
     populate_trades_output,
 )
 from application.dto import (
+    BronzeFetchPlanDTO,
+    BronzeExecutionPolicyDTO,
     CandleFetchTaskDTO,
     FundingFetchTaskDTO,
     LoaderStorageDTO,
@@ -81,15 +83,6 @@ _BRONZE_SYMBOL_START_OPEN_MS: dict[str, int] = {}
 _BRONZE_EXCHANGE_SYMBOL_START_OPEN_MS: dict[str, int] = {}
 OI_DATASET_TYPE = dataset_contract("oi").dataset_type
 BRONZE_FIXED_TIMEFRAME = "1m"
-T = TypeVar("T")
-
-
-def _items_in_random_order(items: list[T]) -> list[T]:
-    """Return a shuffled copy of input items for randomized scheduling."""
-
-    if len(items) <= 1:
-        return list(items)
-    return random.SystemRandom().sample(items, k=len(items))
 
 
 def _sanitize_symbols(raw_symbols: object, logger: logging.Logger) -> list[str]:
@@ -116,16 +109,151 @@ def _sanitize_symbols(raw_symbols: object, logger: logging.Logger) -> list[str]:
 
 
 def _resolved_symbol_groups(args: argparse.Namespace, logger: logging.Logger) -> tuple[list[str], list[str], list[str]]:
-    """Return randomized symbol groups for ohlcv/funding/oi and trade datasets."""
+    """Return deterministically ordered symbol groups for Bronze task planning."""
 
-    validated_symbols = _sanitize_symbols(cast(object, args.symbols), logger=logger)
-    validated_perp_trade_symbols = _sanitize_symbols(cast(object, args.perp_trade_symbols), logger=logger)
-    validated_option_trade_symbols = _sanitize_symbols(cast(object, args.option_trade_symbols), logger=logger)
+    validated_symbols = sorted(_sanitize_symbols(cast(object, args.symbols), logger=logger))
+    validated_perp_trade_symbols = sorted(_sanitize_symbols(cast(object, args.perp_trade_symbols), logger=logger))
+    validated_option_trade_symbols = sorted(_sanitize_symbols(cast(object, args.option_trade_symbols), logger=logger))
     return (
-        _items_in_random_order(validated_symbols),
-        _items_in_random_order(validated_perp_trade_symbols),
-        _items_in_random_order(validated_option_trade_symbols),
+        validated_symbols,
+        validated_perp_trade_symbols,
+        validated_option_trade_symbols,
     )
+
+
+def _build_bronze_fetch_plan(args: argparse.Namespace, logger: logging.Logger) -> BronzeFetchPlanDTO:
+    """Build deterministic Bronze task plan shared across all dataset fetchers."""
+
+    exchanges = cast(list[Exchange], args.exchanges if args.exchanges else [args.exchange])
+    data_types = sorted(cast(list[DataType], cast(list[str], args.market)))
+    ohlcv_markets = cast(list[Market], [item for item in data_types if item in {"spot", "perp"}])
+    symbols, perp_trade_symbols, option_trade_symbols = _resolved_symbol_groups(args=args, logger=logger)
+
+    candle_tasks: list[tuple[Exchange, Market, str, str]] = []
+    oi_tasks: list[tuple[Exchange, str, str]] = []
+    funding_tasks: list[tuple[Exchange, str, str]] = []
+    for exchange in sorted(exchanges):
+        normalized_timeframe = normalize_timeframe(exchange=exchange, value=BRONZE_FIXED_TIMEFRAME)
+        for symbol in symbols:
+            for market in ohlcv_markets:
+                candle_tasks.append((exchange, market, symbol, normalized_timeframe))
+        if "oi" in data_types:
+            for symbol in symbols:
+                oi_tasks.append((exchange, symbol, normalized_timeframe))
+        if "funding" in data_types:
+            for symbol in symbols:
+                funding_tasks.append((exchange, symbol, normalized_timeframe))
+
+    trade_tasks = build_trade_tasks(
+        exchanges=sorted(exchanges),
+        perp_trade_symbols=perp_trade_symbols,
+        option_trade_symbols=option_trade_symbols,
+        perp_trades_requested="perp_trades" in data_types,
+        option_trades_requested="option_trades" in data_types,
+    )
+
+    return BronzeFetchPlanDTO(
+        exchanges=sorted(exchanges),
+        data_types=data_types,
+        ohlcv_markets=ohlcv_markets,
+        symbols=symbols,
+        perp_trade_symbols=perp_trade_symbols,
+        option_trade_symbols=option_trade_symbols,
+        candle_tasks=candle_tasks,
+        oi_tasks=oi_tasks,
+        funding_tasks=funding_tasks,
+        trade_tasks=trade_tasks,
+    )
+
+
+def _build_bronze_execution_policy() -> BronzeExecutionPolicyDTO:
+    """Build standardized Bronze execution policy."""
+
+    configured_concurrency = fetch_concurrency()
+    effective_concurrency = 1
+    return BronzeExecutionPolicyDTO(
+        configured_concurrency=configured_concurrency,
+        effective_concurrency=effective_concurrency,
+        candle_concurrency=effective_concurrency,
+        oi_concurrency=effective_concurrency,
+        funding_concurrency=effective_concurrency,
+        trade_concurrency=effective_concurrency,
+    )
+
+
+def _task_key_tuple_to_string(parts: tuple[object, ...]) -> str:
+    """Serialize tuple task key to stable checkpoint string."""
+
+    return "|".join(str(part) for part in parts)
+
+
+def _bronze_checkpoint_fingerprint(args: argparse.Namespace, plan: BronzeFetchPlanDTO) -> str:
+    """Build stable fingerprint for one Bronze invocation plan."""
+
+    payload = {
+        "exchange": args.exchange,
+        "exchanges": plan.exchanges,
+        "market": plan.data_types,
+        "symbols": plan.symbols,
+        "perp_trade_symbols": plan.perp_trade_symbols,
+        "option_trade_symbols": plan.option_trade_symbols,
+        "lake_root": cast(str, args.lake_root),
+        "tail_delta_only": bool(args.tail_delta_only),
+        "start_date": cast(str | None, getattr(args, "start_date", None)),
+        "symbol_start_dates": cast(list[str] | None, getattr(args, "symbol_start_dates", None)),
+        "exchange_symbol_start_dates": cast(list[str] | None, getattr(args, "exchange_symbol_start_dates", None)),
+    }
+    normalized = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+
+
+def _bronze_checkpoint_path() -> Path:
+    """Return Bronze restart-checkpoint path."""
+
+    return Path(".run") / "checkpoints" / "bronze-build.json"
+
+
+def _load_bronze_checkpoint(path: Path, fingerprint: str, logger: logging.Logger) -> dict[str, set[str]]:
+    """Load matching Bronze checkpoint completed-task sets."""
+
+    if not path.exists():
+        return {"candle": set(), "oi": set(), "funding": set(), "trade": set()}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Ignoring unreadable Bronze checkpoint '%s': %s", path, exc)
+        return {"candle": set(), "oi": set(), "funding": set(), "trade": set()}
+    if not isinstance(payload, dict) or payload.get("fingerprint") != fingerprint:
+        logger.info("Ignoring stale Bronze checkpoint '%s' (fingerprint mismatch)", path)
+        return {"candle": set(), "oi": set(), "funding": set(), "trade": set()}
+    completed = payload.get("completed")
+    if not isinstance(completed, dict):
+        return {"candle": set(), "oi": set(), "funding": set(), "trade": set()}
+    return {
+        "candle": set(str(value) for value in cast(list[object], completed.get("candle", []))),
+        "oi": set(str(value) for value in cast(list[object], completed.get("oi", []))),
+        "funding": set(str(value) for value in cast(list[object], completed.get("funding", []))),
+        "trade": set(str(value) for value in cast(list[object], completed.get("trade", []))),
+    }
+
+
+def _write_bronze_checkpoint(
+    path: Path,
+    *,
+    fingerprint: str,
+    completed: dict[str, set[str]],
+) -> None:
+    """Persist Bronze checkpoint atomically."""
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "version": 1,
+        "fingerprint": fingerprint,
+        "completed": {name: sorted(values) for name, values in completed.items()},
+    }
+    tmp_path = path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    tmp_path.replace(path)
 
 
 def _sidecar_path_list(parquet_files: list[str], suffix: str) -> list[str]:
@@ -694,10 +822,10 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
 
     try:
         with SingleInstanceLock(".run/crypto-market-loader.lock"):
-            exchanges = cast(list[Exchange], args.exchanges if args.exchanges else [args.exchange])
-            randomized_data_types = cast(list[DataType], _items_in_random_order(cast(list[str], args.market)))
-            ohlcv_markets = [item for item in randomized_data_types if item in {"spot", "perp"}]
-            data_types = randomized_data_types
+            plan = _build_bronze_fetch_plan(args=args, logger=logger)
+            exchanges = plan.exchanges
+            ohlcv_markets = plan.ohlcv_markets
+            data_types = plan.data_types
             oi_requested = "oi" in data_types
             funding_requested = "funding" in data_types
             perp_trades_requested = "perp_trades" in data_types
@@ -712,48 +840,68 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             oi_tasks: list[tuple[Exchange, str, str]] = []
             funding_tasks: list[tuple[Exchange, str, str]] = []
             trade_tasks: list[tuple[Exchange, TradeMarket, str]] = []
-            randomized_symbols, randomized_perp_trade_symbols, randomized_option_trade_symbols = (
-                _resolved_symbol_groups(args=args, logger=logger)
-            )
             logger.info(
-                "Randomized schedule markets=%s symbols=%s perp_trade_symbols=%s option_trade_symbols=%s",
+                "Deterministic schedule markets=%s symbols=%s perp_trade_symbols=%s option_trade_symbols=%s",
                 data_types,
-                randomized_symbols,
-                randomized_perp_trade_symbols,
-                randomized_option_trade_symbols,
+                plan.symbols,
+                plan.perp_trade_symbols,
+                plan.option_trade_symbols,
             )
-
             for exchange in exchanges:
                 exchange_output: dict[str, object] = {}
                 output[exchange] = exchange_output
-                normalized_timeframe = normalize_timeframe(exchange=exchange, value=BRONZE_FIXED_TIMEFRAME)
-                for market in cast(list[Market], ohlcv_markets):
-                    for symbol in randomized_symbols:
-                        task = (exchange, market, symbol, normalized_timeframe)
-                        tasks.append(task)
-                if oi_requested:
-                    for symbol in randomized_symbols:
-                        oi_tasks.append((exchange, symbol, normalized_timeframe))
-                if funding_requested:
-                    for symbol in randomized_symbols:
-                        funding_tasks.append((exchange, symbol, normalized_timeframe))
-            trade_tasks.extend(
-                build_trade_tasks(
-                    exchanges=exchanges,
-                    randomized_perp_trade_symbols=randomized_perp_trade_symbols,
-                    randomized_option_trade_symbols=randomized_option_trade_symbols,
-                    perp_trades_requested=perp_trades_requested,
-                    option_trades_requested=option_trades_requested,
-                )
+            tasks.extend(plan.candle_tasks)
+            oi_tasks.extend(plan.oi_tasks)
+            funding_tasks.extend(plan.funding_tasks)
+            trade_tasks.extend(plan.trade_tasks)
+            checkpoint_path = _bronze_checkpoint_path()
+            checkpoint_fingerprint = _bronze_checkpoint_fingerprint(args=args, plan=plan)
+            checkpoint_completed = _load_bronze_checkpoint(
+                path=checkpoint_path,
+                fingerprint=checkpoint_fingerprint,
+                logger=logger,
             )
-            tasks = _items_in_random_order(tasks)
 
-            configured_concurrency = fetch_concurrency()
-            concurrency_value = 1
-            candle_concurrency = concurrency_value
-            oi_concurrency = concurrency_value
-            funding_concurrency = concurrency_value
-            trade_concurrency = concurrency_value
+            tasks = [
+                task
+                for task in tasks
+                if _task_key_tuple_to_string((task[0], task[1], task[2], task[3])) not in checkpoint_completed["candle"]
+            ]
+            oi_tasks = [
+                task
+                for task in oi_tasks
+                if _task_key_tuple_to_string((task[0], task[1], task[2])) not in checkpoint_completed["oi"]
+            ]
+            funding_tasks = [
+                task
+                for task in funding_tasks
+                if _task_key_tuple_to_string((task[0], task[1], task[2])) not in checkpoint_completed["funding"]
+            ]
+            trade_tasks = [
+                task
+                for task in trade_tasks
+                if _task_key_tuple_to_string((task[0], task[1], task[2])) not in checkpoint_completed["trade"]
+            ]
+            if any(checkpoint_completed[name] for name in ("candle", "oi", "funding", "trade")):
+                logger.info(
+                    "Resuming from Bronze checkpoint '%s' pending_tasks candle=%s oi=%s funding=%s trade=%s",
+                    checkpoint_path,
+                    len(tasks),
+                    len(oi_tasks),
+                    len(funding_tasks),
+                    len(trade_tasks),
+                )
+            _write_bronze_checkpoint(
+                checkpoint_path,
+                fingerprint=checkpoint_fingerprint,
+                completed=checkpoint_completed,
+            )
+
+            policy = _build_bronze_execution_policy()
+            candle_concurrency = policy.candle_concurrency
+            oi_concurrency = policy.oi_concurrency
+            funding_concurrency = policy.funding_concurrency
+            trade_concurrency = policy.trade_concurrency
             incremental_parquet_on_fetch = bool(args.save_parquet_lake)
             incremental_parquet_files: list[str] = []
             logged_daily_partitions: set[tuple[str, str, str, str, str, str]] = set()
@@ -766,11 +914,19 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     "Fetch mode enabled for spot/perp, oi, funding, and perp_trades with "
                     "concurrency=%s (configured=%s; parallelization disabled)"
                 ),
-                concurrency_value,
-                configured_concurrency,
+                policy.effective_concurrency,
+                policy.configured_concurrency,
             )
             if incremental_parquet_on_fetch:
                 logger.info("Incremental parquet flush enabled during fetch execution")
+
+            def _mark_checkpoint_complete(dataset: str, key: tuple[object, ...]) -> None:
+                checkpoint_completed[dataset].add(_task_key_tuple_to_string(key))
+                _write_bronze_checkpoint(
+                    checkpoint_path,
+                    fingerprint=checkpoint_fingerprint,
+                    completed=checkpoint_completed,
+                )
 
             def _log_new_daily_partitions(
                 *,
@@ -900,24 +1056,28 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     return
                 streamed_trade_tasks.add((task.exchange, task.market, task.symbol))
                 _persist_trade_task(task, rows)
+                _mark_checkpoint_complete("trade", (task.exchange, task.market, task.symbol))
 
             def _persist_candle_chunk(task: CandleFetchTaskDTO, rows: list[SpotCandle]) -> None:
                 if not rows:
                     return
                 streamed_candle_tasks.add((task.exchange, task.market, task.symbol, task.timeframe))
                 _persist_candle_task(task, rows)
+                _mark_checkpoint_complete("candle", (task.exchange, task.market, task.symbol, task.timeframe))
 
             def _persist_oi_chunk(task: OpenInterestFetchTaskDTO, rows: list[OpenInterestPoint]) -> None:
                 if not rows:
                     return
                 streamed_oi_tasks.add((task.exchange, task.symbol, task.timeframe))
                 _persist_oi_task(task, rows)
+                _mark_checkpoint_complete("oi", (task.exchange, task.symbol, task.timeframe))
 
             def _persist_funding_chunk(task: FundingFetchTaskDTO, rows: list[FundingPoint]) -> None:
                 if not rows:
                     return
                 streamed_funding_tasks.add((task.exchange, task.symbol, task.timeframe))
                 _persist_funding_task(task, rows)
+                _mark_checkpoint_complete("funding", (task.exchange, task.symbol, task.timeframe))
 
             (
                 task_results,
@@ -988,6 +1148,14 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             funding_error_count = len(funding_errors)
             trade_success_count = len(trade_results)
             trade_error_count = len(trade_errors)
+            for key in task_results:
+                _mark_checkpoint_complete("candle", key)
+            for key in oi_results:
+                _mark_checkpoint_complete("oi", key)
+            for key in funding_results:
+                _mark_checkpoint_complete("funding", key)
+            for key in trade_results:
+                _mark_checkpoint_complete("trade", key)
             logger.info(
                 "Fetch summary spot/perp: success=%s failed=%s | "
                 "oi: success=%s failed=%s | funding: success=%s failed=%s | trades: success=%s failed=%s",
@@ -1000,6 +1168,35 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 trade_success_count,
                 trade_error_count,
             )
+            symbol_totals: dict[str, int] = {}
+            symbol_success: dict[str, int] = {}
+            for _exchange, _market, symbol, _timeframe in tasks:
+                symbol_totals[symbol] = symbol_totals.get(symbol, 0) + 1
+            for _exchange, symbol, _timeframe in oi_tasks:
+                symbol_totals[symbol] = symbol_totals.get(symbol, 0) + 1
+            for _exchange, symbol, _timeframe in funding_tasks:
+                symbol_totals[symbol] = symbol_totals.get(symbol, 0) + 1
+            for _exchange, _market, symbol in trade_tasks:
+                symbol_totals[symbol] = symbol_totals.get(symbol, 0) + 1
+            for _exchange, _market, symbol, _timeframe in task_results:
+                symbol_success[symbol] = symbol_success.get(symbol, 0) + 1
+            for _exchange, symbol, _timeframe in oi_results:
+                symbol_success[symbol] = symbol_success.get(symbol, 0) + 1
+            for _exchange, symbol, _timeframe in funding_results:
+                symbol_success[symbol] = symbol_success.get(symbol, 0) + 1
+            for _exchange, _market, symbol in trade_results:
+                symbol_success[symbol] = symbol_success.get(symbol, 0) + 1
+            if symbol_totals:
+                fairness = [
+                    {
+                        "symbol": symbol,
+                        "success": symbol_success.get(symbol, 0),
+                        "total": total,
+                        "ratio": round(symbol_success.get(symbol, 0) / total, 4) if total > 0 else 0.0,
+                    }
+                    for symbol, total in sorted(symbol_totals.items())
+                ]
+                logger.info("Bronze per-symbol progress: %s", fairness)
 
             populate_ohlcv_output(
                 output=output,
@@ -1123,6 +1320,14 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
 
             if not args.no_json_output:
                 print(json.dumps(output, indent=2))
+            if not (task_errors or oi_errors or funding_errors or trade_errors):
+                checkpoint_path.unlink(missing_ok=True)
+                logger.info("Cleared Bronze checkpoint '%s' after successful run", checkpoint_path)
+            else:
+                logger.warning(
+                    "Retaining Bronze checkpoint '%s' for resume; failures remain",
+                    checkpoint_path,
+                )
             logger.info("Command complete: bronze-build")
     except SingleInstanceError as exc:
         logger.warning("Single-instance lock active")

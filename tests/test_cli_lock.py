@@ -158,7 +158,7 @@ def test_main_loader_command_still_uses_single_instance_lock(
         cli.main()
 
 
-def test_main_loader_randomizes_symbol_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_loader_uses_deterministic_symbol_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
     class NoopLock:
         def __init__(self, lock_path: str) -> None:
             del lock_path
@@ -169,20 +169,14 @@ def test_main_loader_randomizes_symbol_schedule(monkeypatch: pytest.MonkeyPatch)
         def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
             del exc_type, exc, tb
 
-    expected_order = ["SOLUSDT", "ETHUSDT", "BTCUSDT"]
+    expected_order = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
     seen_symbols: list[str] = []
-
-    def fake_random_order(values: list[str]) -> list[str]:
-        if values == ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
-            return expected_order
-        return values
 
     def fake_fetch_candles_all_history(**kwargs: object) -> list[SpotCandle]:
         seen_symbols.append(cast(str, kwargs["symbol"]))
         return []
 
     monkeypatch.setattr(cli, "SingleInstanceLock", NoopLock)
-    monkeypatch.setattr(cli.loader_cmd, "_items_in_random_order", fake_random_order)
     monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
     monkeypatch.setattr(cli, "fetch_candles_all_history", fake_fetch_candles_all_history)
     monkeypatch.setattr(
@@ -247,7 +241,7 @@ def test_main_bronze_ingest_command_uses_loader_runtime(monkeypatch: pytest.Monk
     assert called["fetch"] is True
 
 
-def test_main_loader_randomizes_market_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_loader_uses_deterministic_market_schedule(monkeypatch: pytest.MonkeyPatch) -> None:
     class NoopLock:
         def __init__(self, lock_path: str) -> None:
             del lock_path
@@ -260,17 +254,11 @@ def test_main_loader_randomizes_market_schedule(monkeypatch: pytest.MonkeyPatch)
 
     seen_markets: list[str] = []
 
-    def fake_random_order(values: list[str]) -> list[str]:
-        if values == ["spot", "perp"]:
-            return ["perp", "spot"]
-        return values
-
     def fake_fetch_candles_all_history(**kwargs: object) -> list[SpotCandle]:
         seen_markets.append(cast(str, kwargs["market"]))
         return []
 
     monkeypatch.setattr(cli, "SingleInstanceLock", NoopLock)
-    monkeypatch.setattr(cli.loader_cmd, "_items_in_random_order", fake_random_order)
     monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
     monkeypatch.setattr(cli, "fetch_candles_all_history", fake_fetch_candles_all_history)
     monkeypatch.setattr(
@@ -294,7 +282,7 @@ def test_main_loader_randomizes_market_schedule(monkeypatch: pytest.MonkeyPatch)
     assert seen_markets == ["perp", "spot"]
 
 
-def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_main_loader_uses_deterministic_dataset_group_order(monkeypatch: pytest.MonkeyPatch) -> None:
     class NoopLock:
         def __init__(self, lock_path: str) -> None:
             del lock_path
@@ -327,13 +315,7 @@ def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.Mon
         scheduled_groups.append("funding")
         return {}, {}
 
-    def fake_random_order(values: list[str]) -> list[str]:
-        if values == ["spot", "perp", "oi", "funding"]:
-            return ["funding", "oi", "perp", "spot"]
-        return values
-
     monkeypatch.setattr(cli, "SingleInstanceLock", NoopLock)
-    monkeypatch.setattr(cli.loader_cmd, "_items_in_random_order", fake_random_order)
     monkeypatch.setattr(cli.loader_cmd, "_fetch_candle_tasks_parallel", fake_fetch_candle_tasks_parallel)
     monkeypatch.setattr(cli.loader_cmd, "_fetch_open_interest_tasks_parallel", fake_fetch_open_interest_tasks_parallel)
     monkeypatch.setattr(cli.loader_cmd, "_fetch_funding_tasks_parallel", fake_fetch_funding_tasks_parallel)
@@ -357,7 +339,7 @@ def test_main_loader_uses_randomized_dataset_group_order(monkeypatch: pytest.Mon
 
     cli.main()
 
-    assert {"funding", "oi", "perp", "spot"}.issubset(set(scheduled_groups))
+    assert scheduled_groups == ["perp", "spot", "oi", "funding"]
 
 
 def test_export_descriptive_stats_writes_csv(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

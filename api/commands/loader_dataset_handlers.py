@@ -16,22 +16,28 @@ DataType = Literal["spot", "perp", "oi", "funding", "perp_trades", "option_trade
 def build_trade_tasks(
     *,
     exchanges: list[Exchange],
-    randomized_perp_trade_symbols: list[str],
-    randomized_option_trade_symbols: list[str],
+    perp_trade_symbols: list[str],
+    option_trade_symbols: list[str],
     perp_trades_requested: bool,
     option_trades_requested: bool,
 ) -> list[tuple[Exchange, TradeMarket, str]]:
-    """Build trade task tuples for requested exchanges/symbols."""
+    """Build trade task tuples with symbol-first round-robin ordering."""
 
     if not perp_trades_requested and not option_trades_requested:
         return []
     tasks: list[tuple[Exchange, TradeMarket, str]] = []
+    seen_symbols: set[str] = set()
+    ordered_symbols: list[str] = []
+    for symbol in [*perp_trade_symbols, *option_trade_symbols]:
+        if symbol in seen_symbols:
+            continue
+        seen_symbols.add(symbol)
+        ordered_symbols.append(symbol)
     for exchange in exchanges:
-        if perp_trades_requested:
-            for symbol in randomized_perp_trade_symbols:
+        for symbol in ordered_symbols:
+            if perp_trades_requested and symbol in perp_trade_symbols:
                 tasks.append((exchange, "perp", symbol))
-        if option_trades_requested:
-            for symbol in randomized_option_trade_symbols:
+            if option_trades_requested and symbol in option_trade_symbols:
                 tasks.append((exchange, "option", symbol))
     return tasks
 

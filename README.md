@@ -639,6 +639,26 @@ Trade datasets can use independent symbol defaults and overrides:
 - `--perp-trade-symbols` applies to `perp_trades` (default: `BTC ETH SOL`)
 - `--option-trade-symbols` applies to `option_trades` (default: `BTC ETH SOL`)
 
+### Bronze Resume Checkpoint
+
+`bronze-build` writes a restart checkpoint at:
+
+```text
+.run/checkpoints/bronze-build.json
+```
+
+Behavior:
+
+- Completed tasks are recorded incrementally during the run.
+- If a run fails or is interrupted, the next run with the same effective plan resumes by skipping completed tasks.
+- If all tasks complete successfully, the checkpoint is deleted automatically.
+
+Manual reset:
+
+```bash
+rm -f .run/checkpoints/bronze-build.json
+```
+
 ## Silver Build
 
 ```bash
