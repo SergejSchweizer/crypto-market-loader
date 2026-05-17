@@ -7,11 +7,10 @@ from typing import Literal, cast
 
 from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint
-from ingestion.option_instruments import OptionInstrumentMetadata
 from ingestion.spot import Exchange, Market, SpotCandle
 from ingestion.trades import OptionTradeTick, TradeMarket, TradeTick
 
-DataType = Literal["spot", "perp", "oi", "funding", "perp_trades", "option_trades", "option_instruments"]
+DataType = Literal["spot", "perp", "oi", "funding", "perp_trades", "option_trades"]
 
 
 def build_trade_tasks(
@@ -40,23 +39,6 @@ def build_trade_tasks(
                 tasks.append((exchange, "perp", symbol))
             if option_trades_requested and symbol in option_trade_symbols:
                 tasks.append((exchange, "option", symbol))
-    return tasks
-
-
-def build_option_instrument_tasks(
-    *,
-    exchanges: list[Exchange],
-    option_instrument_symbols: list[str],
-    option_instruments_requested: bool,
-) -> list[tuple[Exchange, str]]:
-    """Build option instrument metadata task tuples."""
-
-    if not option_instruments_requested:
-        return []
-    tasks: list[tuple[Exchange, str]] = []
-    for exchange in exchanges:
-        for symbol in option_instrument_symbols:
-            tasks.append((exchange, symbol))
     return tasks
 
 
@@ -227,48 +209,4 @@ def populate_trades_output(
         market_bucket[symbol_key] = [_serialize_trade_row(item) for item in rows]
         by_market = storage.setdefault(market, {})
         by_exchange = by_market.setdefault(exchange, {})
-        by_exchange[symbol_key] = rows
-
-
-def populate_option_instruments_output(
-    *,
-    output: dict[str, object],
-    tasks: Iterable[tuple[Exchange, str]],
-    results: dict[tuple[Exchange, str], list[OptionInstrumentMetadata]],
-    errors: dict[tuple[Exchange, str], str],
-    multi_market: bool,
-    storage: dict[str, dict[str, list[OptionInstrumentMetadata]]],
-) -> None:
-    """Populate JSON output and storage bucket for option instruments tasks."""
-
-    for exchange, symbol in tasks:
-        symbol_key = symbol.upper()
-        task_key = (exchange, symbol)
-        exchange_output = cast(dict[str, object], output[exchange])
-        if multi_market:
-            bucket = cast(dict[str, object], exchange_output.setdefault("option_instruments", {}))
-        else:
-            bucket = exchange_output
-        if task_key in errors:
-            bucket[symbol_key] = {"error": errors[task_key]}
-            continue
-        rows = results.get(task_key, [])
-        bucket[symbol_key] = [
-            {
-                "exchange": item.exchange,
-                "symbol": item.symbol,
-                "instrument_name": item.instrument_name,
-                "base_currency": item.base_currency,
-                "quote_currency": item.quote_currency,
-                "settlement_currency": item.settlement_currency,
-                "strike": item.strike,
-                "option_type": item.option_type,
-                "creation_timestamp": item.creation_timestamp.isoformat(),
-                "expiration_timestamp": item.expiration_timestamp.isoformat(),
-                "contract_size": item.contract_size,
-                "tick_size": item.tick_size,
-            }
-            for item in rows
-        ]
-        by_exchange = storage.setdefault(exchange, {})
         by_exchange[symbol_key] = rows

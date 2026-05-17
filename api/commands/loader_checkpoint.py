@@ -57,4 +57,4 @@ def apply_checkpoint_filter(
 def has_checkpoint_state(completed: dict[str, set[str]]) -> bool:
     """Return whether any checkpoint category has completed entries."""
 
-    return any(completed.get(name, set()) for name in ("candle", "oi", "funding", "trade", "option_instruments"))
+    return any(completed[name] for name in ("candle", "oi", "funding", "trade"))

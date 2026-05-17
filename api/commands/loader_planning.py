@@ -7,11 +7,11 @@ import logging
 from datetime import UTC, datetime
 from typing import Literal, cast
 
-from api.commands.loader_dataset_handlers import build_option_instrument_tasks, build_trade_tasks
+from api.commands.loader_dataset_handlers import build_trade_tasks
 from application.dto import BronzeFetchPlanDTO
 from ingestion.spot import Exchange, Market, normalize_timeframe
 
-DataType = Literal["spot", "perp", "oi", "funding", "perp_trades", "option_trades", "option_instruments"]
+DataType = Literal["spot", "perp", "oi", "funding", "perp_trades", "option_trades"]
 BRONZE_FIXED_TIMEFRAME = "1m"
 
 
@@ -38,21 +38,16 @@ def sanitize_symbols(raw_symbols: object, logger: logging.Logger) -> list[str]:
     return cleaned
 
 
-def resolved_symbol_groups(
-    args: argparse.Namespace, logger: logging.Logger
-) -> tuple[list[str], list[str], list[str], list[str]]:
+def resolved_symbol_groups(args: argparse.Namespace, logger: logging.Logger) -> tuple[list[str], list[str], list[str]]:
     """Return deterministically ordered symbol groups for Bronze task planning."""
 
     validated_symbols = sorted(sanitize_symbols(cast(object, args.symbols), logger=logger))
     validated_perp_trade_symbols = sorted(sanitize_symbols(cast(object, args.perp_trade_symbols), logger=logger))
     validated_option_trade_symbols = sorted(sanitize_symbols(cast(object, args.option_trade_symbols), logger=logger))
-    raw_option_instrument_symbols = cast(object, getattr(args, "option_instrument_symbols", args.option_trade_symbols))
-    validated_option_instrument_symbols = sorted(sanitize_symbols(raw_option_instrument_symbols, logger=logger))
     return (
         validated_symbols,
         validated_perp_trade_symbols,
         validated_option_trade_symbols,
-        validated_option_instrument_symbols,
     )
 
 
@@ -62,9 +57,7 @@ def build_bronze_fetch_plan(args: argparse.Namespace, logger: logging.Logger) ->
     exchanges = cast(list[Exchange], args.exchanges if args.exchanges else [args.exchange])
     data_types: list[str] = sorted(cast(list[str], args.market))
     ohlcv_markets = cast(list[Market], [item for item in data_types if item in {"spot", "perp"}])
-    symbols, perp_trade_symbols, option_trade_symbols, option_instrument_symbols = resolved_symbol_groups(
-        args=args, logger=logger
-    )
+    symbols, perp_trade_symbols, option_trade_symbols = resolved_symbol_groups(args=args, logger=logger)
 
     candle_tasks: list[tuple[Exchange, Market, str, str]] = []
     oi_tasks: list[tuple[Exchange, str, str]] = []
@@ -88,11 +81,6 @@ def build_bronze_fetch_plan(args: argparse.Namespace, logger: logging.Logger) ->
         perp_trades_requested="perp_trades" in data_types,
         option_trades_requested="option_trades" in data_types,
     )
-    option_instrument_tasks = build_option_instrument_tasks(
-        exchanges=sorted(exchanges),
-        option_instrument_symbols=option_instrument_symbols,
-        option_instruments_requested="option_instruments" in data_types,
-    )
 
     return BronzeFetchPlanDTO(
         exchanges=sorted(exchanges),
@@ -101,12 +89,10 @@ def build_bronze_fetch_plan(args: argparse.Namespace, logger: logging.Logger) ->
         symbols=symbols,
         perp_trade_symbols=perp_trade_symbols,
         option_trade_symbols=option_trade_symbols,
-        option_instrument_symbols=option_instrument_symbols,
         candle_tasks=candle_tasks,
         oi_tasks=oi_tasks,
         funding_tasks=funding_tasks,
         trade_tasks=trade_tasks,
-        option_instrument_tasks=option_instrument_tasks,
     )
 
 

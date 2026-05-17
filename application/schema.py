@@ -5,10 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-CliDataType = Literal["spot", "perp", "oi", "funding", "perp_trades", "option_trades", "option_instruments"]
-DatasetType = Literal[
-    "spot", "perp", "oi", "funding", "perp_trades", "option_trades", "option_instruments", "l2_orderbook"
-]
+CliDataType = Literal["spot", "perp", "oi", "funding", "perp_trades", "option_trades"]
+DatasetType = Literal["spot", "perp", "oi", "funding", "perp_trades", "option_trades", "l2_orderbook"]
 InstrumentType = Literal["spot", "perp", "option"]
 
 
@@ -34,11 +32,6 @@ _CONTRACTS: dict[CliDataType, DatasetContract] = {
     "option_trades": DatasetContract(
         cli_data_type="option_trades",
         dataset_type="option_trades",
-        instrument_type="option",
-    ),
-    "option_instruments": DatasetContract(
-        cli_data_type="option_instruments",
-        dataset_type="option_instruments",
         instrument_type="option",
     ),
 }

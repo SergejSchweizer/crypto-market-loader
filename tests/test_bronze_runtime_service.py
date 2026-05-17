@@ -36,7 +36,6 @@ def test_load_checkpoint_handles_unreadable_stale_and_missing_completed(tmp_path
         "oi": set(),
         "funding": set(),
         "trade": set(),
-        "option_instruments": set(),
     }
 
     path.write_text(json.dumps({"fingerprint": "other", "completed": {}}), encoding="utf-8")
@@ -45,7 +44,6 @@ def test_load_checkpoint_handles_unreadable_stale_and_missing_completed(tmp_path
         "oi": set(),
         "funding": set(),
         "trade": set(),
-        "option_instruments": set(),
     }
 
     path.write_text(json.dumps({"fingerprint": "fp", "completed": []}), encoding="utf-8")
@@ -54,7 +52,6 @@ def test_load_checkpoint_handles_unreadable_stale_and_missing_completed(tmp_path
         "oi": set(),
         "funding": set(),
         "trade": set(),
-        "option_instruments": set(),
     }
 
 
@@ -71,7 +68,7 @@ def test_fingerprint_and_write_checkpoint_roundtrip(tmp_path: Path) -> None:
     assert len(fp) == 64
 
     path = tmp_path / "x" / "chk.json"
-    completed = {"candle": {"a"}, "oi": set(), "funding": set(), "trade": {"b"}, "option_instruments": set()}
+    completed = {"candle": {"a"}, "oi": set(), "funding": set(), "trade": {"b"}}
     runtime.write_bronze_checkpoint(path, fingerprint=fp, completed=completed)
     loaded = runtime.load_bronze_checkpoint(path, fp, logging.getLogger("test"))
     assert loaded["candle"] == {"a"}
