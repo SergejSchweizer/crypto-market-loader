@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This repository should remain production-grade, maintainable, and reproducible.
+This repository provides a generic, reusable agent instruction baseline for integration into other repositories.
 
 All coding agents must optimize for:
 
@@ -18,27 +18,51 @@ The codebase must be understandable by another engineer without tribal knowledge
 
 ---
 
-# Core Engineering Rules
+## Core Rules (Always Active)
+
+### Minimum Change Principle
+
+- Prefer the smallest safe change that fully resolves the problem.
+- Prefer clarity over cleverness.
+- Preserve backward compatibility unless a breaking change is intentional and documented.
+
+### Modularity And Interfaces
+
+- Keep module boundaries explicit and cohesive.
+- Keep side effects isolated behind adapters/interfaces.
+- Keep business logic separate from framework/storage details.
+
+### Reproducibility
+
+- Keep execution paths deterministic where feasible.
+- Version important artifacts and schemas.
+- Preserve seeds and runtime configuration needed for reproducible runs.
+
+### Documentation
+
+- Keep operational docs aligned with code behavior.
+- Do not leave critical behavior changes undocumented.
+
+---
 
 ## Architecture
 
-Agents must preserve clear modular separation and explicit interfaces.
+Apply these rules when a task involves system design, module boundaries, refactoring strategy, scalability, reliability, or technical tradeoffs.
 
-Recommended top-level structure (adapt as needed per project type):
+### Architecture Goals
 
-```text
-project/
-|-- src/ (or domain modules)
-|-- tests/
-|-- docs/
-|-- scripts/ (optional)
-|-- notebooks/ (optional, exploratory only)
-|-- README.md
-|-- AGENTS.md
-`-- (REPORT.md optional for research-heavy projects)
-```
+- Preserve clear modular separation and explicit interfaces.
+- Optimize for maintainability, extensibility, and reproducibility.
+- Keep business logic separated from infrastructure and framework details.
 
-Rules:
+### Definition Of Done (Architecture)
+
+- Boundaries and responsibilities are explicit in code structure and naming.
+- New/changed contracts are documented and validated at boundaries.
+- Scalability and reliability implications are addressed (not deferred implicitly).
+- Refactor behavior is covered by regression tests.
+
+### Architecture Rules
 
 - Keep modules isolated and cohesive.
 - Avoid monolithic scripts for core logic.
@@ -46,32 +70,34 @@ Rules:
 - Prefer composable designs and separation of concerns.
 - Prioritize long-term maintainability over short-term convenience.
 
-## Design Patterns Policy
+### Interface and Contract Practices
 
-Use Python design patterns pragmatically when they reduce duplication, improve clarity, or make behavior safer to extend.
+- Define contract shape first (types, schema, invariants), then implement.
+- Make invalid states unrepresentable with DTOs, enums/literals, and validation.
+- Keep backward compatibility by default; version only intentional breaking changes.
+- Keep ownership explicit for each module (inputs, outputs, side effects).
+
+### Design Patterns Policy
+
+Use patterns pragmatically only when they reduce duplication, improve clarity, or improve safe extensibility.
 
 Preferred usage:
 
-- Strategy pattern for interchangeable behaviors (provider adapters, fetch policies, serialization policies).
-- Template Method for shared orchestration with small, well-defined variant steps.
-- Factory pattern for constructing typed clients/services without leaking wiring details.
-- Repository/DAO style boundaries for storage access to avoid persistence logic in domain workflows.
+- Strategy pattern for interchangeable behaviors.
+- Template Method for shared orchestration with well-defined variant steps.
+- Factory pattern for constructing typed clients/services.
+- Repository/DAO boundaries for storage access and persistence isolation.
 
 Rules:
 
-- Do not introduce patterns as ceremony; justify them with concrete simplification.
-- Keep pattern boundaries explicit and discoverable in module structure and naming.
+- Do not introduce patterns as ceremony.
+- Keep pattern boundaries explicit and discoverable.
 - Prefer small pure helper functions before introducing classes.
-- Refactors that introduce patterns must preserve behavior and include regression tests.
+- Pattern-introducing refactors must preserve behavior and include regression tests.
 
-## Scalability And Reliability Policy
+### Scalability and Reliability Policy
 
-All technical decisions must account for likely growth, such as:
-
-- more data/entities/users/traffic
-- larger history/backfills
-- higher job frequency
-- additional integrations/providers
+Technical decisions must account for growth in data volume, entities/users/traffic, history size, job frequency, and integrations/providers.
 
 Required implications:
 
@@ -82,319 +108,166 @@ Required implications:
 - Preserve observability (progress, throughput, error isolation).
 - Use storage/index strategies that remain efficient as volume grows.
 
----
+### Operational Design Practices
 
-# Code Quality Rules
+- Design workflows to be restart-safe and idempotent by default.
+- Bound memory and concurrency with explicit configuration knobs.
+- Isolate external dependencies with adapters to support retries, fallback, and test doubles.
+- Prefer deterministic ordering and deduplication in persistent outputs.
 
-## Type Safety
+### Architecture Review Checklist
 
-- Use type hints consistently.
-- Functions should have explicit return types.
-
-## Documentation
-
-- Non-trivial functions/modules require docstrings.
-- Public interfaces should include concise usage guidance.
-
-## Formatting And Static Checks
-
-Code must remain compatible with project quality gates, typically:
-
-- `ruff` (or equivalent linter/formatter)
-- `mypy`/`pyright` (or equivalent type checker)
-- `pytest` (or equivalent test runner)
-
-## Pre-Commit Quality Gates (MANDATORY)
-
-All changes must satisfy the repository pre-commit hooks. Treat these as mandatory quality gates.
-
-Required commands (as configured in `.pre-commit-config.yaml`):
-
-- `uv run ruff check .`
-- `uv run ruff format --check .`
-- `uv run mypy .`
-- `uv run ty check .`
-- `uv run lint-imports --config .importlinter`
-- `uv run python scripts/validate_config_with_pydantic.py --config config.yaml`
-- `uv run pytest`
-- `uv run pytest --cov=. --cov-report=term-missing`
-
-Rules:
-
-- Prefer running the full hook-equivalent command set before finalizing meaningful changes.
-- If runtime constraints require a narrower run during iteration, execute the full set before completion whenever practical.
-- If any required check cannot be run, explicitly state which command was not executed and why.
-- Do not claim completion when mandatory checks are failing.
-- Coverage measurement is mandatory in pre-commit validation and must be reported in the final summary.
-
-## Error Handling And Contracts
-
-- Fail fast on invalid inputs and invariant violations.
-- Raise specific exceptions; avoid broad `except Exception` without re-raise or structured handling.
-- Error messages must include actionable context (which symbol, exchange, date range, dataset).
-- Public interfaces must document expected inputs/outputs and failure modes.
-- Keep I/O boundaries validated (API payload shape, schema fields, config keys).
-
-## Observability And Logging
-
-- Use structured, context-rich logs for long-running tasks and batch workflows.
-- Include progress indicators for backfills (task index, symbol, time range, row count, elapsed time).
-- Log warnings for partial/fallback behavior and hard limits (pagination caps, retries, truncation).
-- Never log secrets or sensitive values.
-
-## Performance And Resource Efficiency
-
-- Avoid repeated full scans when an incremental strategy is available.
-- Keep memory usage bounded for large backfills (chunking/streaming where possible).
-- Make expensive operations explicit and configurable (timeouts, concurrency, page sizes).
-- Prefer deterministic deduplication and stable ordering in outputs.
+- Are layering boundaries preserved?
+- Does dependency direction flow from policy to implementation?
+- Are contracts explicit, typed, and validated?
+- Is the change idempotent and restart-safe where required?
+- Are tradeoffs, risks, and migration implications documented?
 
 ---
 
-# Testing Rules
+## Code Review
 
-After meaningful code changes, run relevant checks and tests.
+Apply these rules when reviewing changes, preparing PRs, or running quality gate validation before merge.
 
-Minimum expectation:
+### Review Priorities
 
-- run targeted tests for changed areas
-- run full test suite before finalization when practical
+- Bugs and behavioral regressions.
+- Contract and schema integrity.
+- Architectural boundary violations.
+- Missing tests for risk-heavy logic.
+- Operational risk (idempotency, restartability, observability).
 
-If checks cannot be run, explicitly state what was not run and why.
+### Severity Model
 
-Additional expectations:
+- High: correctness, data loss/corruption, security, broken contracts, runtime failure.
+- Medium: maintainability hazards, missing edge-case handling, observability gaps.
+- Low: style/documentation polish, non-blocking improvements.
 
+### Code Quality Rules
+
+- Use type hints consistently, including explicit return types.
+- Require docstrings for non-trivial modules/functions and concise usage notes for public interfaces.
+- Keep code compatible with explicit quality tooling.
+
+Preferred tooling:
+
+- Linting: `ruff` (or configured equivalent).
+- Formatting: `ruff format` (or configured equivalent).
+- Type checking: `mypy` or `pyright` (project standard).
+- Tests: `pytest` (or configured equivalent).
+- Import boundaries: `lint-imports` (or configured equivalent).
+
+Pre-commit quality gates must include lint, format, typing, import-boundary checks, tests, and coverage.
+
+### Review Workflow
+
+1. Understand intended behavior and scope.
+2. Validate correctness and contract compatibility first.
+3. Check failure paths, error messaging, and observability.
+4. Verify tests and coverage for changed risk areas.
+5. Check documentation, configuration, and schema alignment.
+6. Report findings ordered by severity with actionable guidance.
+
+### Anti-Patterns To Flag
+
+- Silent fallback that hides broken state.
+- Broad exception handling without context or re-raise strategy.
+- Hidden side effects across module boundaries.
+- Untyped public interfaces.
+- Contract changes without migration notes.
+
+### PR Guidance
+
+- Keep scope focused.
+- Add/update tests.
+- Update relevant docs.
+- Note architectural implications and rollback/mitigation notes for operational risk.
+
+---
+
+## Testing
+
+Apply these rules when adding/changing tests, fixing bugs, refactoring behavior, adding CLI commands, or validating release readiness.
+
+### Testing Rules
+
+- Run targeted tests for changed areas.
+- Run full test suite before finalization when practical.
+- Disclose any checks that could not run and why.
 - Add regression tests for every bug fix.
-- Test happy path, edge cases, and failure path for changed logic.
-- Keep tests deterministic (fixed timestamps/seeds/fixtures; no flaky external dependency assumptions).
-- For pipeline logic, validate idempotency and rerun behavior where relevant.
+- Test happy path, edge cases, and failure paths.
+- Keep tests deterministic.
 
-## Coverage Policy (MANDATORY)
+### Test Design Practices
 
-- Target repository test coverage is **90%**.
-- For meaningful changes, preserve or improve coverage and avoid introducing uncovered critical paths.
-- For core pipeline code (bronze/silver/gold transforms, fetch/gap-fill, CLI orchestration), add tests to keep these paths near or above the repository target.
-- If measured coverage is below 90%, explicitly disclose the gap and list follow-up test work required.
+- Prefer behavior-focused tests over implementation-coupled tests.
+- Use small, named fixtures with explicit setup intent.
+- Cover boundary values, empty inputs, and malformed inputs.
+- Validate outcomes and failure modes (error types/messages).
 
-Risk-prioritized closure to 90% is mandatory:
+### Coverage Policy (MANDATORY)
 
-1. Cover highest-risk paths first: data correctness, persistence, schema/contract integrity, CLI orchestration, and failure handling.
-2. Then cover medium-risk paths: adapter pagination/retry logic, transformation edge cases, and idempotency/rerun behavior.
-3. Cover lower-risk paths last: presentation/plotting helpers and thin wrappers.
-4. Continue iteratively until measured repository coverage is >= 90%.
+- Target repository test coverage is 90%.
+- Preserve or improve coverage for meaningful changes.
+- Prioritize highest-risk paths first: correctness, persistence, contracts, orchestration, failure handling.
+- If measured coverage is below 90%, disclose the gap and required follow-up work.
 
-## Stepwise Refactoring Procedure (MANDATORY after large changes)
+### Refactoring Validation
 
-For large/essential changes (architecture updates, cross-module behavior changes, medallion pipeline changes, schema-affecting updates), agents must apply refactoring in small, testable increments.
+For large changes:
 
-Required procedure:
+1. Split work into small, testable steps.
+2. Run targeted tests after each step.
+3. Keep behavior stable between steps.
+4. Re-run full tests and quality gates at the end.
+5. Update docs in the same change set when behavior/process changed.
 
-1. Split work into small steps with clear scope and ownership (one concern per step).
-2. After each step, run targeted tests for the changed area.
-3. Keep behavior stable between steps; avoid mixing refactor + feature + broad cleanup in one step.
-4. Commit only when the current step is green and reversible.
-5. Re-run full test suite and quality gates after the final step.
-6. Update README/REPORT/AGENTS docs in the same change set when behavior or process expectations changed.
+### CLI Validation
 
-Rules:
-
-- Do not execute large “all-at-once” refactors without intermediate validation.
-- If a step cannot be validated, explicitly stop and report blocker/risks before continuing.
-- Preserve backward compatibility unless the change explicitly documents a breaking contract.
-
-## CLI Command Validation (MANDATORY)
-
-- Every newly added CLI command must work autonomously as a standalone command invocation.
-- Every newly added CLI command must have dedicated automated tests that validate its independent execution path and expected behavior.
-- CLI command test coverage must be executed whenever a new CLI command is introduced or an existing CLI command is modified.
+- Every new or modified CLI command must have dedicated automated tests.
+- CLI commands must run autonomously as standalone invocations.
 
 ---
 
-# Git Hygiene Rules
+## Security
 
-The repository must not track local-only or cache artifacts.
+Apply these rules when touching configuration, credentials, secrets handling, runtime environment, or sensitive data paths.
 
-Always ignore and keep untracked (unless repo intentionally requires otherwise):
-
-- `.venv/`
-- `.vscode/`
-- `__pycache__/`
-- `.pytest_cache/`
-- `.mypy_cache/`
-- `.ruff_cache/`
-- `.cache/`
-- `.ipynb_checkpoints/`
-- `.env`
-- `.env.*`
-
-If local-only files are accidentally tracked, remove them from git index while keeping local copies.
-
-## Commit Message Rules
-
-Use Conventional Commits:
-
-```text
-type(scope): short summary
-```
-
-Allowed `type` values:
-
-- `feat`
-- `fix`
-- `refactor`
-- `test`
-- `docs`
-- `chore`
-- `ci`
-- `build`
-- `perf`
-
-Rules:
-
-- Use imperative mood.
-- Keep summary concise.
-- Prefer a meaningful scope.
-
----
-
-# Security Rules
+### Security Rules
 
 - Never commit secrets or credentials.
-- Use environment variables and local config files.
-- Keep sensitive config out of version control.
-- Keep required runtime variables documented directly in `config.yaml`.
+- Keep sensitive values out of version control.
+- Keep required runtime variables documented in canonical configuration.
 - Do not place live secret values in docs.
 
-## Configuration Security Policy (MANDATORY)
+### Security Engineering Practices
 
-- `config.yaml` is the single required runtime configuration source for this repository.
-- CLI/runtime usage without `config.yaml` is not allowed.
-- `.env` must not be used for runtime configuration.
-- `config.yaml` is the canonical config file and may be tracked in git.
-- `config.yaml` permissions must be restrictive (no permissions for “others”; recommended `chmod 600 config.yaml`).
-- Agents must update `config.yaml` structure/docs together with any code changes that add/remove config keys.
+- Apply least privilege for runtime identities and permissions.
+- Validate and sanitize external inputs at trust boundaries.
+- Prefer explicit allowlists over implicit trust.
+- Keep dependency and supply-chain risk visible.
+- Treat logs/metrics/traces as potential exfiltration paths.
 
----
+### Configuration Policy
 
-# Documentation Rules
+- Use one canonical runtime configuration source per repository.
+- Runtime usage without that canonical source is not allowed.
+- Avoid ad-hoc local environment files as runtime source of truth.
+- Update config structure and docs in the same change set when keys change.
 
-## README.md
+### Security Checklist
 
-`README.md` should function as a technical entry point and operations guide.
-
-It should cover:
-
-- project overview
-- architecture summary
-- setup/install
-- usage/workflow
-- testing and quality checks
-- deployment/runtime notes (if applicable)
-- known limitations
-- future improvements
-
-## REPORT.md (Optional, Research-Heavy Projects)
-
-If the project is research-heavy, maintain a `REPORT.md` with:
-
-- problem statement and methodology
-- dataset/inputs
-- results/figures/tables
-- assumptions and limitations
-- reproducibility notes
-
-## Documentation-Code Consistency (MANDATORY)
-
-- Upon essential code changes, compare `README.md` and (if present) `REPORT.md` against current code behavior.
-- Fix all inconsistencies in the same change set.
+- Are secrets excluded from code/docs/artifacts?
+- Are config/runtime contracts explicit and validated?
+- Are permissions and access scopes minimized?
+- Are errors actionable without leaking sensitive data?
+- Are third-party interactions bounded by timeout/retry/input validation?
 
 ---
 
-# Reproducibility Rules
+## End Goal
 
-- Keep configs and execution paths deterministic where feasible.
-- Version important artifacts and schemas.
-- Preserve seeds and experiment/runtime config for reproducible runs.
-
----
-
-# Pull Request / Change Rules
-
-For meaningful changes, agents should:
-
-- keep scope focused
-- add or update tests
-- update relevant docs
-- note architectural implications
-
-For non-trivial changes, include:
-
-- rationale and tradeoffs
-- rollback or mitigation notes for operational risk
-- explicit note of config/schema/doc updates (or confirmation none were required)
-
----
-
-# Additional Engineering Best Practices
-
-## Software Architecture Best Practices
-
-- Prefer layered architecture with clear boundaries: interface (CLI/API), application/service, domain, infrastructure.
-- Keep business rules in domain/application layers; keep framework and storage details at the edges.
-- Enforce dependency direction: higher-level policy must not depend on lower-level implementation details.
-- Make modules explicit about ownership (who reads/writes which dataset or contract).
-- Use contract-first development for data pipelines: schema, keys, partition strategy, and invariants are part of the interface.
-- Favor backward-compatible evolution for data/model contracts; introduce version bumps for breaking changes.
-- Keep side effects isolated behind adapters (HTTP client, parquet IO, filesystem, clock, random source).
-- Design for idempotency and restartability as first-class requirements for all batch/pipeline operations.
-
-## Development Heuristics
-
-- Optimize for smallest safe change: implement the minimum diff that resolves the problem completely.
-- Prefer clarity over cleverness; if a construct is hard to explain, simplify it.
-- Keep one concern per commit/PR whenever practical.
-- Use “make invalid states unrepresentable” via typed DTOs, enums/literals, and validation at boundaries.
-- Fail fast on configuration/contract violations; do not silently continue with ambiguous state.
-- Add regression tests before/with bug fixes; verify both failing-path and corrected-path behavior.
-- Use stable naming conventions across medallion layers (bronze/silver/gold) and keep naming migrations explicit.
-- During refactors, preserve externally observable behavior unless a breaking change is intentional and documented.
-
-## Code Management And Tooling Practices
-
-- Use pre-commit automation for deterministic quality checks and consistent local/CI behavior.
-- Keep dependency management reproducible and locked (`uv` lockfile workflow for install/sync consistency).
-- Use import-linter (or equivalent) to continuously enforce architectural boundaries.
-- Prefer static typing checks in CI (`mypy` and `ty`) to catch drift between runtime and declared contracts.
-- Treat lint/format as non-negotiable hygiene; avoid merging style debt.
-- Use coverage reports to guide risk-based test investments, not only to satisfy threshold metrics.
-- Keep CI pipelines fast and staged: quick checks first (lint/type), heavier checks next (tests/coverage).
-- Maintain changelog/PR notes for schema/config migrations and operational implications.
-- Use structured commit history (Conventional Commits) to improve traceability and release automation.
-
-## Review Checklist (Recommended)
-
-- Architecture: Does the change preserve module boundaries and dependency direction?
-- Contracts: Are schema, config, and CLI contracts explicit, validated, and documented?
-- Reliability: Is behavior idempotent, restart-safe, and observable in logs?
-- Testing: Are regression/edge/failure tests included for changed logic?
-- Operations: Are migration/rollback notes clear when behavior or data layout changes?
-
----
-
-# Failure Conditions
-
-Agents must not:
-
-- leave undocumented critical behavior changes
-- skip validation without disclosure
-- introduce unverifiable claims in documentation/reports
-- leave stale docs after essential code changes
-
----
-
-# End Goal
-
-The repository should remain:
+Any repository using these instructions should remain:
 
 - production-grade for engineers
 - reproducible for operators/researchers
