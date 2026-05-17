@@ -45,7 +45,7 @@ def build_trade_tasks(
 def _trade_dataset_key(market: TradeMarket) -> str:
     """Return output dataset key for one trade market."""
 
-    return "option_trades" if market == "option" else "trades"
+    return "option_trades" if market == "option" else "perp_trades"
 
 
 def _serialize_trade_row(item: TradeTick | OptionTradeTick) -> dict[str, object]:

@@ -25,7 +25,7 @@ from ingestion.funding import DERIBIT_FUNDING_NATIVE_INTERVAL
 _MARKET_DISCOVERY_CONFIG: dict[str, tuple[str, str, str]] = {
     "funding": ("funding", "perp", DERIBIT_FUNDING_NATIVE_INTERVAL),
     "oi": ("oi", "perp", "1m"),
-    "perp_trades": ("trades", "perp", "tick"),
+    "perp_trades": ("perp_trades", "perp", "tick"),
     "option_trades": ("option_trades", "option", "tick"),
 }
 

@@ -510,7 +510,7 @@ def test_build_perp_trades_1m_feature_for_symbol(tmp_path: Path) -> None:
     rows = [
         {
             "schema_version": "v1",
-            "dataset_type": "trades",
+            "dataset_type": "perp_trades",
             "exchange": "deribit",
             "symbol": symbol,
             "instrument_type": "perp",
@@ -529,7 +529,7 @@ def test_build_perp_trades_1m_feature_for_symbol(tmp_path: Path) -> None:
         },
         {
             "schema_version": "v1",
-            "dataset_type": "trades",
+            "dataset_type": "perp_trades",
             "exchange": "deribit",
             "symbol": symbol,
             "instrument_type": "perp",
@@ -548,7 +548,7 @@ def test_build_perp_trades_1m_feature_for_symbol(tmp_path: Path) -> None:
         },
         {
             "schema_version": "v1",
-            "dataset_type": "trades",
+            "dataset_type": "perp_trades",
             "exchange": "deribit",
             "symbol": symbol,
             "instrument_type": "perp",
@@ -568,14 +568,14 @@ def test_build_perp_trades_1m_feature_for_symbol(tmp_path: Path) -> None:
     ]
     _write_bronze_day_file(
         bronze,
-        market="trades",
+        market="perp_trades",
         exchange="deribit",
         symbol=symbol,
         timeframe="tick",
         month="2026-05",
         day="2026-05-01",
         rows=rows,
-        dataset_type="trades",
+        dataset_type="perp_trades",
         instrument_type="perp",
     )
     observed_report = build_perp_trades_observed_for_symbol(
@@ -703,7 +703,7 @@ def test_build_perp_trades_1m_feature_filters_invalid_and_deduplicates(tmp_path:
     symbol = "BTC-PERPETUAL"
     base = {
         "schema_version": "v1",
-        "dataset_type": "trades",
+        "dataset_type": "perp_trades",
         "exchange": "deribit",
         "symbol": symbol,
         "instrument_type": "perp",
@@ -754,14 +754,14 @@ def test_build_perp_trades_1m_feature_filters_invalid_and_deduplicates(tmp_path:
     ]
     _write_bronze_day_file(
         bronze,
-        market="trades",
+        market="perp_trades",
         exchange="deribit",
         symbol=symbol,
         timeframe="tick",
         month="2026-05",
         day="2026-05-01",
         rows=rows,
-        dataset_type="trades",
+        dataset_type="perp_trades",
         instrument_type="perp",
     )
     observed_report = build_perp_trades_observed_for_symbol(

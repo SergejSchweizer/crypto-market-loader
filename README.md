@@ -34,7 +34,7 @@ Production-grade cryptocurrency market data ingestion, normalization, feature en
   - [Cross-Market Features](#cross-market-features)
 - [8. Gold Dataset Definitions](#8-gold-dataset-definitions)
   - [gold.market.option_trades.m1](#goldmarketoption_tradesm1)
-  - [gold.market.trades.m1](#goldmarkettradesm1)
+  - [gold.market.perp_trades.m1](#goldmarketperp_tradesm1)
   - [gold.market.core.m1](#goldmarketcorem1)
   - [gold.market.core\_funding.m1](#goldmarketcore_fundingm1)
   - [gold.market.full.m1](#goldmarketfullm1)
@@ -417,7 +417,7 @@ Most powerful features usually come from interactions:
 
 # 8. Gold Dataset Definitions
 
-## gold.market.trades.m1
+## gold.market.perp_trades.m1
 
 Contains:
 
@@ -486,7 +486,7 @@ Use cases:
 ## gold.hybrid.full_l2.m1
 
 Extends gold datasets with L2 order book features.
-Includes spot/perp/funding/open-interest/trades-derived 1m features plus L2.
+Includes spot/perp/funding/open-interest/perp-trades-derived 1m features plus L2.
 
 Potential L2 features:
 
@@ -577,7 +577,7 @@ Currently missing but highly valuable:
 ## Bronze Layout
 
 ```text
-dataset_type=spot|perp|oi|funding|trades|option_trades/
+dataset_type=spot|perp|oi|funding|perp_trades|option_trades/
   exchange=<exchange>/
   instrument_type=<spot|perp>/
   symbol=<symbol>/
@@ -682,7 +682,7 @@ uv run python main.py gold-build \
 
 Weitere Gold-Dataset-IDs:
 
-- `gold.market.trades.m1` (nur perp-trade-flow Features)
+- `gold.market.perp_trades.m1` (perp-trade-flow Features only)
 - `gold.market.option_trades.m1` (nur option-trade-flow Features)
 - `gold.market.core.m1`
 - `gold.market.core_funding.m1`

@@ -80,7 +80,7 @@ def test_run_silver_build_uses_tick_timeframe_for_trades_discovery(
     ) -> list[str]:
         del bronze_root, exchange, instrument_type
         captured.append((market, timeframe))
-        if market == "trades":
+        if market == "perp_trades":
             return ["BTC-PERPETUAL"]
         return []
 
@@ -106,7 +106,7 @@ def test_run_silver_build_uses_tick_timeframe_for_trades_discovery(
     )
     silver_cmd.run_silver_build(args=args, logger=logging.getLogger("test"))
 
-    assert captured == [("trades", "tick")]
+    assert captured == [("perp_trades", "tick")]
     assert built == [("BTC-PERPETUAL", "tick"), ("BTC-PERPETUAL", "tick")]
 
 

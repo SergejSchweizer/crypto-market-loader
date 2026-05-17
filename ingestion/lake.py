@@ -222,7 +222,7 @@ def trade_record(
 ) -> dict[str, object]:
     """Convert trade tick to parquet-lake row format."""
 
-    dataset_type = "option_trades" if market == "option" else "trades"
+    dataset_type = "option_trades" if market == "option" else "perp_trades"
     record: dict[str, object] = {
         "schema_version": "v1",
         "dataset_type": dataset_type,
@@ -460,7 +460,7 @@ def ensure_bronze_sidecars(
     if not root.exists():
         return []
 
-    selected = dataset_types or ["spot", "perp", OI_DATASET_TYPE, "funding", "trades", "option_trades"]
+    selected = dataset_types or ["spot", "perp", OI_DATASET_TYPE, "funding", "perp_trades", "option_trades"]
     written: list[str] = []
     log = log_fn if callable(log_fn) else None
     if log is not None:
@@ -942,7 +942,7 @@ def save_trades_parquet_lake(
 
     run_id = utc_run_id()
     ingested_at = datetime.now(UTC)
-    dataset_type = "option_trades" if market == "option" else "trades"
+    dataset_type = "option_trades" if market == "option" else "perp_trades"
 
     grouped: defaultdict[PartitionKey, list[dict[str, object]]] = defaultdict(list)
     for symbol_map in trades_by_exchange.values():

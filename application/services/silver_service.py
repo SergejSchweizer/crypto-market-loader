@@ -1231,7 +1231,7 @@ def build_perp_trades_observed_for_symbol(
     symbol: str,
     instrument_type: str = "perp",
     timeframe: str = "tick",
-    bronze_dataset_type: str = "trades",
+    bronze_dataset_type: str = "perp_trades",
     output_dataset_type: str = "perp_trades_observed",
 ) -> SilverBuildReport:
     """Build monthly observed tick-trade dataset from bronze trade records."""

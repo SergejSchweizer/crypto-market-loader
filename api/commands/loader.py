@@ -1043,7 +1043,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 )
                 incremental_parquet_files.extend(storage_result.parquet_files)
                 _log_new_daily_partitions(
-                    data_type="option_trades" if task.market == "option" else "trades",
+                    data_type="option_trades" if task.market == "option" else "perp_trades",
                     exchange=task.exchange,
                     market=task.market,
                     symbol=task.symbol,
@@ -1274,7 +1274,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 if funding_requested:
                     selected_dataset_types.add("funding")
                 if perp_trades_requested:
-                    selected_dataset_types.add("trades")
+                    selected_dataset_types.add("perp_trades")
                 if option_trades_requested:
                     selected_dataset_types.add("option_trades")
                 repaired_parquet_files = ensure_bronze_sidecars(
@@ -1297,7 +1297,7 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                     {
                         str(Path(path).resolve())
                         for path in cast(list[str], output.get("_parquet_files", []))
-                        if ("dataset_type=trades" in path or "dataset_type=option_trades" in path)
+                        if ("dataset_type=perp_trades" in path or "dataset_type=option_trades" in path)
                         and path.endswith(".parquet")
                     }
                 )

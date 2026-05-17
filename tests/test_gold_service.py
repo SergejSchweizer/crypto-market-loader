@@ -615,13 +615,13 @@ def test_build_gold_for_symbol_trades_only_dataset(tmp_path: Path) -> None:
         gold_root=str(gold),
         exchange=exchange,
         symbol=symbol,
-        dataset_id="gold.market.trades.m1",
+        dataset_id="gold.market.perp_trades.m1",
         manifest=True,
     )
 
-    assert "dataset_id=gold.market.trades.m1" in report.parquet_path
+    assert "dataset_id=gold.market.perp_trades.m1" in report.parquet_path
     payload = json.loads(_require_manifest_path(report).read_text(encoding="utf-8"))
-    assert payload["dataset_id"] == "gold.market.trades.m1"
+    assert payload["dataset_id"] == "gold.market.perp_trades.m1"
     assert "perp_trades_1m_feature" in payload["source_silver_datasets"]
 
 

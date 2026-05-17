@@ -46,7 +46,7 @@ from api.cli import build_parser
         (["gold-build", "--exchange", "deribit"], {"exchange": "deribit"}),
         (["gold-build", "--symbols", "BTC"], {"symbols": ["BTC"]}),
         (["gold-build", "--dataset-id", "gold.market.full.m1"], {"dataset_id": "gold.market.full.m1"}),
-        (["gold-build", "--dataset-id", "gold.market.trades.m1"], {"dataset_id": "gold.market.trades.m1"}),
+        (["gold-build", "--dataset-id", "gold.market.perp_trades.m1"], {"dataset_id": "gold.market.perp_trades.m1"}),
         (
             ["gold-build", "--dataset-id", "gold.market.option_trades.m1"],
             {"dataset_id": "gold.market.option_trades.m1"},

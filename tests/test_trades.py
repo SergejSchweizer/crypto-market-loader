@@ -59,7 +59,7 @@ def test_save_trades_parquet_lake_writes_dataset(tmp_path: Path) -> None:
     )
     assert len(files) == 1
     path = Path(files[0])
-    assert "dataset_type=trades" in files[0]
+    assert "dataset_type=perp_trades" in files[0]
     table = pq.ParquetFile(path).read()
     row = table.to_pylist()[0]
     assert row["trade_id"] == "t-1"

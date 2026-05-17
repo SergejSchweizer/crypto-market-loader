@@ -693,7 +693,7 @@ def fetch_symbol_trades(
         if market == "option"
         else symbol_normalizer(exchange=exchange, symbol=symbol, market=market)
     )
-    trades_dataset_type = "option_trades" if market == "option" else "trades"
+    trades_dataset_type = "option_trades" if market == "option" else "perp_trades"
     end_open_ms = now_open_resolver(interval_ms=60_000)
     if start_open_ms_bound is not None and end_open_ms < start_open_ms_bound:
         return []

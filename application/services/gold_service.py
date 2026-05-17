@@ -22,7 +22,7 @@ _FULL_MARKET_REQUIREMENTS: list[tuple[str, str]] = [
     ("option_trades_1m_feature", "1m"),
 ]
 GOLD_DATASET_SPECS: dict[str, dict[str, object]] = {
-    "gold.market.trades.m1": {
+    "gold.market.perp_trades.m1": {
         "requirements": [("perp_trades_1m_feature", "1m")],
         "include_l2": False,
     },
