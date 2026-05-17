@@ -11,8 +11,8 @@ from typing import cast
 from application.services.gold_service import (
     SUPPORTED_GOLD_DATASET_IDS,
     build_gold_for_symbol,
-    discover_gold_symbols_for_dataset,
     discover_gold_symbols,
+    discover_gold_symbols_for_dataset,
     normalize_symbol,
 )
 

@@ -176,9 +176,14 @@ def test_main_loader_uses_deterministic_symbol_schedule(monkeypatch: pytest.Monk
         seen_symbols.append(cast(str, kwargs["symbol"]))
         return []
 
+    def fake_fetch_candles_range(**kwargs: object) -> list[SpotCandle]:
+        seen_symbols.append(cast(str, kwargs["symbol"]))
+        return []
+
     monkeypatch.setattr(cli, "SingleInstanceLock", NoopLock)
     monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
     monkeypatch.setattr(cli, "fetch_candles_all_history", fake_fetch_candles_all_history)
+    monkeypatch.setattr(cli, "fetch_candles_range", fake_fetch_candles_range)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -198,7 +203,7 @@ def test_main_loader_uses_deterministic_symbol_schedule(monkeypatch: pytest.Monk
 
     cli.main()
 
-    assert seen_symbols == expected_order
+    assert list(dict.fromkeys(seen_symbols)) == expected_order
 
 
 def test_main_bronze_ingest_command_uses_loader_runtime(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -219,9 +224,15 @@ def test_main_bronze_ingest_command_uses_loader_runtime(monkeypatch: pytest.Monk
         called["fetch"] = True
         return []
 
+    def fake_fetch_candles_range(**kwargs: object) -> list[SpotCandle]:
+        del kwargs
+        called["fetch"] = True
+        return []
+
     monkeypatch.setattr(cli, "SingleInstanceLock", NoopLock)
     monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
     monkeypatch.setattr(cli, "fetch_candles_all_history", fake_fetch_candles_all_history)
+    monkeypatch.setattr(cli, "fetch_candles_range", fake_fetch_candles_range)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -258,9 +269,14 @@ def test_main_loader_uses_deterministic_market_schedule(monkeypatch: pytest.Monk
         seen_markets.append(cast(str, kwargs["market"]))
         return []
 
+    def fake_fetch_candles_range(**kwargs: object) -> list[SpotCandle]:
+        seen_markets.append(cast(str, kwargs["market"]))
+        return []
+
     monkeypatch.setattr(cli, "SingleInstanceLock", NoopLock)
     monkeypatch.setattr(cli, "open_times_in_lake", lambda **kwargs: [])
     monkeypatch.setattr(cli, "fetch_candles_all_history", fake_fetch_candles_all_history)
+    monkeypatch.setattr(cli, "fetch_candles_range", fake_fetch_candles_range)
     monkeypatch.setattr(
         "sys.argv",
         [
@@ -279,7 +295,8 @@ def test_main_loader_uses_deterministic_market_schedule(monkeypatch: pytest.Monk
 
     cli.main()
 
-    assert seen_markets == ["perp", "spot"]
+    unique_market_order = list(dict.fromkeys(seen_markets))
+    assert unique_market_order == ["perp", "spot"]
 
 
 def test_main_loader_uses_deterministic_dataset_group_order(monkeypatch: pytest.MonkeyPatch) -> None:

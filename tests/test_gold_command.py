@@ -131,4 +131,7 @@ def test_run_gold_build_skips_symbol_on_value_error(
         gold_cmd.run_gold_build(args=args, logger=logging.getLogger("test"))
     payload = capsys.readouterr().out
     assert payload.strip() == '{\n  "reports": []\n}'
-    assert "Gold dataset skipped symbol=BTC dataset_id=gold.market.full.m1 reason=missing silver prerequisite" in caplog.text
+    assert (
+        "Gold dataset skipped symbol=BTC dataset_id=gold.market.full.m1 reason=missing silver prerequisite"
+        in caplog.text
+    )

@@ -205,6 +205,48 @@ def _day_windows_in_random_order(start_open_ms: int, end_open_ms: int) -> list[t
     return sorted(windows)
 
 
+def _fetch_bounded_daily_rows(
+    *,
+    start_open_ms_bound: int,
+    end_open_ms: int,
+    range_fetcher: Callable[..., list[TRow]],
+    fetch_kwargs: dict[str, object],
+    on_history_chunk: Callable[[list[TRow]], None] | None,
+) -> list[TRow]:
+    """Fetch inclusive bounded history in UTC-day windows with deterministic deduplication."""
+
+    rows_buffer: list[TRow] = []
+    for day_start_ms, day_end_ms in _day_windows_in_random_order(start_open_ms_bound, end_open_ms):
+        day_rows = range_fetcher(
+            start_open_ms=day_start_ms,
+            end_open_ms=day_end_ms,
+            **fetch_kwargs,
+        )
+        if day_rows and on_history_chunk is not None:
+            on_history_chunk(day_rows)
+        rows_buffer.extend(day_rows)
+    unique_by_open_time = {_row_open_time_ms(item): item for item in rows_buffer}
+    return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
+
+
+def _fetch_bootstrap_history_rows(
+    *,
+    history_fetcher: Callable[..., list[TRow]],
+    fetch_kwargs: dict[str, object],
+    on_history_chunk: Callable[[list[TRow]], None] | None,
+    start_open_ms_bound: int | None,
+) -> list[TRow]:
+    """Run history bootstrap fetch, then apply deterministic bound-filtered deduplication."""
+
+    rows = history_fetcher(
+        on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
+        **fetch_kwargs,
+    )
+    filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
+    unique_by_open_time = {_row_open_time_ms(item): item for item in filtered_rows}
+    return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
+
+
 def _build_missing_ranges_with_optional_head_gap(
     *,
     existing_open_times: list[datetime],
@@ -359,16 +401,30 @@ def fetch_symbol_candles(
             timeframe=timeframe,
         )
         if latest_open_time is None:
-            rows = history_fetcher(
-                exchange=exchange,
-                symbol=symbol,
-                market=market,
-                interval=timeframe,
-                on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
+            if start_open_ms_bound is not None:
+                return _fetch_bounded_daily_rows(
+                    start_open_ms_bound=start_open_ms_bound,
+                    end_open_ms=end_open_ms,
+                    range_fetcher=range_fetcher,
+                    fetch_kwargs={
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "interval": timeframe,
+                        "market": market,
+                    },
+                    on_history_chunk=on_history_chunk,
+                )
+            return _fetch_bootstrap_history_rows(
+                history_fetcher=history_fetcher,
+                fetch_kwargs={
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "market": market,
+                    "interval": timeframe,
+                },
+                on_history_chunk=on_history_chunk,
+                start_open_ms_bound=start_open_ms_bound,
             )
-            filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
-            unique_by_open_time = {item.open_time: item for item in filtered_rows}
-            return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
         start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
         if start_open_ms_bound is not None:
             start_open_ms = max(start_open_ms, start_open_ms_bound)
@@ -398,16 +454,30 @@ def fetch_symbol_candles(
     )
 
     if not stored_open_times:
-        rows = history_fetcher(
-            exchange=exchange,
-            symbol=symbol,
-            market=market,
-            interval=timeframe,
-            on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
+        if start_open_ms_bound is not None:
+            return _fetch_bounded_daily_rows(
+                start_open_ms_bound=start_open_ms_bound,
+                end_open_ms=end_open_ms,
+                range_fetcher=range_fetcher,
+                fetch_kwargs={
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "interval": timeframe,
+                    "market": market,
+                },
+                on_history_chunk=on_history_chunk,
+            )
+        return _fetch_bootstrap_history_rows(
+            history_fetcher=history_fetcher,
+            fetch_kwargs={
+                "exchange": exchange,
+                "symbol": symbol,
+                "market": market,
+                "interval": timeframe,
+            },
+            on_history_chunk=on_history_chunk,
+            start_open_ms_bound=start_open_ms_bound,
         )
-        filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
-        unique_by_open_time = {item.open_time: item for item in filtered_rows}
-        return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
     if end_open_ms < int(min(stored_open_times).timestamp() * 1000):
         return []
 
@@ -483,16 +553,30 @@ def fetch_symbol_open_interest(
             timeframe=normalized_interval,
         )
         if latest_open_time is None:
-            rows = history_fetcher(
-                exchange=exchange,
-                symbol=symbol,
-                interval=normalized_interval,
-                market=market,
-                on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
+            if start_open_ms_bound is not None:
+                return _fetch_bounded_daily_rows(
+                    start_open_ms_bound=start_open_ms_bound,
+                    end_open_ms=end_open_ms,
+                    range_fetcher=range_fetcher,
+                    fetch_kwargs={
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "interval": normalized_interval,
+                        "market": market,
+                    },
+                    on_history_chunk=on_history_chunk,
+                )
+            return _fetch_bootstrap_history_rows(
+                history_fetcher=history_fetcher,
+                fetch_kwargs={
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "interval": normalized_interval,
+                    "market": market,
+                },
+                on_history_chunk=on_history_chunk,
+                start_open_ms_bound=start_open_ms_bound,
             )
-            filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
-            unique_by_open_time = {item.open_time: item for item in filtered_rows}
-            return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
         start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
         if start_open_ms_bound is not None:
             start_open_ms = max(start_open_ms, start_open_ms_bound)
@@ -523,16 +607,30 @@ def fetch_symbol_open_interest(
     )
 
     if not stored_open_times:
-        rows = history_fetcher(
-            exchange=exchange,
-            symbol=symbol,
-            interval=normalized_interval,
-            market=market,
-            on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
+        if start_open_ms_bound is not None:
+            return _fetch_bounded_daily_rows(
+                start_open_ms_bound=start_open_ms_bound,
+                end_open_ms=end_open_ms,
+                range_fetcher=range_fetcher,
+                fetch_kwargs={
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "interval": normalized_interval,
+                    "market": market,
+                },
+                on_history_chunk=on_history_chunk,
+            )
+        return _fetch_bootstrap_history_rows(
+            history_fetcher=history_fetcher,
+            fetch_kwargs={
+                "exchange": exchange,
+                "symbol": symbol,
+                "interval": normalized_interval,
+                "market": market,
+            },
+            on_history_chunk=on_history_chunk,
+            start_open_ms_bound=start_open_ms_bound,
         )
-        filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
-        unique_by_open_time = {item.open_time: item for item in filtered_rows}
-        return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
     if end_open_ms < int(min(stored_open_times).timestamp() * 1000):
         return []
 
@@ -608,16 +706,30 @@ def fetch_symbol_funding(
             timeframe=normalized_interval,
         )
         if latest_open_time is None:
-            rows = history_fetcher(
-                exchange=exchange,
-                symbol=symbol,
-                interval=normalized_interval,
-                market=market,
-                on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
+            if start_open_ms_bound is not None:
+                return _fetch_bounded_daily_rows(
+                    start_open_ms_bound=start_open_ms_bound,
+                    end_open_ms=end_open_ms,
+                    range_fetcher=range_fetcher,
+                    fetch_kwargs={
+                        "exchange": exchange,
+                        "symbol": symbol,
+                        "interval": normalized_interval,
+                        "market": market,
+                    },
+                    on_history_chunk=on_history_chunk,
+                )
+            return _fetch_bootstrap_history_rows(
+                history_fetcher=history_fetcher,
+                fetch_kwargs={
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "interval": normalized_interval,
+                    "market": market,
+                },
+                on_history_chunk=on_history_chunk,
+                start_open_ms_bound=start_open_ms_bound,
             )
-            filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
-            unique_by_open_time = {item.open_time: item for item in filtered_rows}
-            return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
         start_open_ms = int(latest_open_time.timestamp() * 1000) + interval_ms
         if start_open_ms_bound is not None:
             start_open_ms = max(start_open_ms, start_open_ms_bound)
@@ -646,16 +758,30 @@ def fetch_symbol_funding(
     )
 
     if not stored_open_times:
-        rows = history_fetcher(
-            exchange=exchange,
-            symbol=symbol,
-            interval=normalized_interval,
-            market=market,
-            on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
+        if start_open_ms_bound is not None:
+            return _fetch_bounded_daily_rows(
+                start_open_ms_bound=start_open_ms_bound,
+                end_open_ms=end_open_ms,
+                range_fetcher=range_fetcher,
+                fetch_kwargs={
+                    "exchange": exchange,
+                    "symbol": symbol,
+                    "interval": normalized_interval,
+                    "market": market,
+                },
+                on_history_chunk=on_history_chunk,
+            )
+        return _fetch_bootstrap_history_rows(
+            history_fetcher=history_fetcher,
+            fetch_kwargs={
+                "exchange": exchange,
+                "symbol": symbol,
+                "interval": normalized_interval,
+                "market": market,
+            },
+            on_history_chunk=on_history_chunk,
+            start_open_ms_bound=start_open_ms_bound,
         )
-        filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
-        unique_by_open_time = {item.open_time: item for item in filtered_rows}
-        return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
     if end_open_ms < int(min(stored_open_times).timestamp() * 1000):
         return []
 

@@ -157,26 +157,12 @@ def test_fetch_symbol_candles_tail_delta_only_uses_latest_open_time() -> None:
 def test_fetch_symbol_candles_tail_delta_only_uses_start_bound_when_no_history() -> None:
     start_bound_ms = int(datetime(2022, 4, 29, 0, 0, tzinfo=UTC).timestamp() * 1000)
     end_open_ms = int(datetime(2022, 4, 29, 0, 2, tzinfo=UTC).timestamp() * 1000)
-    pre_start = datetime(2022, 4, 28, 23, 59, tzinfo=UTC)
     on_start = datetime(2022, 4, 29, 0, 0, tzinfo=UTC)
+    calls: list[tuple[int, int]] = []
 
-    def _history_fetcher(**kwargs: object) -> list[SpotCandle]:
-        del kwargs
+    def _range_fetcher(**kwargs: object) -> list[SpotCandle]:
+        calls.append((int(cast(Any, kwargs["start_open_ms"])), int(cast(Any, kwargs["end_open_ms"]))))
         return [
-            SpotCandle(
-                exchange="deribit",
-                symbol="BTCUSDT",
-                interval="1m",
-                open_time=pre_start,
-                close_time=pre_start,
-                open_price=1.0,
-                high_price=1.0,
-                low_price=1.0,
-                close_price=1.0,
-                volume=1.0,
-                quote_volume=1.0,
-                trade_count=1,
-            ),
             SpotCandle(
                 exchange="deribit",
                 symbol="BTCUSDT",
@@ -190,7 +176,7 @@ def test_fetch_symbol_candles_tail_delta_only_uses_start_bound_when_no_history()
                 volume=1.0,
                 quote_volume=1.0,
                 trade_count=1,
-            ),
+            )
         ]
 
     candles = fetch_symbol_candles(
@@ -202,14 +188,195 @@ def test_fetch_symbol_candles_tail_delta_only_uses_start_bound_when_no_history()
         symbol_normalizer=lambda **kwargs: "BTCUSDT",
         interval_ms_resolver=lambda **kwargs: 60_000,
         now_open_resolver=lambda **kwargs: end_open_ms,
-        history_fetcher=_history_fetcher,
-        range_fetcher=lambda **kwargs: pytest.fail("range_fetcher should not be called in bootstrap path"),
+        history_fetcher=lambda **kwargs: pytest.fail("history_fetcher should not be called when start bound is set"),
+        range_fetcher=_range_fetcher,
         latest_open_time_reader=lambda **kwargs: None,
         tail_delta_only=True,
         start_open_ms_bound=start_bound_ms,
     )
 
+    assert calls == [(start_bound_ms, end_open_ms)]
     assert [item.open_time for item in candles] == [on_start]
+
+
+def test_fetch_symbol_open_interest_tail_latest_none_uses_start_bound_range_fetch() -> None:
+    start_bound_ms = int(datetime(2026, 4, 27, 10, 0, tzinfo=UTC).timestamp() * 1000)
+    end_open_ms = int(datetime(2026, 4, 27, 10, 2, tzinfo=UTC).timestamp() * 1000)
+    calls: list[tuple[int, int]] = []
+    point = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
+        open_interest=10.0,
+        open_interest_value=20.0,
+    )
+
+    def _range_fetcher(**kwargs: object) -> list[OpenInterestPoint]:
+        calls.append((int(cast(Any, kwargs["start_open_ms"])), int(cast(Any, kwargs["end_open_ms"]))))
+        return [point]
+
+    rows = fetch_symbol_open_interest(
+        exchange="deribit",
+        market="perp",
+        symbol="BTC",
+        timeframe="1m",
+        lake_root="lake/bronze",
+        timeframe_normalizer=lambda **kwargs: "1m",
+        symbol_normalizer=lambda **kwargs: "BTC-PERPETUAL",
+        interval_ms_resolver=lambda **kwargs: 60_000,
+        now_open_resolver=lambda **kwargs: end_open_ms,
+        latest_open_time_reader=lambda **kwargs: None,
+        history_fetcher=lambda **kwargs: pytest.fail("history_fetcher should not be called when start bound is set"),
+        range_fetcher=_range_fetcher,
+        tail_delta_only=True,
+        start_open_ms_bound=start_bound_ms,
+    )
+    assert calls == [(start_bound_ms, end_open_ms)]
+    assert [item.open_time for item in rows] == [point.open_time]
+
+
+def test_fetch_symbol_funding_tail_latest_none_uses_start_bound_range_fetch() -> None:
+    start_bound_ms = int(datetime(2026, 4, 27, 0, 0, tzinfo=UTC).timestamp() * 1000)
+    end_open_ms = int(datetime(2026, 4, 27, 8, 0, tzinfo=UTC).timestamp() * 1000)
+    calls: list[tuple[int, int]] = []
+    point = FundingPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="8h",
+        open_time=datetime(2026, 4, 27, 0, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 7, 59, 59, tzinfo=UTC),
+        funding_rate=0.001,
+        index_price=1.0,
+        mark_price=1.0,
+    )
+
+    def _range_fetcher(**kwargs: object) -> list[FundingPoint]:
+        calls.append((int(cast(Any, kwargs["start_open_ms"])), int(cast(Any, kwargs["end_open_ms"]))))
+        return [point]
+
+    rows = fetch_symbol_funding(
+        exchange="deribit",
+        market="perp",
+        symbol="BTC",
+        timeframe="8h",
+        lake_root="lake/bronze",
+        timeframe_normalizer=lambda **kwargs: "8h",
+        symbol_normalizer=lambda **kwargs: "BTC-PERPETUAL",
+        interval_ms_resolver=lambda **kwargs: 8 * 60 * 60 * 1000,
+        now_open_resolver=lambda **kwargs: end_open_ms,
+        latest_open_time_reader=lambda **kwargs: None,
+        history_fetcher=lambda **kwargs: pytest.fail("history_fetcher should not be called when start bound is set"),
+        range_fetcher=_range_fetcher,
+        tail_delta_only=True,
+        start_open_ms_bound=start_bound_ms,
+    )
+    assert calls == [(start_bound_ms, end_open_ms)]
+    assert [item.open_time for item in rows] == [point.open_time]
+
+
+def test_fetch_symbol_open_interest_tail_latest_none_uses_history_fetch_and_dedupes() -> None:
+    point_time = datetime(2026, 4, 27, 10, 0, tzinfo=UTC)
+    duplicate = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="1m",
+        open_time=point_time,
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
+        open_interest=10.0,
+        open_interest_value=20.0,
+    )
+    replacement = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="1m",
+        open_time=point_time,
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
+        open_interest=11.0,
+        open_interest_value=21.0,
+    )
+    next_point = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 10, 1, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 1, 59, 999000, tzinfo=UTC),
+        open_interest=12.0,
+        open_interest_value=22.0,
+    )
+
+    rows = fetch_symbol_open_interest(
+        exchange="deribit",
+        market="perp",
+        symbol="BTC",
+        timeframe="1m",
+        lake_root="lake/bronze",
+        timeframe_normalizer=lambda **kwargs: "1m",
+        symbol_normalizer=lambda **kwargs: "BTC-PERPETUAL",
+        interval_ms_resolver=lambda **kwargs: 60_000,
+        now_open_resolver=lambda **kwargs: int(datetime(2026, 4, 27, 10, 2, tzinfo=UTC).timestamp() * 1000),
+        latest_open_time_reader=lambda **kwargs: None,
+        history_fetcher=lambda **kwargs: [duplicate, replacement, next_point],
+        range_fetcher=lambda **kwargs: pytest.fail("range_fetcher should not be called when no start bound is set"),
+        tail_delta_only=True,
+    )
+
+    assert [item.open_time for item in rows] == [point_time, next_point.open_time]
+    assert rows[0].open_interest == replacement.open_interest
+
+
+def test_fetch_symbol_funding_tail_latest_none_uses_history_fetch_and_dedupes() -> None:
+    point_time = datetime(2026, 4, 27, 0, 0, tzinfo=UTC)
+    duplicate = FundingPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="8h",
+        open_time=point_time,
+        close_time=datetime(2026, 4, 27, 7, 59, 59, tzinfo=UTC),
+        funding_rate=0.001,
+        index_price=1.0,
+        mark_price=1.0,
+    )
+    replacement = FundingPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="8h",
+        open_time=point_time,
+        close_time=datetime(2026, 4, 27, 7, 59, 59, tzinfo=UTC),
+        funding_rate=0.002,
+        index_price=1.0,
+        mark_price=1.0,
+    )
+    next_point = FundingPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="8h",
+        open_time=datetime(2026, 4, 27, 8, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 15, 59, 59, tzinfo=UTC),
+        funding_rate=0.003,
+        index_price=1.0,
+        mark_price=1.0,
+    )
+
+    rows = fetch_symbol_funding(
+        exchange="deribit",
+        market="perp",
+        symbol="BTC",
+        timeframe="8h",
+        lake_root="lake/bronze",
+        timeframe_normalizer=lambda **kwargs: "8h",
+        symbol_normalizer=lambda **kwargs: "BTC-PERPETUAL",
+        interval_ms_resolver=lambda **kwargs: 8 * 60 * 60 * 1000,
+        now_open_resolver=lambda **kwargs: int(datetime(2026, 4, 27, 16, 0, tzinfo=UTC).timestamp() * 1000),
+        latest_open_time_reader=lambda **kwargs: None,
+        history_fetcher=lambda **kwargs: [duplicate, replacement, next_point],
+        range_fetcher=lambda **kwargs: pytest.fail("range_fetcher should not be called when no start bound is set"),
+        tail_delta_only=True,
+    )
+
+    assert [item.open_time for item in rows] == [point_time, next_point.open_time]
+    assert rows[0].funding_rate == replacement.funding_rate
 
 
 def test_fetch_symbol_candles_full_gap_fill_includes_head_gap_from_start_bound() -> None:
@@ -427,6 +594,128 @@ def test_fetch_symbol_trades_bootstrap_with_start_bound_uses_day_range_fetch() -
 
     assert calls == [(start_bound_ms, end_open_ms)]
     assert [(row.trade_time, row.trade_id) for row in rows] == [(datetime(2022, 4, 29, 0, 0, 10, tzinfo=UTC), "a")]
+
+
+def test_fetch_symbol_candles_bootstrap_with_start_bound_uses_day_range_fetch() -> None:
+    start_bound_ms = int(datetime(2022, 4, 29, 0, 0, tzinfo=UTC).timestamp() * 1000)
+    end_open_ms = int(datetime(2022, 4, 29, 0, 1, tzinfo=UTC).timestamp() * 1000)
+    calls: list[tuple[int, int]] = []
+    candle = SpotCandle(
+        exchange="deribit",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2022, 4, 29, 0, 0, tzinfo=UTC),
+        close_time=datetime(2022, 4, 29, 0, 0, 59, 999000, tzinfo=UTC),
+        open_price=1.0,
+        high_price=1.0,
+        low_price=1.0,
+        close_price=1.0,
+        volume=1.0,
+        quote_volume=1.0,
+        trade_count=1,
+    )
+
+    def _range_fetcher(**kwargs: object) -> list[SpotCandle]:
+        calls.append((int(cast(Any, kwargs["start_open_ms"])), int(cast(Any, kwargs["end_open_ms"]))))
+        return [candle]
+
+    rows = fetch_symbol_candles(
+        exchange="deribit",
+        market="spot",
+        symbol="BTCUSDT",
+        timeframe="1m",
+        lake_root="lake/bronze",
+        open_times_reader=lambda **kwargs: [],
+        symbol_normalizer=lambda **kwargs: "BTCUSDT",
+        interval_ms_resolver=lambda **kwargs: 60_000,
+        now_open_resolver=lambda **kwargs: end_open_ms,
+        history_fetcher=lambda **kwargs: pytest.fail("history_fetcher should not be called when start bound is set"),
+        range_fetcher=_range_fetcher,
+        tail_delta_only=False,
+        start_open_ms_bound=start_bound_ms,
+    )
+
+    assert calls == [(start_bound_ms, end_open_ms)]
+    assert [item.open_time for item in rows] == [candle.open_time]
+
+
+def test_fetch_symbol_open_interest_bootstrap_with_start_bound_uses_day_range_fetch() -> None:
+    start_bound_ms = int(datetime(2022, 4, 29, 0, 0, tzinfo=UTC).timestamp() * 1000)
+    end_open_ms = int(datetime(2022, 4, 29, 0, 1, tzinfo=UTC).timestamp() * 1000)
+    calls: list[tuple[int, int]] = []
+    point = OpenInterestPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="1m",
+        open_time=datetime(2022, 4, 29, 0, 0, tzinfo=UTC),
+        close_time=datetime(2022, 4, 29, 0, 0, 59, 999000, tzinfo=UTC),
+        open_interest=123.0,
+        open_interest_value=456.0,
+    )
+
+    def _range_fetcher(**kwargs: object) -> list[OpenInterestPoint]:
+        calls.append((int(cast(Any, kwargs["start_open_ms"])), int(cast(Any, kwargs["end_open_ms"]))))
+        return [point]
+
+    rows = fetch_symbol_open_interest(
+        exchange="deribit",
+        market="perp",
+        symbol="BTC",
+        timeframe="1m",
+        lake_root="lake/bronze",
+        open_times_reader=lambda **kwargs: [],
+        timeframe_normalizer=lambda **kwargs: "1m",
+        symbol_normalizer=lambda **kwargs: "BTC-PERPETUAL",
+        interval_ms_resolver=lambda **kwargs: 60_000,
+        now_open_resolver=lambda **kwargs: end_open_ms,
+        history_fetcher=lambda **kwargs: pytest.fail("history_fetcher should not be called when start bound is set"),
+        range_fetcher=_range_fetcher,
+        tail_delta_only=False,
+        start_open_ms_bound=start_bound_ms,
+    )
+
+    assert calls == [(start_bound_ms, end_open_ms)]
+    assert [item.open_time for item in rows] == [point.open_time]
+
+
+def test_fetch_symbol_funding_bootstrap_with_start_bound_uses_day_range_fetch() -> None:
+    start_bound_ms = int(datetime(2022, 4, 29, 0, 0, tzinfo=UTC).timestamp() * 1000)
+    end_open_ms = int(datetime(2022, 4, 29, 8, 0, tzinfo=UTC).timestamp() * 1000)
+    calls: list[tuple[int, int]] = []
+    point = FundingPoint(
+        exchange="deribit",
+        symbol="BTC-PERPETUAL",
+        interval="8h",
+        open_time=datetime(2022, 4, 29, 0, 0, tzinfo=UTC),
+        close_time=datetime(2022, 4, 29, 7, 59, 59, tzinfo=UTC),
+        funding_rate=0.001,
+        index_price=1.0,
+        mark_price=1.0,
+    )
+
+    def _range_fetcher(**kwargs: object) -> list[FundingPoint]:
+        calls.append((int(cast(Any, kwargs["start_open_ms"])), int(cast(Any, kwargs["end_open_ms"]))))
+        return [point]
+
+    rows = fetch_symbol_funding(
+        exchange="deribit",
+        market="perp",
+        symbol="BTC",
+        timeframe="8h",
+        lake_root="lake/bronze",
+        open_times_reader=lambda **kwargs: [],
+        timeframe_normalizer=lambda **kwargs: "8h",
+        symbol_normalizer=lambda **kwargs: "BTC-PERPETUAL",
+        interval_ms_resolver=lambda **kwargs: 8 * 60 * 60 * 1000,
+        now_open_resolver=lambda **kwargs: end_open_ms,
+        history_fetcher=lambda **kwargs: pytest.fail("history_fetcher should not be called when start bound is set"),
+        range_fetcher=_range_fetcher,
+        tail_delta_only=False,
+        start_open_ms_bound=start_bound_ms,
+    )
+
+    assert calls == [(start_bound_ms, end_open_ms)]
+    assert [item.open_time for item in rows] == [point.open_time]
 
 
 def test_fetch_candle_tasks_parallel_records_rows_for_slow_fetcher(monkeypatch: pytest.MonkeyPatch) -> None:

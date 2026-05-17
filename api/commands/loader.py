@@ -19,8 +19,8 @@ from api.commands.loader_dataset_handlers import (
     populate_trades_output,
 )
 from application.dto import (
-    BronzeFetchPlanDTO,
     BronzeExecutionPolicyDTO,
+    BronzeFetchPlanDTO,
     CandleFetchTaskDTO,
     FundingFetchTaskDTO,
     LoaderStorageDTO,
@@ -29,6 +29,7 @@ from application.dto import (
     TradeFetchTaskDTO,
 )
 from application.schema import dataset_contract
+from application.services.bronze_reporting_service import symbol_progress_rows, trade_error_breakdown
 from application.services.bronze_runtime_service import (
     bronze_checkpoint_fingerprint,
     bronze_checkpoint_path,
@@ -37,7 +38,6 @@ from application.services.bronze_runtime_service import (
     task_key_tuple_to_string,
     write_bronze_checkpoint,
 )
-from application.services.bronze_reporting_service import symbol_progress_rows, trade_error_breakdown
 from application.services.fetch_service import (
     fetch_candle_tasks_parallel,
     fetch_funding_tasks_parallel,
@@ -133,7 +133,7 @@ def _build_bronze_fetch_plan(args: argparse.Namespace, logger: logging.Logger) -
     """Build deterministic Bronze task plan shared across all dataset fetchers."""
 
     exchanges = cast(list[Exchange], args.exchanges if args.exchanges else [args.exchange])
-    data_types = sorted(cast(list[DataType], cast(list[str], args.market)))
+    data_types: list[str] = sorted(cast(list[str], args.market))
     ohlcv_markets = cast(list[Market], [item for item in data_types if item in {"spot", "perp"}])
     symbols, perp_trade_symbols, option_trade_symbols = _resolved_symbol_groups(args=args, logger=logger)
 
@@ -1109,12 +1109,12 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
             trade_error_count = len(trade_errors)
             for key in task_results:
                 _mark_checkpoint_complete("candle", key)
-            for key in oi_results:
-                _mark_checkpoint_complete("oi", key)
-            for key in funding_results:
-                _mark_checkpoint_complete("funding", key)
-            for key in trade_results:
-                _mark_checkpoint_complete("trade", key)
+            for oi_key in oi_results:
+                _mark_checkpoint_complete("oi", oi_key)
+            for funding_key in funding_results:
+                _mark_checkpoint_complete("funding", funding_key)
+            for trade_key in trade_results:
+                _mark_checkpoint_complete("trade", trade_key)
             logger.info(
                 "Fetch summary spot/perp: success=%s failed=%s | "
                 "oi: success=%s failed=%s | funding: success=%s failed=%s | trades: success=%s failed=%s",
