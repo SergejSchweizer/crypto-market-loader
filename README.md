@@ -659,6 +659,20 @@ Manual reset:
 rm -f .run/checkpoints/bronze-build.json
 ```
 
+### Perp Trades Dataset Migration Note
+
+Perpetual trade ticks now use `dataset_type=perp_trades` (not `dataset_type=trades`).
+
+- New Bronze writes go to `dataset_type=perp_trades`.
+- Silver `perp_trades` discovery/processing expects `dataset_type=perp_trades`.
+
+If you have historical Bronze data in the legacy path, migrate or backfill it before running Silver:
+
+```bash
+# example legacy -> canonical path rename
+mv lake/bronze/dataset_type=trades lake/bronze/dataset_type=perp_trades
+```
+
 ## Silver Build
 
 ```bash

@@ -32,7 +32,7 @@ exclude = ["tests*", "notebooks*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
-addopts = "-q --cov=application --cov=ingestion --cov=api --cov-report=term-missing"
+addopts = "-q --cov=application --cov=ingestion --cov=api --cov-report=term-missing --cov-fail-under=84"
 
 [tool.ruff]
 line-length = 120
