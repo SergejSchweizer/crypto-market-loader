@@ -7,11 +7,12 @@ import os
 from datetime import UTC, datetime
 from typing import Any, cast
 
-from ingestion.http_client import get_json
+from ingestion.http_client import HttpClientError, get_json
 
 DERIBIT_OPTION_TRADES_MAX_PAGE_SIZE = 1000
 DERIBIT_OPTION_TRADES_DEFAULT_PAGE_SIZE = 200
 DERIBIT_OPTION_TRADES_BASE_URL_DEFAULT = "https://history.deribit.com"
+DERIBIT_OPTION_TRADES_FALLBACK_BASE_URL = "https://www.deribit.com"
 logger = logging.getLogger(__name__)
 
 
@@ -20,6 +21,20 @@ def _trades_base_url() -> str:
 
     value = os.getenv("DEPTH_DERIBIT_OPTION_TRADES_BASE_URL", DERIBIT_OPTION_TRADES_BASE_URL_DEFAULT).strip()
     return value.rstrip("/")
+
+
+def _trades_base_urls() -> list[str]:
+    """Return ordered base URL candidates for option trades API."""
+
+    primary = _trades_base_url()
+    if primary != DERIBIT_OPTION_TRADES_FALLBACK_BASE_URL:
+        return [primary, DERIBIT_OPTION_TRADES_FALLBACK_BASE_URL]
+    return [primary]
+
+
+def _is_route_failure(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "no route to host" in message or "network is unreachable" in message
 
 
 def _extract_result_rows(payload: dict[str, Any]) -> list[dict[str, object]]:
@@ -85,10 +100,28 @@ def fetch_option_trades_range(
             "count": page_size,
             "sorting": "asc",
         }
-        payload = get_json(
-            f"{_trades_base_url()}/api/v2/public/get_last_trades_by_currency_and_time",
-            params=params,
-        )
+        payload: Any | None = None
+        last_error: Exception | None = None
+        for base_url in _trades_base_urls():
+            try:
+                payload = get_json(
+                    f"{base_url}/api/v2/public/get_last_trades_by_currency_and_time",
+                    params=params,
+                )
+                break
+            except HttpClientError as exc:
+                last_error = exc
+                if not _is_route_failure(exc):
+                    raise
+                logger.warning(
+                    "Deribit option trades route failure via base_url=%s currency=%s cursor=%s; trying fallback",
+                    base_url,
+                    normalized_currency,
+                    cursor,
+                )
+        if payload is None:
+            assert last_error is not None
+            raise last_error
         if not isinstance(payload, dict):
             raise ValueError("Unexpected Deribit option trades response format")
         rows = _extract_result_rows(payload)

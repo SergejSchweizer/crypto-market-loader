@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import multiprocessing as mp
-import os
 import threading
 import time
 from collections.abc import Callable
@@ -22,6 +21,9 @@ from application.dto import (
     TradeFetchTaskDTO,
 )
 from application.schema import dataset_contract
+from application.services.fetch_bootstrap import fetch_bootstrap_history_rows, fetch_bounded_daily_rows
+from application.services.fetch_executors import elapsed_seconds, run_with_optional_history_chunk
+from application.services.fetch_runtime_policy import heartbeat_seconds, task_timeout_seconds
 from application.services.gapfill_service import _last_closed_open_ms, _missing_ranges_ms
 from ingestion.funding import (
     FundingPoint,
@@ -150,31 +152,13 @@ def _ranges_in_random_order(ranges: list[tuple[int, int]]) -> list[tuple[int, in
 def _task_timeout_seconds() -> float | None:
     """Return optional per-task timeout in seconds from environment."""
 
-    raw = os.getenv("DEPTH_FETCH_TASK_TIMEOUT_S")
-    if raw is None:
-        return None
-    try:
-        value = float(raw)
-    except ValueError:
-        return None
-    if value <= 0:
-        return None
-    return value
+    return task_timeout_seconds()
 
 
 def _heartbeat_seconds() -> float:
     """Return heartbeat interval in seconds for long-running fetch tasks."""
 
-    raw = os.getenv("DEPTH_FETCH_HEARTBEAT_S")
-    if raw is None:
-        return 30.0
-    try:
-        value = float(raw)
-    except ValueError:
-        return 30.0
-    if value <= 0:
-        return 30.0
-    return value
+    return heartbeat_seconds()
 
 
 def _split_range_into_utc_days(start_open_ms: int, end_open_ms: int) -> list[tuple[int, int]]:
@@ -215,18 +199,13 @@ def _fetch_bounded_daily_rows(
 ) -> list[TRow]:
     """Fetch inclusive bounded history in UTC-day windows with deterministic deduplication."""
 
-    rows_buffer: list[TRow] = []
-    for day_start_ms, day_end_ms in _day_windows_in_random_order(start_open_ms_bound, end_open_ms):
-        day_rows = range_fetcher(
-            start_open_ms=day_start_ms,
-            end_open_ms=day_end_ms,
-            **fetch_kwargs,
-        )
-        if day_rows and on_history_chunk is not None:
-            on_history_chunk(day_rows)
-        rows_buffer.extend(day_rows)
-    unique_by_open_time = {_row_open_time_ms(item): item for item in rows_buffer}
-    return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
+    return fetch_bounded_daily_rows(
+        day_windows=_day_windows_in_random_order(start_open_ms_bound, end_open_ms),
+        range_fetcher=range_fetcher,
+        fetch_kwargs=fetch_kwargs,
+        dedupe_key=_row_open_time_ms,
+        on_history_chunk=on_history_chunk,
+    )
 
 
 def _fetch_bootstrap_history_rows(
@@ -238,11 +217,13 @@ def _fetch_bootstrap_history_rows(
 ) -> list[TRow]:
     """Run history bootstrap fetch, then apply deterministic bound-filtered deduplication."""
 
-    rows = history_fetcher(
-        on_history_chunk=_filter_chunk_callback(on_history_chunk, start_open_ms_bound),
-        **fetch_kwargs,
+    filtered_rows = fetch_bootstrap_history_rows(
+        history_fetcher=history_fetcher,
+        fetch_kwargs=fetch_kwargs,
+        on_history_chunk=on_history_chunk,
+        wrap_chunk_callback=lambda callback: _filter_chunk_callback(callback, start_open_ms_bound),
+        filter_rows=lambda rows: _filter_rows_by_start_bound(rows, start_open_ms_bound),
     )
-    filtered_rows = _filter_rows_by_start_bound(rows, start_open_ms_bound)
     unique_by_open_time = {_row_open_time_ms(item): item for item in filtered_rows}
     return [unique_by_open_time[key] for key in sorted(unique_by_open_time)]
 
@@ -993,36 +974,28 @@ def fetch_candle_tasks_parallel(
             )
 
         try:
-            try:
-                candles = _run_with_optional_timeout(
-                    symbol_fetcher,
-                    timeout_s=task_timeout_s,
-                    heartbeat_s=heartbeat_s,
-                    heartbeat=_hb_ohlcv,
-                    exchange=task.exchange,
-                    market=task.market,
-                    symbol=task.symbol,
-                    timeframe=task.timeframe,
-                    lake_root=lake_root,
-                    on_history_chunk=(lambda rows, _task=task: on_task_chunk(_task, rows))
+            candles = cast(
+                list[SpotCandle],
+                run_with_optional_history_chunk(
+                runner=_run_with_optional_timeout,
+                fn=symbol_fetcher,
+                timeout_s=task_timeout_s,
+                heartbeat_s=heartbeat_s,
+                heartbeat=_hb_ohlcv,
+                use_process_timeout=False,
+                kwargs={
+                    "exchange": task.exchange,
+                    "market": task.market,
+                    "symbol": task.symbol,
+                    "timeframe": task.timeframe,
+                    "lake_root": lake_root,
+                    "on_history_chunk": (lambda rows, _task=task: on_task_chunk(_task, rows))
                     if on_task_chunk is not None
                     else None,
-                )
-            except TypeError as exc:
-                if "on_history_chunk" not in str(exc):
-                    raise
-                candles = _run_with_optional_timeout(
-                    symbol_fetcher,
-                    timeout_s=task_timeout_s,
-                    heartbeat_s=heartbeat_s,
-                    heartbeat=_hb_ohlcv,
-                    exchange=task.exchange,
-                    market=task.market,
-                    symbol=task.symbol,
-                    timeframe=task.timeframe,
-                    lake_root=lake_root,
-                )
-            elapsed_s = int((datetime.now(UTC) - task_started_at).total_seconds())
+                },
+                ),
+            )
+            elapsed_s = elapsed_seconds(task_started_at)
             logger.info(
                 "Fetch done [%s/%s] type=ohlcv exchange=%s market=%s symbol=%s timeframe=%s rows=%s elapsed_s=%s",
                 idx,
@@ -1038,7 +1011,7 @@ def fetch_candle_tasks_parallel(
             if on_task_complete is not None:
                 on_task_complete(task, candles)
         except Exception as exc:  # noqa: BLE001
-            elapsed_s = int((datetime.now(UTC) - task_started_at).total_seconds())
+            elapsed_s = elapsed_seconds(task_started_at)
             logger.exception(
                 "Fetch error type=ohlcv exchange=%s market=%s symbol=%s timeframe=%s elapsed_s=%s",
                 task.exchange,
@@ -1112,36 +1085,26 @@ def fetch_open_interest_tasks_parallel(
             )
 
         try:
-            try:
-                rows = _run_with_optional_timeout(
-                    symbol_fetcher,
-                    timeout_s=task_timeout_s,
-                    heartbeat_s=heartbeat_s,
-                    use_process_timeout=True,
-                    heartbeat=_heartbeat_oi,
-                    exchange=task.exchange,
-                    market="perp",
-                    symbol=task.symbol,
-                    timeframe=task.timeframe,
-                    lake_root=lake_root,
-                    on_history_chunk=history_chunk_cb,
-                )
-            except TypeError as exc:
-                if "on_history_chunk" not in str(exc):
-                    raise
-                rows = _run_with_optional_timeout(
-                    symbol_fetcher,
-                    timeout_s=task_timeout_s,
-                    heartbeat_s=heartbeat_s,
-                    use_process_timeout=True,
-                    heartbeat=_heartbeat_oi,
-                    exchange=task.exchange,
-                    market="perp",
-                    symbol=task.symbol,
-                    timeframe=task.timeframe,
-                    lake_root=lake_root,
-                )
-            elapsed_s = int((datetime.now(UTC) - task_started_at).total_seconds())
+            rows = cast(
+                list[OpenInterestPoint],
+                run_with_optional_history_chunk(
+                runner=_run_with_optional_timeout,
+                fn=symbol_fetcher,
+                timeout_s=task_timeout_s,
+                heartbeat_s=heartbeat_s,
+                heartbeat=_heartbeat_oi,
+                use_process_timeout=True,
+                kwargs={
+                    "exchange": task.exchange,
+                    "market": "perp",
+                    "symbol": task.symbol,
+                    "timeframe": task.timeframe,
+                    "lake_root": lake_root,
+                    "on_history_chunk": history_chunk_cb,
+                },
+                ),
+            )
+            elapsed_s = elapsed_seconds(task_started_at)
             logger.info(
                 "Fetch done [%s/%s] type=oi exchange=%s market=perp symbol=%s timeframe=%s rows=%s elapsed_s=%s",
                 idx,
@@ -1156,7 +1119,7 @@ def fetch_open_interest_tasks_parallel(
             if on_task_complete is not None:
                 on_task_complete(task, rows)
         except Exception as exc:  # noqa: BLE001
-            elapsed_s = int((datetime.now(UTC) - task_started_at).total_seconds())
+            elapsed_s = elapsed_seconds(task_started_at)
             logger.exception(
                 "Fetch error type=oi exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
                 task.exchange,
@@ -1228,36 +1191,26 @@ def fetch_funding_tasks_parallel(
             )
 
         try:
-            try:
-                rows = _run_with_optional_timeout(
-                    symbol_fetcher,
-                    timeout_s=task_timeout_s,
-                    heartbeat_s=heartbeat_s,
-                    use_process_timeout=False,
-                    heartbeat=_heartbeat_funding,
-                    exchange=task.exchange,
-                    market="perp",
-                    symbol=task.symbol,
-                    timeframe=task.timeframe,
-                    lake_root=lake_root,
-                    on_history_chunk=history_chunk_cb,
-                )
-            except TypeError as exc:
-                if "on_history_chunk" not in str(exc):
-                    raise
-                rows = _run_with_optional_timeout(
-                    symbol_fetcher,
-                    timeout_s=task_timeout_s,
-                    heartbeat_s=heartbeat_s,
-                    use_process_timeout=False,
-                    heartbeat=_heartbeat_funding,
-                    exchange=task.exchange,
-                    market="perp",
-                    symbol=task.symbol,
-                    timeframe=task.timeframe,
-                    lake_root=lake_root,
-                )
-            elapsed_s = int((datetime.now(UTC) - task_started_at).total_seconds())
+            rows = cast(
+                list[FundingPoint],
+                run_with_optional_history_chunk(
+                runner=_run_with_optional_timeout,
+                fn=symbol_fetcher,
+                timeout_s=task_timeout_s,
+                heartbeat_s=heartbeat_s,
+                heartbeat=_heartbeat_funding,
+                use_process_timeout=False,
+                kwargs={
+                    "exchange": task.exchange,
+                    "market": "perp",
+                    "symbol": task.symbol,
+                    "timeframe": task.timeframe,
+                    "lake_root": lake_root,
+                    "on_history_chunk": history_chunk_cb,
+                },
+                ),
+            )
+            elapsed_s = elapsed_seconds(task_started_at)
             logger.info(
                 "Fetch done [%s/%s] type=funding exchange=%s market=perp symbol=%s timeframe=%s rows=%s elapsed_s=%s",
                 idx,
@@ -1272,7 +1225,7 @@ def fetch_funding_tasks_parallel(
             if on_task_complete is not None:
                 on_task_complete(task, rows)
         except Exception as exc:  # noqa: BLE001
-            elapsed_s = int((datetime.now(UTC) - task_started_at).total_seconds())
+            elapsed_s = elapsed_seconds(task_started_at)
             logger.exception(
                 "Fetch error type=funding exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
                 task.exchange,
@@ -1345,7 +1298,7 @@ def fetch_trade_tasks_parallel(
                 lake_root=lake_root,
                 on_history_chunk=(lambda chunk, _task=task: on_task_chunk(_task, chunk)) if on_task_chunk else None,
             )
-            elapsed_s = int((datetime.now(UTC) - started_at).total_seconds())
+            elapsed_s = elapsed_seconds(started_at)
             logger.info(
                 "Fetch done [%s/%s] type=trades exchange=%s market=%s symbol=%s rows=%s elapsed_s=%s",
                 idx,
@@ -1360,15 +1313,40 @@ def fetch_trade_tasks_parallel(
             if on_task_complete is not None:
                 on_task_complete(task, rows)
         except Exception as exc:  # noqa: BLE001
-            elapsed_s = int((datetime.now(UTC) - started_at).total_seconds())
+            elapsed_s = elapsed_seconds(started_at)
             error_class = _classify_trade_fetch_error(exc)
-            logger.exception(
-                "Fetch error type=trades class=%s exchange=%s market=%s symbol=%s elapsed_s=%s",
-                error_class,
-                task.exchange,
-                task.market,
-                task.symbol,
-                elapsed_s,
-            )
+            if error_class == "NET_UNREACHABLE":
+                logger.error(
+                    "Fetch error type=trades class=%s exchange=%s market=%s symbol=%s elapsed_s=%s",
+                    error_class,
+                    task.exchange,
+                    task.market,
+                    task.symbol,
+                    elapsed_s,
+                )
+            else:
+                logger.exception(
+                    "Fetch error type=trades class=%s exchange=%s market=%s symbol=%s elapsed_s=%s",
+                    error_class,
+                    task.exchange,
+                    task.market,
+                    task.symbol,
+                    elapsed_s,
+                )
             task_errors[key] = f"[{error_class}] {exc}"
+            if error_class == "NET_UNREACHABLE":
+                remaining_tasks = tasks[idx:]
+                if remaining_tasks:
+                    logger.error(
+                        "Aborting remaining trade fetch tasks due to network unreachable error "
+                        "remaining_tasks=%s exchange=%s",
+                        len(remaining_tasks),
+                        task.exchange,
+                    )
+                for pending in remaining_tasks:
+                    pending_key = (pending.exchange, pending.market, pending.symbol)
+                    task_errors[pending_key] = (
+                        "[NET_UNREACHABLE] skipped due to prior network unreachable error in this run"
+                    )
+                break
     return TradeFetchResultDTO(rows=task_results, errors=task_errors)

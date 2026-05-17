@@ -7,6 +7,7 @@ from typing import Any, cast
 import pytest
 
 from ingestion.exchanges import deribit_option_trades
+from ingestion.http_client import HttpClientError
 
 
 def test_fetch_option_trades_range_stops_when_has_more_false(monkeypatch) -> None:  # type: ignore[no-untyped-def]
@@ -74,6 +75,38 @@ def test_fetch_option_trades_range_respects_max_pages_env(monkeypatch) -> None: 
 def test_option_trades_base_url_env_override(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     monkeypatch.setenv("DEPTH_DERIBIT_OPTION_TRADES_BASE_URL", "https://example.org///")
     assert deribit_option_trades._trades_base_url() == "https://example.org"
+
+
+def test_fetch_option_trades_range_falls_back_on_route_failure(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    calls: list[str] = []
+
+    def _fake_get_json(url: str, params: dict[str, object]) -> dict[str, object]:
+        calls.append(url)
+        if "history.deribit.com" in url:
+            raise HttpClientError("Connection error for x: [Errno 113] No route to host")
+        return {
+            "result": {
+                "trades": [
+                    {
+                        "timestamp": int(cast(Any, params["start_timestamp"])),
+                        "trade_id": "id-1",
+                        "instrument_name": "BTC-31DEC26-100000-C",
+                    },
+                ],
+                "has_more": False,
+            }
+        }
+
+    monkeypatch.setattr(deribit_option_trades, "get_json", _fake_get_json)
+    rows = deribit_option_trades.fetch_option_trades_range(
+        currency="BTC",
+        start_open_ms=1_700_000_000_000,
+        end_open_ms=1_700_000_100_000,
+        count=1,
+    )
+    assert len(rows) == 1
+    assert any("history.deribit.com" in url for url in calls)
+    assert any("www.deribit.com" in url for url in calls)
 
 
 def test_option_extract_rows_and_has_more_helpers() -> None:

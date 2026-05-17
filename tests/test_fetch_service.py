@@ -1141,6 +1141,32 @@ def test_fetch_trade_tasks_parallel_classifies_network_unreachable_errors() -> N
     assert result.errors[key].startswith("[NET_UNREACHABLE]")
 
 
+def test_fetch_trade_tasks_parallel_aborts_remaining_tasks_on_network_unreachable() -> None:
+    first = TradeFetchTaskDTO(exchange="deribit", market="option", symbol="BTC")
+    second = TradeFetchTaskDTO(exchange="deribit", market="perp", symbol="ETH")
+    calls: list[str] = []
+
+    def _failing_fetcher(**kwargs: object) -> list[TradeTick]:
+        calls.append(cast(str, kwargs["symbol"]))
+        raise RuntimeError("Connection error for x: [Errno 113] No route to host")
+
+    result = fetch_trade_tasks_parallel(
+        tasks=[first, second],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=cast(Any, _failing_fetcher),
+    )
+
+    first_key = (first.exchange, first.market, first.symbol)
+    second_key = (second.exchange, second.market, second.symbol)
+    assert calls == ["BTC"]
+    assert first_key in result.errors
+    assert result.errors[first_key].startswith("[NET_UNREACHABLE]")
+    assert second_key in result.errors
+    assert result.errors[second_key].startswith("[NET_UNREACHABLE] skipped")
+
+
 def test_fetch_open_interest_tasks_parallel_mixed_results_and_on_task_complete() -> None:
     task_ok = OpenInterestFetchTaskDTO(exchange="deribit", symbol="BTCUSDT", timeframe="1m")
     task_fail = OpenInterestFetchTaskDTO(exchange="deribit", symbol="ETHUSDT", timeframe="1m")
