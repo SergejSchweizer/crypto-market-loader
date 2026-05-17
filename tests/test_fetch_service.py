@@ -11,9 +11,13 @@ import pytest
 import application.services.fetch_service as fetch_service_module
 from application.dto import CandleFetchTaskDTO, FundingFetchTaskDTO, OpenInterestFetchTaskDTO, TradeFetchTaskDTO
 from application.services.fetch_service import (
+    _build_fetch_heartbeat,
     _filter_chunk_callback,
     _filter_rows_by_start_bound,
     _heartbeat_seconds,
+    _log_fetch_done,
+    _log_fetch_error,
+    _log_fetch_start,
     _ranges_in_random_order,
     _run_with_optional_timeout,
     _split_range_into_utc_days,
@@ -1491,3 +1495,86 @@ def test_fetch_trade_tasks_parallel_records_on_task_complete_errors() -> None:
     key = (task.exchange, task.market, task.symbol)
     assert key in result.errors
     assert "trade complete boom" in result.errors[key]
+
+
+def test_fetch_candle_tasks_parallel_calls_on_task_complete() -> None:
+    task = CandleFetchTaskDTO(exchange="deribit", market="spot", symbol="BTCUSDT", timeframe="1m")
+    completed: list[tuple[str, int]] = []
+    candle = SpotCandle(
+        exchange="deribit",
+        symbol="BTCUSDT",
+        interval="1m",
+        open_time=datetime(2026, 4, 27, 10, 0, tzinfo=UTC),
+        close_time=datetime(2026, 4, 27, 10, 0, 59, 999000, tzinfo=UTC),
+        open_price=100.0,
+        high_price=101.0,
+        low_price=99.0,
+        close_price=100.5,
+        volume=10.0,
+        quote_volume=1000.0,
+        trade_count=10,
+    )
+
+    result = fetch_candle_tasks_parallel(
+        tasks=[task],
+        lake_root="lake/bronze",
+        concurrency=1,
+        logger=logging.getLogger("test"),
+        symbol_fetcher=lambda **kwargs: [candle],
+        on_task_complete=lambda task_dto, rows: completed.append((task_dto.symbol, len(rows))),
+    )
+
+    key = (task.exchange, task.market, task.symbol, task.timeframe)
+    assert key in result.rows
+    assert completed == [("BTCUSDT", 1)]
+
+
+def test_fetch_log_helpers_emit_expected_messages(caplog: pytest.LogCaptureFixture) -> None:
+    logger = logging.getLogger("test_fetch_log_helpers")
+    context_parts = [("exchange", "deribit"), ("market", "spot"), ("symbol", "BTC")]
+
+    with caplog.at_level(logging.INFO, logger=logger.name):
+        _log_fetch_start(
+            logger=logger,
+            idx=1,
+            total_tasks=2,
+            fetch_type="ohlcv",
+            mode="auto-bootstrap-or-gap-fill",
+            context_parts=context_parts,
+        )
+        heartbeat = _build_fetch_heartbeat(logger=logger, fetch_type="ohlcv", context_parts=context_parts)
+        heartbeat(30)
+        _log_fetch_done(
+            logger=logger,
+            idx=1,
+            total_tasks=2,
+            fetch_type="ohlcv",
+            rows=5,
+            elapsed_s=31,
+            context_parts=context_parts,
+        )
+        _log_fetch_error(
+            logger=logger,
+            fetch_type="ohlcv",
+            elapsed_s=32,
+            context_parts=context_parts,
+            error_class="OTHER",
+            use_exception=False,
+        )
+
+    messages = [record.message for record in caplog.records]
+    assert any(
+        "Fetch start [1/2] type=ohlcv exchange=deribit market=spot symbol=BTC mode=auto-bootstrap-or-gap-fill" in m
+        for m in messages
+    )
+    assert any(
+        "Fetch heartbeat type=ohlcv exchange=deribit market=spot symbol=BTC elapsed_s=30" in m for m in messages
+    )
+    assert any(
+        "Fetch done [1/2] type=ohlcv exchange=deribit market=spot symbol=BTC rows=5 elapsed_s=31" in m
+        for m in messages
+    )
+    assert any(
+        "Fetch error type=ohlcv class=OTHER exchange=deribit market=spot symbol=BTC elapsed_s=32" in m
+        for m in messages
+    )

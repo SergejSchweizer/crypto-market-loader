@@ -16,6 +16,7 @@ from application.schema import dataset_contract
 from application.services.gold_service import _feature_metadata, _write_feature_distribution_plot
 from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint
+from ingestion.option_instruments import OptionInstrumentMetadata
 from ingestion.spot import SpotCandle
 from ingestion.trades import OptionTradeTick, TradeMarket, TradeTick
 
@@ -250,6 +251,47 @@ def trade_record(
     return record
 
 
+def option_instrument_partition_key(item: OptionInstrumentMetadata) -> PartitionKey:
+    """Build partition key for option instrument metadata records."""
+
+    return (
+        item.exchange,
+        "option",
+        item.symbol,
+        item.interval,
+        item.open_time.strftime("%Y-%m-%d"),
+    )
+
+
+def option_instrument_record(item: OptionInstrumentMetadata, run_id: str, ingested_at: datetime) -> dict[str, object]:
+    """Convert option instrument metadata to parquet-lake row format."""
+
+    return {
+        "schema_version": "v1",
+        "dataset_type": "option_instruments",
+        "exchange": item.exchange,
+        "symbol": item.symbol,
+        "instrument_type": "option",
+        "event_time": item.open_time,
+        "ingested_at": ingested_at,
+        "run_id": run_id,
+        "source_endpoint": item.source_endpoint,
+        "open_time": item.open_time,
+        "close_time": item.close_time,
+        "timeframe": item.interval,
+        "instrument_name": item.instrument_name,
+        "base_currency": item.base_currency,
+        "quote_currency": item.quote_currency,
+        "settlement_currency": item.settlement_currency,
+        "strike": item.strike,
+        "option_type": item.option_type,
+        "creation_timestamp": item.creation_timestamp,
+        "expiration_timestamp": item.expiration_timestamp,
+        "contract_size": item.contract_size,
+        "tick_size": item.tick_size,
+    }
+
+
 def open_times_in_lake_by_dataset(
     lake_root: str,
     dataset_type: str,
@@ -460,7 +502,15 @@ def ensure_bronze_sidecars(
     if not root.exists():
         return []
 
-    selected = dataset_types or ["spot", "perp", OI_DATASET_TYPE, "funding", "perp_trades", "option_trades"]
+    selected = dataset_types or [
+        "spot",
+        "perp",
+        OI_DATASET_TYPE,
+        "funding",
+        "perp_trades",
+        "option_trades",
+        "option_instruments",
+    ]
     written: list[str] = []
     log = log_fn if callable(log_fn) else None
     if log is not None:
@@ -950,6 +1000,35 @@ def save_trades_parquet_lake(
             for item in items:
                 key = trade_partition_key(item=item, market=market)
                 grouped[key].append(trade_record(item=item, market=market, run_id=run_id, ingested_at=ingested_at))
+
+    return _write_grouped_rows(
+        pa=pa,
+        pq=pq,
+        lake_root=lake_root,
+        dataset_type=dataset_type,
+        run_id=run_id,
+        grouped=grouped,
+    )
+
+
+def save_option_instruments_parquet_lake(
+    option_instruments_by_exchange: dict[str, dict[str, list[OptionInstrumentMetadata]]],
+    lake_root: str,
+) -> list[str]:
+    """Save fetched option instruments metadata rows to parquet lake partitions."""
+
+    pa, pq = _require_pyarrow()
+
+    run_id = utc_run_id()
+    ingested_at = datetime.now(UTC)
+    dataset_type = "option_instruments"
+
+    grouped: defaultdict[PartitionKey, list[dict[str, object]]] = defaultdict(list)
+    for symbol_map in option_instruments_by_exchange.values():
+        for items in symbol_map.values():
+            for item in items:
+                key = option_instrument_partition_key(item)
+                grouped[key].append(option_instrument_record(item, run_id=run_id, ingested_at=ingested_at))
 
     return _write_grouped_rows(
         pa=pa,

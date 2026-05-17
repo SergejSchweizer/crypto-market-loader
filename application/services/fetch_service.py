@@ -6,7 +6,7 @@ import logging
 import multiprocessing as mp
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from datetime import UTC, datetime, timedelta
 from typing import Any, TypeVar, cast
 
@@ -17,6 +17,8 @@ from application.dto import (
     FundingFetchTaskDTO,
     OpenInterestFetchResultDTO,
     OpenInterestFetchTaskDTO,
+    OptionInstrumentFetchResultDTO,
+    OptionInstrumentFetchTaskDTO,
     TradeFetchResultDTO,
     TradeFetchTaskDTO,
 )
@@ -40,6 +42,7 @@ from ingestion.open_interest import (
     normalize_open_interest_timeframe,
     open_interest_interval_to_milliseconds,
 )
+from ingestion.option_instruments import OptionInstrumentMetadata, fetch_option_instruments
 from ingestion.spot import (
     Exchange,
     Market,
@@ -254,6 +257,98 @@ def _build_missing_ranges_with_optional_head_gap(
         if start_open_ms_bound <= head_end_ms:
             missing_ranges.append((start_open_ms_bound, head_end_ms))
     return missing_ranges
+
+
+def _log_fetch_start(
+    *,
+    logger: logging.Logger,
+    idx: int,
+    total_tasks: int,
+    fetch_type: str,
+    mode: str,
+    context_parts: Sequence[tuple[str, object]],
+) -> None:
+    """Emit a normalized fetch start log line."""
+
+    context = " ".join(f"{key}=%s" for key, _ in context_parts)
+    values = [value for _, value in context_parts]
+    logger.info(
+        f"Fetch start [%s/%s] type={fetch_type} {context} mode=%s",
+        idx,
+        total_tasks,
+        *values,
+        mode,
+    )
+
+
+def _build_fetch_heartbeat(
+    *,
+    logger: logging.Logger,
+    fetch_type: str,
+    context_parts: Sequence[tuple[str, object]],
+) -> Callable[[int], None]:
+    """Build normalized heartbeat logger callback for one fetch task."""
+
+    context = " ".join(f"{key}=%s" for key, _ in context_parts)
+    values = [value for _, value in context_parts]
+
+    def _heartbeat(elapsed_s: int) -> None:
+        logger.info(
+            f"Fetch heartbeat type={fetch_type} {context} elapsed_s=%s",
+            *values,
+            elapsed_s,
+        )
+
+    return _heartbeat
+
+
+def _log_fetch_done(
+    *,
+    logger: logging.Logger,
+    idx: int,
+    total_tasks: int,
+    fetch_type: str,
+    rows: int,
+    elapsed_s: int,
+    context_parts: Sequence[tuple[str, object]],
+) -> None:
+    """Emit a normalized fetch done log line."""
+
+    context = " ".join(f"{key}=%s" for key, _ in context_parts)
+    values = [value for _, value in context_parts]
+    logger.info(
+        f"Fetch done [%s/%s] type={fetch_type} {context} rows=%s elapsed_s=%s",
+        idx,
+        total_tasks,
+        *values,
+        rows,
+        elapsed_s,
+    )
+
+
+def _log_fetch_error(
+    *,
+    logger: logging.Logger,
+    fetch_type: str,
+    elapsed_s: int,
+    context_parts: Sequence[tuple[str, object]],
+    error_class: str | None = None,
+    use_exception: bool = True,
+) -> None:
+    """Emit a normalized fetch error log line."""
+
+    context = " ".join(f"{key}=%s" for key, _ in context_parts)
+    values = [value for _, value in context_parts]
+    class_fragment = " class=%s" if error_class is not None else ""
+    args: list[object] = values.copy()
+    if error_class is not None:
+        args.insert(0, error_class)
+    args.append(elapsed_s)
+    message = f"Fetch error type={fetch_type}{class_fragment} {context} elapsed_s=%s"
+    if use_exception:
+        logger.exception(message, *args)
+    else:
+        logger.error(message, *args)
 
 
 def _run_with_optional_timeout(
@@ -940,38 +1035,27 @@ def fetch_candle_tasks_parallel(
     task_timeout_s = _task_timeout_seconds()
     heartbeat_s = _heartbeat_seconds()
     for idx, task in enumerate(tasks, start=1):
-        logger.info(
-            "Fetch start [%s/%s] type=ohlcv exchange=%s market=%s symbol=%s timeframe=%s mode=%s",
-            idx,
-            total_tasks,
-            task.exchange,
-            task.market,
-            task.symbol,
-            task.timeframe,
-            "auto-bootstrap-or-gap-fill",
+        context_parts = [
+            ("exchange", task.exchange),
+            ("market", task.market),
+            ("symbol", task.symbol),
+            ("timeframe", task.timeframe),
+        ]
+        _log_fetch_start(
+            logger=logger,
+            idx=idx,
+            total_tasks=total_tasks,
+            fetch_type="ohlcv",
+            mode="auto-bootstrap-or-gap-fill",
+            context_parts=context_parts,
         )
         key = (task.exchange, task.market, task.symbol, task.timeframe)
         task_started_at = datetime.now(UTC)
-        hb_exchange = task.exchange
-        hb_market = task.market
-        hb_symbol = task.symbol
-        hb_timeframe = task.timeframe
-
-        def _hb_ohlcv(
-            elapsed_s: int,
-            ex: str = hb_exchange,
-            mk: str = hb_market,
-            sy: str = hb_symbol,
-            tf: str = hb_timeframe,
-        ) -> None:
-            logger.info(
-                "Fetch heartbeat type=ohlcv exchange=%s market=%s symbol=%s timeframe=%s elapsed_s=%s",
-                ex,
-                mk,
-                sy,
-                tf,
-                elapsed_s,
-            )
+        heartbeat = _build_fetch_heartbeat(
+            logger=logger,
+            fetch_type="ohlcv",
+            context_parts=context_parts,
+        )
 
         try:
             candles = cast(
@@ -981,7 +1065,7 @@ def fetch_candle_tasks_parallel(
                 fn=symbol_fetcher,
                 timeout_s=task_timeout_s,
                 heartbeat_s=heartbeat_s,
-                heartbeat=_hb_ohlcv,
+                heartbeat=heartbeat,
                 use_process_timeout=False,
                 kwargs={
                     "exchange": task.exchange,
@@ -996,29 +1080,25 @@ def fetch_candle_tasks_parallel(
                 ),
             )
             elapsed_s = elapsed_seconds(task_started_at)
-            logger.info(
-                "Fetch done [%s/%s] type=ohlcv exchange=%s market=%s symbol=%s timeframe=%s rows=%s elapsed_s=%s",
-                idx,
-                total_tasks,
-                task.exchange,
-                task.market,
-                task.symbol,
-                task.timeframe,
-                len(candles),
-                elapsed_s,
+            _log_fetch_done(
+                logger=logger,
+                idx=idx,
+                total_tasks=total_tasks,
+                fetch_type="ohlcv",
+                rows=len(candles),
+                elapsed_s=elapsed_s,
+                context_parts=context_parts,
             )
             task_results[key] = candles
             if on_task_complete is not None:
                 on_task_complete(task, candles)
         except Exception as exc:  # noqa: BLE001
             elapsed_s = elapsed_seconds(task_started_at)
-            logger.exception(
-                "Fetch error type=ohlcv exchange=%s market=%s symbol=%s timeframe=%s elapsed_s=%s",
-                task.exchange,
-                task.market,
-                task.symbol,
-                task.timeframe,
-                elapsed_s,
+            _log_fetch_error(
+                logger=logger,
+                fetch_type="ohlcv",
+                elapsed_s=elapsed_s,
+                context_parts=context_parts,
             )
             task_errors[key] = str(exc)
 
@@ -1044,20 +1124,23 @@ def fetch_open_interest_tasks_parallel(
     task_timeout_s = _task_timeout_seconds()
     heartbeat_s = _heartbeat_seconds()
     for idx, task in enumerate(tasks, start=1):
-        logger.info(
-            "Fetch start [%s/%s] type=oi exchange=%s market=perp symbol=%s timeframe=%s mode=%s",
-            idx,
-            total_tasks,
-            task.exchange,
-            task.symbol,
-            task.timeframe,
-            "auto-bootstrap-or-gap-fill",
+        context_parts = [
+            ("exchange", task.exchange),
+            ("market", "perp"),
+            ("symbol", task.symbol),
+            ("timeframe", task.timeframe),
+        ]
+        _log_fetch_start(
+            logger=logger,
+            idx=idx,
+            total_tasks=total_tasks,
+            fetch_type="oi",
+            mode="auto-bootstrap-or-gap-fill",
+            context_parts=context_parts,
         )
         key = (task.exchange, task.symbol, task.timeframe)
         task_started_at = datetime.now(UTC)
-        hb_exchange = task.exchange
-        hb_symbol = task.symbol
-        hb_timeframe = task.timeframe
+        heartbeat = _build_fetch_heartbeat(logger=logger, fetch_type="oi", context_parts=context_parts)
         history_chunk_cb: Callable[[list[OpenInterestPoint]], None] | None = None
         if on_task_chunk is not None:
             task_for_chunk = task
@@ -1070,20 +1153,6 @@ def fetch_open_interest_tasks_parallel(
 
             history_chunk_cb = _history_chunk_oi
 
-        def _heartbeat_oi(
-            elapsed_s: int,
-            ex: Exchange = hb_exchange,
-            sy: str = hb_symbol,
-            tf: str = hb_timeframe,
-        ) -> None:
-            logger.info(
-                "Fetch heartbeat type=oi exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
-                ex,
-                sy,
-                tf,
-                elapsed_s,
-            )
-
         try:
             rows = cast(
                 list[OpenInterestPoint],
@@ -1092,7 +1161,7 @@ def fetch_open_interest_tasks_parallel(
                 fn=symbol_fetcher,
                 timeout_s=task_timeout_s,
                 heartbeat_s=heartbeat_s,
-                heartbeat=_heartbeat_oi,
+                heartbeat=heartbeat,
                 use_process_timeout=True,
                 kwargs={
                     "exchange": task.exchange,
@@ -1105,27 +1174,25 @@ def fetch_open_interest_tasks_parallel(
                 ),
             )
             elapsed_s = elapsed_seconds(task_started_at)
-            logger.info(
-                "Fetch done [%s/%s] type=oi exchange=%s market=perp symbol=%s timeframe=%s rows=%s elapsed_s=%s",
-                idx,
-                total_tasks,
-                task.exchange,
-                task.symbol,
-                task.timeframe,
-                len(rows),
-                elapsed_s,
+            _log_fetch_done(
+                logger=logger,
+                idx=idx,
+                total_tasks=total_tasks,
+                fetch_type="oi",
+                rows=len(rows),
+                elapsed_s=elapsed_s,
+                context_parts=context_parts,
             )
             task_results[key] = rows
             if on_task_complete is not None:
                 on_task_complete(task, rows)
         except Exception as exc:  # noqa: BLE001
             elapsed_s = elapsed_seconds(task_started_at)
-            logger.exception(
-                "Fetch error type=oi exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
-                task.exchange,
-                task.symbol,
-                task.timeframe,
-                elapsed_s,
+            _log_fetch_error(
+                logger=logger,
+                fetch_type="oi",
+                elapsed_s=elapsed_s,
+                context_parts=context_parts,
             )
             task_errors[key] = str(exc)
     return OpenInterestFetchResultDTO(rows=task_results, errors=task_errors)
@@ -1150,20 +1217,23 @@ def fetch_funding_tasks_parallel(
     task_timeout_s = _task_timeout_seconds()
     heartbeat_s = _heartbeat_seconds()
     for idx, task in enumerate(tasks, start=1):
-        logger.info(
-            "Fetch start [%s/%s] type=funding exchange=%s market=perp symbol=%s timeframe=%s mode=%s",
-            idx,
-            total_tasks,
-            task.exchange,
-            task.symbol,
-            task.timeframe,
-            "auto-bootstrap-or-gap-fill",
+        context_parts = [
+            ("exchange", task.exchange),
+            ("market", "perp"),
+            ("symbol", task.symbol),
+            ("timeframe", task.timeframe),
+        ]
+        _log_fetch_start(
+            logger=logger,
+            idx=idx,
+            total_tasks=total_tasks,
+            fetch_type="funding",
+            mode="auto-bootstrap-or-gap-fill",
+            context_parts=context_parts,
         )
         key = (task.exchange, task.symbol, task.timeframe)
         task_started_at = datetime.now(UTC)
-        hb_exchange = task.exchange
-        hb_symbol = task.symbol
-        hb_timeframe = task.timeframe
+        heartbeat = _build_fetch_heartbeat(logger=logger, fetch_type="funding", context_parts=context_parts)
         history_chunk_cb: Callable[[list[FundingPoint]], None] | None = None
         if on_task_chunk is not None:
             task_for_chunk = task
@@ -1176,20 +1246,6 @@ def fetch_funding_tasks_parallel(
 
             history_chunk_cb = _history_chunk_funding
 
-        def _heartbeat_funding(
-            elapsed_s: int,
-            ex: Exchange = hb_exchange,
-            sy: str = hb_symbol,
-            tf: str = hb_timeframe,
-        ) -> None:
-            logger.info(
-                "Fetch heartbeat type=funding exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
-                ex,
-                sy,
-                tf,
-                elapsed_s,
-            )
-
         try:
             rows = cast(
                 list[FundingPoint],
@@ -1198,7 +1254,7 @@ def fetch_funding_tasks_parallel(
                 fn=symbol_fetcher,
                 timeout_s=task_timeout_s,
                 heartbeat_s=heartbeat_s,
-                heartbeat=_heartbeat_funding,
+                heartbeat=heartbeat,
                 use_process_timeout=False,
                 kwargs={
                     "exchange": task.exchange,
@@ -1211,27 +1267,25 @@ def fetch_funding_tasks_parallel(
                 ),
             )
             elapsed_s = elapsed_seconds(task_started_at)
-            logger.info(
-                "Fetch done [%s/%s] type=funding exchange=%s market=perp symbol=%s timeframe=%s rows=%s elapsed_s=%s",
-                idx,
-                total_tasks,
-                task.exchange,
-                task.symbol,
-                task.timeframe,
-                len(rows),
-                elapsed_s,
+            _log_fetch_done(
+                logger=logger,
+                idx=idx,
+                total_tasks=total_tasks,
+                fetch_type="funding",
+                rows=len(rows),
+                elapsed_s=elapsed_s,
+                context_parts=context_parts,
             )
             task_results[key] = rows
             if on_task_complete is not None:
                 on_task_complete(task, rows)
         except Exception as exc:  # noqa: BLE001
             elapsed_s = elapsed_seconds(task_started_at)
-            logger.exception(
-                "Fetch error type=funding exchange=%s market=perp symbol=%s timeframe=%s elapsed_s=%s",
-                task.exchange,
-                task.symbol,
-                task.timeframe,
-                elapsed_s,
+            _log_fetch_error(
+                logger=logger,
+                fetch_type="funding",
+                elapsed_s=elapsed_s,
+                context_parts=context_parts,
             )
             task_errors[key] = str(exc)
     return FundingFetchResultDTO(rows=task_results, errors=task_errors)
@@ -1256,42 +1310,34 @@ def fetch_trade_tasks_parallel(
     task_timeout_s = _task_timeout_seconds()
     heartbeat_s = _heartbeat_seconds()
     for idx, task in enumerate(tasks, start=1):
-        logger.info(
-            "Fetch start [%s/%s] type=trades exchange=%s market=%s symbol=%s mode=%s",
-            idx,
-            total_tasks,
-            task.exchange,
-            task.market,
-            task.symbol,
-            "auto-bootstrap-or-tail",
+        context_parts = [
+            ("exchange", task.exchange),
+            ("market", task.market),
+            ("symbol", task.symbol),
+        ]
+        _log_fetch_start(
+            logger=logger,
+            idx=idx,
+            total_tasks=total_tasks,
+            fetch_type="trades",
+            mode="auto-bootstrap-or-tail",
+            context_parts=context_parts,
         )
         key = (task.exchange, task.market, task.symbol)
         started_at = datetime.now(UTC)
 
-        hb_exchange = task.exchange
-        hb_market = task.market
-        hb_symbol = task.symbol
-
-        def _hb_trades(
-            elapsed_s: int,
-            ex: str = hb_exchange,
-            mk: TradeMarket = hb_market,
-            sy: str = hb_symbol,
-        ) -> None:
-            logger.info(
-                "Fetch heartbeat type=trades exchange=%s market=%s symbol=%s elapsed_s=%s",
-                ex,
-                mk,
-                sy,
-                elapsed_s,
-            )
+        heartbeat = _build_fetch_heartbeat(
+            logger=logger,
+            fetch_type="trades",
+            context_parts=context_parts,
+        )
 
         try:
             rows = _run_with_optional_timeout(
                 symbol_fetcher,
                 timeout_s=task_timeout_s,
                 heartbeat_s=heartbeat_s,
-                heartbeat=_hb_trades,
+                heartbeat=heartbeat,
                 exchange=task.exchange,
                 market=task.market,
                 symbol=task.symbol,
@@ -1299,15 +1345,14 @@ def fetch_trade_tasks_parallel(
                 on_history_chunk=(lambda chunk, _task=task: on_task_chunk(_task, chunk)) if on_task_chunk else None,
             )
             elapsed_s = elapsed_seconds(started_at)
-            logger.info(
-                "Fetch done [%s/%s] type=trades exchange=%s market=%s symbol=%s rows=%s elapsed_s=%s",
-                idx,
-                total_tasks,
-                task.exchange,
-                task.market,
-                task.symbol,
-                len(rows),
-                elapsed_s,
+            _log_fetch_done(
+                logger=logger,
+                idx=idx,
+                total_tasks=total_tasks,
+                fetch_type="trades",
+                rows=len(rows),
+                elapsed_s=elapsed_s,
+                context_parts=context_parts,
             )
             task_results[key] = rows
             if on_task_complete is not None:
@@ -1316,22 +1361,21 @@ def fetch_trade_tasks_parallel(
             elapsed_s = elapsed_seconds(started_at)
             error_class = _classify_trade_fetch_error(exc)
             if error_class == "NET_UNREACHABLE":
-                logger.error(
-                    "Fetch error type=trades class=%s exchange=%s market=%s symbol=%s elapsed_s=%s",
-                    error_class,
-                    task.exchange,
-                    task.market,
-                    task.symbol,
-                    elapsed_s,
+                _log_fetch_error(
+                    logger=logger,
+                    fetch_type="trades",
+                    elapsed_s=elapsed_s,
+                    context_parts=context_parts,
+                    error_class=error_class,
+                    use_exception=False,
                 )
             else:
-                logger.exception(
-                    "Fetch error type=trades class=%s exchange=%s market=%s symbol=%s elapsed_s=%s",
-                    error_class,
-                    task.exchange,
-                    task.market,
-                    task.symbol,
-                    elapsed_s,
+                _log_fetch_error(
+                    logger=logger,
+                    fetch_type="trades",
+                    elapsed_s=elapsed_s,
+                    context_parts=context_parts,
+                    error_class=error_class,
                 )
             task_errors[key] = f"[{error_class}] {exc}"
             if error_class == "NET_UNREACHABLE":
@@ -1350,3 +1394,70 @@ def fetch_trade_tasks_parallel(
                     )
                 break
     return TradeFetchResultDTO(rows=task_results, errors=task_errors)
+
+
+def fetch_option_instrument_tasks_parallel(
+    tasks: list[OptionInstrumentFetchTaskDTO],
+    logger: logging.Logger,
+    symbol_fetcher: Callable[..., list[OptionInstrumentMetadata]] = fetch_option_instruments,
+) -> OptionInstrumentFetchResultDTO:
+    """Fetch option instrument metadata tasks sequentially."""
+
+    total_tasks = len(tasks)
+    task_results: dict[tuple[Exchange, str], list[OptionInstrumentMetadata]] = {}
+    task_errors: dict[tuple[Exchange, str], str] = {}
+    task_timeout_s = _task_timeout_seconds()
+    heartbeat_s = _heartbeat_seconds()
+    for idx, task in enumerate(tasks, start=1):
+        context_parts = [
+            ("exchange", task.exchange),
+            ("market", "option"),
+            ("symbol", task.symbol),
+            ("timeframe", "snapshot"),
+        ]
+        _log_fetch_start(
+            logger=logger,
+            idx=idx,
+            total_tasks=total_tasks,
+            fetch_type="option_instruments",
+            mode="snapshot",
+            context_parts=context_parts,
+        )
+        key = (task.exchange, task.symbol)
+        started_at = datetime.now(UTC)
+        heartbeat = _build_fetch_heartbeat(
+            logger=logger,
+            fetch_type="option_instruments",
+            context_parts=context_parts,
+        )
+
+        try:
+            rows = _run_with_optional_timeout(
+                symbol_fetcher,
+                timeout_s=task_timeout_s,
+                heartbeat_s=heartbeat_s,
+                heartbeat=heartbeat,
+                exchange=task.exchange,
+                symbol=task.symbol,
+            )
+            elapsed_s = elapsed_seconds(started_at)
+            _log_fetch_done(
+                logger=logger,
+                idx=idx,
+                total_tasks=total_tasks,
+                fetch_type="option_instruments",
+                rows=len(rows),
+                elapsed_s=elapsed_s,
+                context_parts=context_parts,
+            )
+            task_results[key] = rows
+        except Exception as exc:  # noqa: BLE001
+            elapsed_s = elapsed_seconds(started_at)
+            _log_fetch_error(
+                logger=logger,
+                fetch_type="option_instruments",
+                elapsed_s=elapsed_s,
+                context_parts=context_parts,
+            )
+            task_errors[key] = str(exc)
+    return OptionInstrumentFetchResultDTO(rows=task_results, errors=task_errors)

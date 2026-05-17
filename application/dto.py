@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 
 from ingestion.funding import FundingPoint
 from ingestion.open_interest import OpenInterestPoint
+from ingestion.option_instruments import OptionInstrumentMetadata
 from ingestion.spot import Exchange, Market, SpotCandle
 from ingestion.trades import OptionTradeTick, TradeMarket, TradeTick
 
@@ -65,6 +66,14 @@ class TradeFetchTaskDTO:
     symbol: str
 
 
+@dataclass(frozen=True)
+class OptionInstrumentFetchTaskDTO:
+    """One option instruments metadata fetch task request."""
+
+    exchange: Exchange
+    symbol: str
+
+
 @dataclass
 class CandleFetchResultDTO:
     """OHLCV fetch outcomes keyed by task tuple.
@@ -115,6 +124,14 @@ class TradeFetchResultDTO:
     errors: dict[tuple[Exchange, TradeMarket, str], str] = field(default_factory=dict)
 
 
+@dataclass
+class OptionInstrumentFetchResultDTO:
+    """Option instruments fetch outcomes keyed by task tuple."""
+
+    rows: dict[tuple[Exchange, str], list[OptionInstrumentMetadata]] = field(default_factory=dict)
+    errors: dict[tuple[Exchange, str], str] = field(default_factory=dict)
+
+
 @dataclass(frozen=True)
 class BronzeFetchPlanDTO:
     """Deterministic Bronze fetch plan shared by command orchestration.
@@ -130,10 +147,12 @@ class BronzeFetchPlanDTO:
     symbols: list[str]
     perp_trade_symbols: list[str]
     option_trade_symbols: list[str]
-    candle_tasks: list[tuple[Exchange, Market, str, str]]
-    oi_tasks: list[tuple[Exchange, str, str]]
-    funding_tasks: list[tuple[Exchange, str, str]]
-    trade_tasks: list[tuple[Exchange, TradeMarket, str]]
+    option_instrument_symbols: list[str] = field(default_factory=list)
+    candle_tasks: list[tuple[Exchange, Market, str, str]] = field(default_factory=list)
+    oi_tasks: list[tuple[Exchange, str, str]] = field(default_factory=list)
+    funding_tasks: list[tuple[Exchange, str, str]] = field(default_factory=list)
+    trade_tasks: list[tuple[Exchange, TradeMarket, str]] = field(default_factory=list)
+    option_instrument_tasks: list[tuple[Exchange, str]] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -162,6 +181,7 @@ class LoaderStorageDTO:
     open_interest: dict[Market, dict[str, dict[str, list[OpenInterestPoint]]]] = field(default_factory=dict)
     funding: dict[Market, dict[str, dict[str, list[FundingPoint]]]] = field(default_factory=dict)
     trades: dict[TradeMarket, dict[str, dict[str, list[TradeTick | OptionTradeTick]]]] = field(default_factory=dict)
+    option_instruments: dict[str, dict[str, list[OptionInstrumentMetadata]]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -183,6 +203,7 @@ class PersistOptionsDTO:
     oi_requested: bool
     funding_requested: bool = False
     trades_requested: bool = False
+    option_instruments_requested: bool = False
 
 
 @dataclass

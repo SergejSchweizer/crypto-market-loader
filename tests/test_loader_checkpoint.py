@@ -19,6 +19,7 @@ def test_apply_checkpoint_filter_drops_completed_tasks() -> None:
         "oi": set(),
         "funding": {_serialize(("deribit", "ETH", "1m"))},
         "trade": {_serialize(("deribit", "option", "ETH"))},
+        "option_instruments": set(),
     }
 
     pending = apply_checkpoint_filter(
@@ -36,7 +37,7 @@ def test_apply_checkpoint_filter_drops_completed_tasks() -> None:
 
 
 def test_has_checkpoint_state_detects_any_completed_bucket() -> None:
-    empty = {"candle": set(), "oi": set(), "funding": set(), "trade": set()}
+    empty = {"candle": set(), "oi": set(), "funding": set(), "trade": set(), "option_instruments": set()}
     assert not has_checkpoint_state(empty)
-    non_empty = {"candle": {"x"}, "oi": set(), "funding": set(), "trade": set()}
+    non_empty = {"candle": {"x"}, "oi": set(), "funding": set(), "trade": set(), "option_instruments": set()}
     assert has_checkpoint_state(non_empty)

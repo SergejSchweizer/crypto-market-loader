@@ -9,10 +9,12 @@ from ingestion.funding import FundingPoint
 from ingestion.lake import (
     save_funding_parquet_lake,
     save_open_interest_parquet_lake,
+    save_option_instruments_parquet_lake,
     save_spot_candles_parquet_lake,
     save_trades_parquet_lake,
 )
 from ingestion.open_interest import OpenInterestPoint
+from ingestion.option_instruments import OptionInstrumentMetadata
 from ingestion.spot import Market, SpotCandle
 from ingestion.trades import OptionTradeTick, TradeMarket, TradeTick
 
@@ -24,6 +26,7 @@ def persist_loader_outputs_dto(
     save_oi_lake_fn: Callable[..., list[str]] = save_open_interest_parquet_lake,
     save_funding_lake_fn: Callable[..., list[str]] = save_funding_parquet_lake,
     save_trades_lake_fn: Callable[..., list[str]] = save_trades_parquet_lake,
+    save_option_instruments_lake_fn: Callable[..., list[str]] = save_option_instruments_parquet_lake,
 ) -> PersistResultDTO:
     """Persist fetched datasets to parquet lake."""
 
@@ -64,6 +67,13 @@ def persist_loader_outputs_dto(
                         lake_root=options.lake_root,
                     )
                 )
+        if options.option_instruments_requested:
+            result.parquet_files.extend(
+                save_option_instruments_lake_fn(
+                    option_instruments_by_exchange=storage.option_instruments,
+                    lake_root=options.lake_root,
+                )
+            )
 
     return result
 
@@ -81,6 +91,9 @@ def persist_loader_outputs(
     trades_for_storage: dict[TradeMarket, dict[str, dict[str, list[TradeTick | OptionTradeTick]]]] | None = None,
     trades_requested: bool = False,
     save_trades_lake_fn: Callable[..., list[str]] = save_trades_parquet_lake,
+    option_instruments_for_storage: dict[str, dict[str, list[OptionInstrumentMetadata]]] | None = None,
+    option_instruments_requested: bool = False,
+    save_option_instruments_lake_fn: Callable[..., list[str]] = save_option_instruments_parquet_lake,
 ) -> dict[str, object]:
     """Backward-compatible wrapper that returns legacy dict output."""
 
@@ -90,6 +103,7 @@ def persist_loader_outputs(
             open_interest=open_interest_for_storage,
             funding=funding_for_storage or {},
             trades=trades_for_storage or {},
+            option_instruments=option_instruments_for_storage or {},
         ),
         options=PersistOptionsDTO(
             save_parquet_lake=save_parquet_lake,
@@ -97,10 +111,12 @@ def persist_loader_outputs(
             oi_requested=oi_requested,
             funding_requested=bool(funding_for_storage),
             trades_requested=trades_requested,
+            option_instruments_requested=option_instruments_requested,
         ),
         save_spot_lake_fn=save_spot_lake_fn,
         save_oi_lake_fn=save_oi_lake_fn,
         save_funding_lake_fn=save_funding_lake_fn,
         save_trades_lake_fn=save_trades_lake_fn,
+        save_option_instruments_lake_fn=save_option_instruments_lake_fn,
     )
     return dto.to_output_dict()

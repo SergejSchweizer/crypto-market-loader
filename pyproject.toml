@@ -20,6 +20,15 @@ dependencies = [
   "psycopg[binary]>=3.3.4",
 ]
 
+[project.optional-dependencies]
+dev = [
+  "mypy>=1.18.2",
+  "pytest>=8.4.2",
+  "pytest-cov>=7.0.0",
+  "ruff>=0.14.2",
+  "import-linter>=2.7",
+]
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = [

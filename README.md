@@ -177,6 +177,15 @@ AGENTS.md
 
 # 4. Installation
 
+Install `uv` first:
+
+```bash
+curl -LsSf https://astral.sh/uv/install.sh | sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Then install project dependencies:
+
 ```bash
 uv sync --extra dev
 ```
@@ -629,7 +638,7 @@ lock via `.run/full-pipeline.lock` and writes a shared append-only pipeline log.
 ```bash
 uv run python main.py bronze-build \
   --exchange deribit \
-  --market spot perp oi funding perp_trades option_trades \
+  --market spot perp oi funding perp_trades option_trades option_instruments \
   --symbols BTC ETH SOL
 ```
 
@@ -638,6 +647,7 @@ Trade datasets can use independent symbol defaults and overrides:
 - `--symbols` applies to `spot`, `perp`, `oi`, `funding`
 - `--perp-trade-symbols` applies to `perp_trades` (default: `BTC ETH SOL`)
 - `--option-trade-symbols` applies to `option_trades` (default: `BTC ETH SOL`)
+- `--option-instrument-symbols` applies to `option_instruments` (default: `BTC ETH SOL`)
 
 ### Bronze Resume Checkpoint
 

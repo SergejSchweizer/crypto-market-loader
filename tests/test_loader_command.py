@@ -69,6 +69,8 @@ def test_run_bronze_build_emits_manifest_and_plot_file_lists(tmp_path: Path, mon
             {},
             {},
             {},
+            {},
+            {},
         )
 
     monkeypatch.setattr(loader_cmd, "SingleInstanceLock", _NoopLock)
@@ -168,7 +170,7 @@ def test_run_bronze_build_drops_invalid_symbols_before_scheduling(monkeypatch) -
         scheduled_candle_tasks.extend(cast(Any, kwargs["candle_tasks"]))
         scheduled_oi_tasks.extend(cast(Any, kwargs["oi_tasks"]))
         scheduled_funding_tasks.extend(cast(Any, kwargs["funding_tasks"]))
-        return ({}, {}, {}, {}, {}, {}, {}, {})
+        return ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})
 
     monkeypatch.setattr(loader_cmd, "SingleInstanceLock", _NoopLock)
     monkeypatch.setattr(loader_cmd, "_fetch_all_task_groups", _fake_fetch_all_task_groups)
@@ -239,7 +241,7 @@ def test_run_bronze_build_uses_trade_specific_symbols(monkeypatch) -> None:  # t
 
     def _fake_fetch_all_task_groups(**kwargs: object):  # type: ignore[no-untyped-def]
         scheduled_trade_tasks.extend(cast(Any, kwargs["trade_tasks"]))
-        return ({}, {}, {}, {}, {}, {}, {}, {})
+        return ({}, {}, {}, {}, {}, {}, {}, {}, {}, {})
 
     monkeypatch.setattr(loader_cmd, "SingleInstanceLock", _NoopLock)
     monkeypatch.setattr(loader_cmd, "_fetch_all_task_groups", _fake_fetch_all_task_groups)
@@ -278,29 +280,33 @@ def test_resolved_symbol_groups_sanitizes_and_sorts() -> None:
         option_trade_symbols=["  ", "ETH", "BTC"],
     )
 
-    ohlcv_symbols, perp_trade_symbols, option_trade_symbols = loader_cmd._resolved_symbol_groups(
-        args=args,
-        logger=logging.getLogger("test"),
-    )
+    (
+        ohlcv_symbols,
+        perp_trade_symbols,
+        option_trade_symbols,
+        option_instrument_symbols,
+    ) = loader_cmd._resolved_symbol_groups(args=args, logger=logging.getLogger("test"))
 
     assert ohlcv_symbols == ["BTC", "ETH"]
     assert perp_trade_symbols == ["BTC", "SOL"]
     assert option_trade_symbols == ["BTC", "ETH"]
+    assert option_instrument_symbols == ["BTC", "ETH"]
 
 
 def test_build_bronze_fetch_plan_is_deterministic_and_sorted() -> None:
     args = argparse.Namespace(
         exchange="deribit",
         exchanges=["deribit"],
-        market=["funding", "spot", "oi", "perp"],
+        market=["funding", "spot", "oi", "perp", "option_instruments"],
         symbols=["ETH", "BTC"],
         perp_trade_symbols=["ETH", "BTC"],
         option_trade_symbols=["SOL", "BTC"],
+        option_instrument_symbols=["ETH", "BTC"],
     )
 
     plan = loader_cmd._build_bronze_fetch_plan(args=args, logger=logging.getLogger("test"))
 
-    assert plan.data_types == ["funding", "oi", "perp", "spot"]
+    assert plan.data_types == ["funding", "oi", "option_instruments", "perp", "spot"]
     assert plan.symbols == ["BTC", "ETH"]
     assert plan.candle_tasks == [
         ("deribit", "perp", "BTC", "1m"),
@@ -310,6 +316,7 @@ def test_build_bronze_fetch_plan_is_deterministic_and_sorted() -> None:
     ]
     assert plan.oi_tasks == [("deribit", "BTC", "1m"), ("deribit", "ETH", "1m")]
     assert plan.funding_tasks == [("deribit", "BTC", "1m"), ("deribit", "ETH", "1m")]
+    assert plan.option_instrument_tasks == [("deribit", "BTC"), ("deribit", "ETH")]
 
 
 def test_run_bronze_build_resumes_from_checkpoint_and_clears_on_success(
@@ -335,7 +342,7 @@ def test_run_bronze_build_resumes_from_checkpoint_and_clears_on_success(
         candle_tasks = cast(list[tuple[str, str, str, str]], kwargs["candle_tasks"])
         scheduled.extend(candle_tasks)
         rows = {task: [] for task in candle_tasks}
-        return (rows, {}, {}, {}, {}, {}, {}, {})
+        return (rows, {}, {}, {}, {}, {}, {}, {}, {}, {})
 
     monkeypatch.setattr(loader_cmd, "_fetch_all_task_groups", _fake_fetch_all_task_groups)
 
@@ -357,7 +364,13 @@ def test_run_bronze_build_resumes_from_checkpoint_and_clears_on_success(
     loader_cmd._write_bronze_checkpoint(
         checkpoint_path,
         fingerprint=fingerprint,
-        completed={"candle": {"deribit|spot|BTC|1m"}, "oi": set(), "funding": set(), "trade": set()},
+        completed={
+            "candle": {"deribit|spot|BTC|1m"},
+            "oi": set(),
+            "funding": set(),
+            "trade": set(),
+            "option_instruments": set(),
+        },
     )
 
     loader_cmd.run_bronze_build(args=args, logger=logging.getLogger("test"))
