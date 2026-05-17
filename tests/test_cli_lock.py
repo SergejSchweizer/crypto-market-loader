@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import cast
 
-import pandas as pd
+import polars as pl
 import pytest
 
 from api import cli
@@ -347,7 +347,7 @@ def test_export_descriptive_stats_writes_csv(monkeypatch: pytest.MonkeyPatch, tm
         {"open": 1.0, "high": 2.0, "low": 0.5, "close": 1.5, "volume": 10.0},
         {"open": 2.0, "high": 3.0, "low": 1.5, "close": 2.5, "volume": 20.0},
     ]
-    monkeypatch.setattr(cli, "load_combined_dataframe_from_lake", lambda **kwargs: pd.DataFrame(rows))
+    monkeypatch.setattr(cli, "load_combined_dataframe_from_lake", lambda **kwargs: pl.DataFrame(rows))
     output_csv = tmp_path / "docs" / "tables" / "descriptive_stats_baseline.csv"
     monkeypatch.setattr(
         sys,
@@ -369,9 +369,9 @@ def test_export_descriptive_stats_writes_csv(monkeypatch: pytest.MonkeyPatch, tm
 
     cli.main()
     assert output_csv.exists()
-    written = pd.read_csv(output_csv)
-    assert list(written.columns) == ["Variable", "Mean", "Std", "Min", "Max"]
-    assert set(written["Variable"]) == {"open", "high", "low", "close", "volume"}
+    written = pl.read_csv(output_csv)
+    assert written.columns == ["Variable", "Mean", "Std", "Min", "Max"]
+    assert set(written.get_column("Variable").to_list()) == {"open", "high", "low", "close", "volume"}
 
 
 def test_loader_rejects_removed_timeframe_argument(monkeypatch: pytest.MonkeyPatch) -> None:

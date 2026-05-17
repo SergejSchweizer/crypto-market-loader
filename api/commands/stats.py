@@ -7,9 +7,9 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
-import pandas as pd
+import polars as pl
 
 from ingestion.lake import load_combined_dataframe_from_lake
 
@@ -47,7 +47,9 @@ def run_export_descriptive_stats(args: argparse.Namespace, logger: logging.Logge
     if start_time > end_time:
         raise ValueError("start-time must be <= end-time")
 
-    dataframe = load_combined_dataframe_from_lake(
+    frame = cast(
+        pl.DataFrame,
+        load_combined_dataframe_from_lake(
         lake_root=cast(str, args.lake_root),
         exchanges=cast(list[str] | None, args.exchanges),
         symbols=cast(list[str] | None, args.symbols),
@@ -56,41 +58,50 @@ def run_export_descriptive_stats(args: argparse.Namespace, logger: logging.Logge
         start_time=start_time,
         end_time=end_time,
         include_open_interest=False,
+        ),
     )
 
     stats_variables = ["open", "high", "low", "close", "volume"]
     records: list[dict[str, object]] = []
     for variable in stats_variables:
-        if variable not in dataframe.columns:
+        if variable not in frame.columns:
             records.append({"Variable": variable, "Mean": None, "Std": None, "Min": None, "Max": None})
             continue
-        series = dataframe[variable].astype("float64")
+        series = frame.select(pl.col(variable).cast(pl.Float64).alias(variable)).get_column(variable)
         records.append(
             {
                 "Variable": variable,
-                "Mean": float(series.mean()) if len(series) else None,
-                "Std": float(series.std()) if len(series) else None,
-                "Min": float(series.min()) if len(series) else None,
-                "Max": float(series.max()) if len(series) else None,
+                "Mean": _to_float_or_none(series.mean()),
+                "Std": _to_float_or_none(series.std()),
+                "Min": _to_float_or_none(series.min()),
+                "Max": _to_float_or_none(series.max()),
             }
         )
 
-    stats_df = pd.DataFrame(records, columns=["Variable", "Mean", "Std", "Min", "Max"])
+    stats_df = pl.DataFrame(records, schema=["Variable", "Mean", "Std", "Min", "Max"], orient="row")
     output_path = Path(cast(str, args.output_csv))
     output_path.parent.mkdir(parents=True, exist_ok=True)
-    stats_df.to_csv(output_path, index=False)
+    stats_df.write_csv(output_path)
 
     result = {
         "output_csv": str(output_path.resolve()),
         "start_time": start_time.isoformat(),
         "end_time": end_time.isoformat(),
-        "row_count": int(len(dataframe)),
+        "row_count": int(frame.height),
         "variables": stats_variables,
     }
     if not bool(args.no_json_output):
         print(json.dumps(result, indent=2))
     logger.info(
         "Command complete: export-descriptive-stats rows=%s output=%s",
-        len(dataframe),
+        frame.height,
         output_path,
     )
+
+
+def _to_float_or_none(value: Any) -> float | None:
+    """Convert numeric aggregate value to Python float while preserving nulls."""
+
+    if value is None:
+        return None
+    return float(value)

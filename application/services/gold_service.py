@@ -264,6 +264,25 @@ def discover_gold_symbols(silver_root: str, exchange: str) -> list[str]:
     return sorted({normalize_symbol(item) for item in set.intersection(*by_dataset)})
 
 
+def discover_gold_symbols_for_dataset(silver_root: str, exchange: str, dataset_id: str) -> list[str]:
+    """Discover symbols for one specific gold dataset requirement set."""
+
+    required = _dataset_requirements(dataset_id)
+    by_dataset: list[set[str]] = []
+    for dataset_type, timeframe in required:
+        by_dataset.append(
+            _discover_symbols_for_dataset(
+                silver_root=silver_root,
+                exchange=exchange,
+                dataset_type=dataset_type,
+                timeframe=timeframe,
+            )
+        )
+    if not by_dataset:
+        return []
+    return sorted({normalize_symbol(item) for item in set.intersection(*by_dataset)})
+
+
 def _discover_symbols_for_dataset(
     *,
     silver_root: str,

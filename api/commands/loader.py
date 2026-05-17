@@ -37,6 +37,7 @@ from application.services.bronze_runtime_service import (
     task_key_tuple_to_string,
     write_bronze_checkpoint,
 )
+from application.services.bronze_reporting_service import symbol_progress_rows, trade_error_breakdown
 from application.services.fetch_service import (
     fetch_candle_tasks_parallel,
     fetch_funding_tasks_parallel,
@@ -1126,34 +1127,17 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 trade_success_count,
                 trade_error_count,
             )
-            symbol_totals: dict[str, int] = {}
-            symbol_success: dict[str, int] = {}
-            for _exchange, _market, symbol, _timeframe in tasks:
-                symbol_totals[symbol] = symbol_totals.get(symbol, 0) + 1
-            for _exchange, symbol, _timeframe in oi_tasks:
-                symbol_totals[symbol] = symbol_totals.get(symbol, 0) + 1
-            for _exchange, symbol, _timeframe in funding_tasks:
-                symbol_totals[symbol] = symbol_totals.get(symbol, 0) + 1
-            for _exchange, _market, symbol in trade_tasks:
-                symbol_totals[symbol] = symbol_totals.get(symbol, 0) + 1
-            for _exchange, _market, symbol, _timeframe in task_results:
-                symbol_success[symbol] = symbol_success.get(symbol, 0) + 1
-            for _exchange, symbol, _timeframe in oi_results:
-                symbol_success[symbol] = symbol_success.get(symbol, 0) + 1
-            for _exchange, symbol, _timeframe in funding_results:
-                symbol_success[symbol] = symbol_success.get(symbol, 0) + 1
-            for _exchange, _market, symbol in trade_results:
-                symbol_success[symbol] = symbol_success.get(symbol, 0) + 1
-            if symbol_totals:
-                fairness = [
-                    {
-                        "symbol": symbol,
-                        "success": symbol_success.get(symbol, 0),
-                        "total": total,
-                        "ratio": round(symbol_success.get(symbol, 0) / total, 4) if total > 0 else 0.0,
-                    }
-                    for symbol, total in sorted(symbol_totals.items())
-                ]
+            fairness = symbol_progress_rows(
+                candle_tasks=cast(list[tuple[str, str, str, str]], tasks),
+                oi_tasks=cast(list[tuple[str, str, str]], oi_tasks),
+                funding_tasks=cast(list[tuple[str, str, str]], funding_tasks),
+                trade_tasks=cast(list[tuple[str, str, str]], trade_tasks),
+                candle_results=cast(dict[tuple[str, str, str, str], object], task_results),
+                oi_results=cast(dict[tuple[str, str, str], object], oi_results),
+                funding_results=cast(dict[tuple[str, str, str], object], funding_results),
+                trade_results=cast(dict[tuple[str, str, str], object], trade_results),
+            )
+            if fairness:
                 logger.info("Bronze per-symbol progress: %s", fairness)
 
             populate_ohlcv_output(
@@ -1248,9 +1232,14 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
 
             if perp_trades_requested or option_trades_requested:
                 trade_task_total = len(trade_tasks)
-                trade_error_total = len(trade_errors)
+                breakdown = trade_error_breakdown(cast(dict[tuple[str, str, str], str], trade_errors))
+                trade_error_total = breakdown["total"]
                 trade_success_total = trade_task_total - trade_error_total
+                trade_net_unreachable_errors = breakdown["net_unreachable"]
+                trade_net_timeout_errors = breakdown["net_timeout"]
+                trade_other_errors = breakdown["other"]
                 trade_rows_total = sum(len(rows) for rows in trade_results.values())
+                output["_trade_error_breakdown"] = breakdown
                 trade_parquet_files = sorted(
                     {
                         str(Path(path).resolve())
@@ -1262,11 +1251,15 @@ def run_bronze_build(args: argparse.Namespace, logger: logging.Logger) -> None:
                 logger.info(
                     (
                         "Trades bronze summary tasks_total=%s tasks_success=%s tasks_failed=%s "
+                        "failed_net_unreachable=%s failed_net_timeout=%s failed_other=%s "
                         "rows_total=%s parquet_files_written=%s lake_root=%s"
                     ),
                     trade_task_total,
                     trade_success_total,
                     trade_error_total,
+                    trade_net_unreachable_errors,
+                    trade_net_timeout_errors,
+                    trade_other_errors,
                     trade_rows_total,
                     len(trade_parquet_files),
                     cast(str, args.lake_root),

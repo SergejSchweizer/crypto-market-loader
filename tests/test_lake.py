@@ -443,11 +443,11 @@ def test_load_combined_dataframe_applies_filters_and_open_interest(tmp_path: Pat
         end_time=datetime(2026, 5, 1, 0, 0, tzinfo=UTC),
         include_open_interest=True,
     )
-    assert len(frame) == 1
-    assert list(frame["symbol"]) == ["BTCUSDT"]
-    assert float(frame.iloc[0]["open"]) == 100.0
-    assert float(frame.iloc[0]["close"]) == 100.5
-    assert float(frame.iloc[0]["open_interest"]) == 123.0
+    assert frame.height == 1
+    assert frame.get_column("symbol").to_list() == ["BTCUSDT"]
+    assert float(frame.select("open").item()) == 100.0
+    assert float(frame.select("close").item()) == 100.5
+    assert float(frame.select("open_interest").item()) == 123.0
 
 
 def test_load_combined_dataframe_limit_applies(tmp_path: Path) -> None:
@@ -481,4 +481,4 @@ def test_load_combined_dataframe_limit_applies(tmp_path: Path) -> None:
     )
     save_spot_candles_parquet_lake({"deribit": {"BTCUSDT": [candle_1, candle_2]}}, "spot", str(tmp_path))
     frame = load_combined_dataframe_from_lake(lake_root=str(tmp_path), limit=1)
-    assert len(frame) == 1
+    assert frame.height == 1

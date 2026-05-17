@@ -58,6 +58,24 @@ class _ResultQueueProtocol:
     def put(self, item: object) -> object: ...
 
 
+def _classify_trade_fetch_error(exc: Exception) -> str:
+    """Classify trade fetch errors for operational summaries."""
+
+    message = str(exc).lower()
+    network_markers = (
+        "no route to host",
+        "name or service not known",
+        "temporary failure in name resolution",
+        "network is unreachable",
+        "connection refused",
+    )
+    if any(marker in message for marker in network_markers):
+        return "NET_UNREACHABLE"
+    if "timeout" in message:
+        return "NET_TIMEOUT"
+    return "OTHER"
+
+
 def _trade_unique_key(item: TradeTick | OptionTradeTick) -> tuple[datetime, str, str]:
     """Return stable dedup key for perp/option trade ticks."""
 
@@ -1217,12 +1235,14 @@ def fetch_trade_tasks_parallel(
                 on_task_complete(task, rows)
         except Exception as exc:  # noqa: BLE001
             elapsed_s = int((datetime.now(UTC) - started_at).total_seconds())
+            error_class = _classify_trade_fetch_error(exc)
             logger.exception(
-                "Fetch error type=trades exchange=%s market=%s symbol=%s elapsed_s=%s",
+                "Fetch error type=trades class=%s exchange=%s market=%s symbol=%s elapsed_s=%s",
+                error_class,
                 task.exchange,
                 task.market,
                 task.symbol,
                 elapsed_s,
             )
-            task_errors[key] = str(exc)
+            task_errors[key] = f"[{error_class}] {exc}"
     return TradeFetchResultDTO(rows=task_results, errors=task_errors)

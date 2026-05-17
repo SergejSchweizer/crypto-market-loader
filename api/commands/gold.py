@@ -11,6 +11,7 @@ from typing import cast
 from application.services.gold_service import (
     SUPPORTED_GOLD_DATASET_IDS,
     build_gold_for_symbol,
+    discover_gold_symbols_for_dataset,
     discover_gold_symbols,
     normalize_symbol,
 )
@@ -50,11 +51,19 @@ def add_gold_build_parser(subparsers: argparse._SubParsersAction[argparse.Argume
     parser.add_argument("--no-json-output", action="store_true", help="Suppress JSON output")
 
 
-def _resolve_gold_symbols(*, symbols: list[str] | None, silver_root: str, exchange: str) -> list[str]:
+def _resolve_gold_symbols(
+    *,
+    symbols: list[str] | None,
+    silver_root: str,
+    exchange: str,
+    dataset_id: str | None = None,
+) -> list[str]:
     """Return normalized symbol schedule for gold build."""
 
     if symbols:
         return sorted({normalize_symbol(symbol) for symbol in symbols})
+    if dataset_id is not None:
+        return discover_gold_symbols_for_dataset(silver_root=silver_root, exchange=exchange, dataset_id=dataset_id)
     return discover_gold_symbols(silver_root=silver_root, exchange=exchange)
 
 
@@ -86,14 +95,21 @@ def run_gold_build(args: argparse.Namespace, logger: logging.Logger) -> None:
     version_base = cast(str, getattr(args, "version_base", "v1.0.0"))
     symbols = cast(list[str] | None, args.symbols)
     l2_validation_mode = cast(str, getattr(args, "l2_validation_mode", "strict"))
-    effective_symbols = _resolve_gold_symbols(symbols=symbols, silver_root=silver_root, exchange=exchange)
     reports: list[dict[str, object]] = []
 
     dataset_ids = _resolve_dataset_ids(dataset_id)
-    logger.info("Gold build schedule symbols=%s dataset_ids=%s", effective_symbols, dataset_ids)
+    schedule: dict[str, list[str]] = {}
+    for selected_dataset_id in dataset_ids:
+        schedule[selected_dataset_id] = _resolve_gold_symbols(
+            symbols=symbols,
+            silver_root=silver_root,
+            exchange=exchange,
+            dataset_id=selected_dataset_id,
+        )
+    logger.info("Gold build schedule dataset_symbols=%s", schedule)
     _validate_version_args(auto_version=auto_version, dataset_version=dataset_version, version_base=version_base)
     for selected_dataset_id in dataset_ids:
-        for symbol in effective_symbols:
+        for symbol in schedule[selected_dataset_id]:
             try:
                 report = build_gold_for_symbol(
                     silver_root=silver_root,

@@ -673,6 +673,12 @@ If you have historical Bronze data in the legacy path, migrate or backfill it be
 mv lake/bronze/dataset_type=trades lake/bronze/dataset_type=perp_trades
 ```
 
+You can check for legacy paths with:
+
+```bash
+uv run python scripts/check_legacy_trades_dataset.py --lake-root lake/bronze
+```
+
 ## Silver Build
 
 ```bash

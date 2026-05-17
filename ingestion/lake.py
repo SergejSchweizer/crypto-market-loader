@@ -972,20 +972,15 @@ def load_combined_dataframe_from_lake(
     limit: int | None = None,
     include_open_interest: bool = False,
 ) -> Any:
-    """Load combined spot/perp OHLCV rows from parquet lake as a pandas DataFrame."""
+    """Load combined spot/perp OHLCV rows from parquet lake as a Polars DataFrame."""
 
     if limit is not None and limit <= 0:
         raise ValueError("limit must be positive when provided")
 
     try:
-        import pandas as pd
+        import polars as pl
     except ImportError as exc:
-        raise RuntimeError("pandas is required for dataframe export. Install project dependencies.") from exc
-
-    try:
-        import pyarrow.parquet as pq
-    except ImportError as exc:
-        raise RuntimeError("pyarrow is required for dataframe export. Install project dependencies.") from exc
+        raise RuntimeError("polars is required for dataframe export. Install project dependencies.") from exc
 
     exchange_filter = {item.lower() for item in exchanges} if exchanges else None
     symbol_filter = {item.upper() for item in symbols} if symbols else None
@@ -1018,26 +1013,23 @@ def load_combined_dataframe_from_lake(
         if timeframe_filter is not None and timeframe_value.lower() not in timeframe_filter:
             continue
 
-        parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
-        for batch in parquet_file.iter_batches(batch_size=10_000):  # type: ignore[no-untyped-call]
-            frame = batch.to_pandas()
-            # Bronze may store source-shaped candle fields; normalize for dataframe consumers.
-            rename_map = {
-                "open_price": "open",
-                "high_price": "high",
-                "low_price": "low",
-                "close_price": "close",
-            }
-            for source_col, target_col in rename_map.items():
-                if target_col not in frame.columns and source_col in frame.columns:
-                    frame[target_col] = frame[source_col]
-            if start_time is not None:
-                frame = frame[frame["open_time"] >= start_time]
-            if end_time is not None:
-                frame = frame[frame["open_time"] <= end_time]
-            if frame.empty:
-                continue
-            frames.append(frame)
+        frame = pl.read_parquet(str(data_file))
+        rename_map = {
+            "open_price": "open",
+            "high_price": "high",
+            "low_price": "low",
+            "close_price": "close",
+        }
+        for source_col, target_col in rename_map.items():
+            if target_col not in frame.columns and source_col in frame.columns:
+                frame = frame.with_columns(pl.col(source_col).alias(target_col))
+        if start_time is not None:
+            frame = frame.filter(pl.col("open_time") >= start_time)
+        if end_time is not None:
+            frame = frame.filter(pl.col("open_time") <= end_time)
+        if frame.height == 0:
+            continue
+        frames.append(frame)
 
     columns = [
         "exchange",
@@ -1058,13 +1050,14 @@ def load_combined_dataframe_from_lake(
         "source_endpoint",
     ]
     if not frames:
-        dataframe = pd.DataFrame(columns=columns)
+        dataframe = pl.DataFrame(schema={name: pl.Null for name in columns})
     else:
-        dataframe = pd.concat(frames, ignore_index=True)
-        dataframe = dataframe.sort_values(
-            by=["open_time", "exchange", "instrument_type", "symbol", "timeframe"],
-            kind="mergesort",
-        )
+        dataframe = pl.concat(frames, how="diagonal_relaxed")
+        dataframe = dataframe.sort(by=["open_time", "exchange", "instrument_type", "symbol", "timeframe"])
+        for col_name in columns:
+            if col_name not in dataframe.columns:
+                dataframe = dataframe.with_columns(pl.lit(None).alias(col_name))
+        dataframe = dataframe.select(columns)
         if limit is not None:
             dataframe = dataframe.head(limit)
 
@@ -1094,25 +1087,21 @@ def load_combined_dataframe_from_lake(
             if timeframe_filter is not None and timeframe_value.lower() not in timeframe_filter:
                 continue
 
-            parquet_file = pq.ParquetFile(data_file)  # type: ignore[no-untyped-call]
-            for batch in parquet_file.iter_batches(batch_size=10_000):  # type: ignore[no-untyped-call]
-                frame = batch.to_pandas()
-                if start_time is not None:
-                    frame = frame[frame["open_time"] >= start_time]
-                if end_time is not None:
-                    frame = frame[frame["open_time"] <= end_time]
-                if frame.empty:
-                    continue
-                oi_frames.append(frame)
+            frame = pl.read_parquet(str(data_file))
+            if start_time is not None:
+                frame = frame.filter(pl.col("open_time") >= start_time)
+            if end_time is not None:
+                frame = frame.filter(pl.col("open_time") <= end_time)
+            if frame.height == 0:
+                continue
+            oi_frames.append(frame)
 
         if oi_frames:
-            oi_frame = pd.concat(oi_frames, ignore_index=True)
-            oi_frame = oi_frame.sort_values(by=["open_time"], kind="mergesort")
-            oi_frame = oi_frame.drop_duplicates(
+            oi_frame = pl.concat(oi_frames, how="diagonal_relaxed").sort(by=["open_time"]).unique(
                 subset=["exchange", "instrument_type", "symbol", "timeframe", "open_time"],
                 keep="last",
             )
-            oi_frame = oi_frame[
+            oi_frame = oi_frame.select(
                 [
                     "exchange",
                     "instrument_type",
@@ -1122,14 +1111,15 @@ def load_combined_dataframe_from_lake(
                     "open_interest",
                     "open_interest_value",
                 ]
-            ]
-            dataframe = dataframe.merge(
+            )
+            dataframe = dataframe.join(
                 oi_frame,
                 on=["exchange", "instrument_type", "symbol", "timeframe", "open_time"],
                 how="left",
             )
         else:
-            dataframe["open_interest"] = None
-            dataframe["open_interest_value"] = None
+            dataframe = dataframe.with_columns(
+                [pl.lit(None).alias("open_interest"), pl.lit(None).alias("open_interest_value")]
+            )
 
     return dataframe
